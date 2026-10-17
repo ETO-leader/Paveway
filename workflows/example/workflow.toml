@@ -1,0 +1,9 @@
+# TEST FIXTURE ONLY. Use examples/prepare_smoke.py to replace the workspace path.
+schema_version = 1
+id = "example"
+version = "1"
+workspace = "REPLACE_WITH_ABSOLUTE_WORKSPACE"
+session_policy = "per_task"
+start_prompt = "prompts/event.md"
+wake_prompt = "prompts/event.md"
+recovery_prompt = "prompts/event.md"
