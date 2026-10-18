@@ -49,6 +49,8 @@ def request(socket_path, command, arguments=None):
         if "result" not in response:
             raise DaemonError("Missing IPC result")
         return response["result"]
+    except RuntimeContractError:
+        raise
     except (OSError, ValueError, UnicodeError, RecursionError):
         raise DaemonError("Cannot reach daemon or decode response; start serve with the same config") from None
 

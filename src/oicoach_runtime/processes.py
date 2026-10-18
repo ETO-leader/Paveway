@@ -3,9 +3,15 @@
 import fcntl
 import os
 import stat
+import ctypes
 from pathlib import Path
 
 from .errors import ConflictError
+
+
+def enable_subreaper():
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise ConflictError("Cannot enable owned-child supervision on this Linux host")
 
 
 class InstanceLock:

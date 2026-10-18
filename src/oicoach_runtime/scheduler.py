@@ -17,7 +17,8 @@ from .db import initialize_database
 from .errors import AgentError, ConflictError, RuntimeContractError
 from .ipc import MAX_REQUEST, handle_connection
 from .models import parse_timestamp, utc_text
-from .processes import InstanceLock
+from .memory import Memory, History
+from .processes import InstanceLock, enable_subreaper
 from .store import Store
 from .workflows import WorkflowProvider
 
@@ -39,16 +40,45 @@ class Runtime:
         self.agent_health = "idle"
         self.lock_fds = ()
         self.clients = set()
+        self.active_dispatch = None
+        self.active_scope = None
+        self.pending_restart = None
 
     def dispatch_api(self, command, raw):
         if command == "status":
             arguments(raw, ())
-            return {"daemon": "running", "milestone": "M1", "agent_health": self.agent_health, **self.store.status()}
+            supervisor = self.store.status()
+            health = "degraded" if supervisor["supervisor"]["phase"] in ("backoff", "open") else self.agent_health
+            return {"daemon": "running", "milestone": "M4", "agent_health": health, **supervisor}
         if command == "schedule":
             arguments(raw, ("workflow_id", "task_id", "reason", "dedupe_key", "payload", "at", "after_turn", "run_id"),
                       ("workflow_id", "task_id", "reason", "dedupe_key"))
             self.provider.describe(raw["workflow_id"])
             result = self.store.enqueue(**raw)
+        elif command.startswith("memory."):
+            contracts = {
+                "put": (("workflow_id", "task_id", "key", "title", "content", "expected_version", "kind", "pinned", "source_event_id", "expires_at"), ("workflow_id", "key", "title", "content")),
+                "show": (("workflow_id", "task_id", "key"), ("workflow_id", "key")),
+                "list": (("workflow_id", "task_id", "query", "offset"), ("workflow_id",)),
+                "delete": (("workflow_id", "task_id", "key", "expected_version"), ("workflow_id", "key", "expected_version")),
+                "recall": (("workflow_id", "task_id"), ("workflow_id", "task_id")),
+            }
+            operation = command.removeprefix("memory.")
+            if operation not in contracts:
+                raise RuntimeContractError("Unknown memory operation")
+            arguments(raw, *contracts[operation])
+            if operation == "put":
+                self.provider.describe(raw["workflow_id"])
+            return getattr(Memory(self.store), "context" if operation == "recall" else operation)(**raw)
+        elif command.startswith("history."):
+            contracts = {"search": (("workflow_id", "task_id", "query", "offset"), ("workflow_id",)),
+                         "show": (("run_id",), ("run_id",)),
+                         "messages": (("workflow_id", "task_id", "query", "offset"), ("workflow_id", "task_id"))}
+            operation = command.removeprefix("history.")
+            if operation not in contracts:
+                raise RuntimeContractError("Unknown history operation")
+            arguments(raw, *contracts[operation])
+            return getattr(History(self.store), operation)(**raw)
         elif command == "events.list":
             arguments(raw, ("status", "offset"))
             # Lists are summaries so large private payloads cannot overflow IPC.
@@ -67,6 +97,9 @@ class Runtime:
         elif command == "runs.show":
             arguments(raw, ("run_id",), ("run_id",))
             return self.store.run(**raw)
+        elif command == "runs.output":
+            arguments(raw, ("run_id",), ("run_id",))
+            return self.store.output(**raw)
         elif command == "recover.list":
             arguments(raw, ("offset",))
             return [{"event_id": event["event_id"], "status": event["status"], "last_error_code": event["last_error_code"]}
@@ -76,6 +109,15 @@ class Runtime:
             if "confirmed" in raw and type(raw["confirmed"]) is not bool:
                 raise RuntimeContractError("confirmed must be boolean")
             result = self.store.retry(**raw)
+        elif command == "agent.restart":
+            arguments(raw, ("task_id", "workflow_id", "reason", "reset_circuit"), ("task_id",))
+            result = self.store.request_restart(**raw)
+            self.pending_restart = result
+            if self.active_dispatch and self.active_scope == (result["workflow_id"], result["task_id"]):
+                self.active_dispatch.cancel()
+        elif command == "agent.show":
+            arguments(raw, ("restart_id",), ("restart_id",))
+            return self.store.restart_job(raw["restart_id"])
         else:
             raise RuntimeContractError("Unknown command")
         self.changed.set()
@@ -85,6 +127,10 @@ class Runtime:
         run_id = event["run_id"]
         agent = OmpRpc(self.config, self.lock_fds, self.config_path)
         terminal = False
+        failure_code = "dispatch_interrupted"
+        retryable = False
+        interrupted = False
+        stage = "workflow"
         try:
             workflow = self.provider.describe(event["workflow_id"])
             binding = self.store.bind(event, workflow)
@@ -100,15 +146,28 @@ class Runtime:
                                      "config_path": str(self.config_path) if self.config_path else None,
                                      "commands": ["schedule", "events", "runs", "status"]}],
             }
+            if workflow.memory_enabled:
+                envelope["memory"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
+                envelope["available_tools"][0]["commands"].extend(["memory", "history"])
+            if self.config.tijian.enabled:
+                envelope["available_tools"].append({
+                    "name": "tijian", "contract_version": 1, "availability": "configured_not_verified",
+                    "argv_prefix": [sys.executable, "-m", "oicoach_runtime", "tijian"],
+                    "config_path": str(self.config_path) if self.config_path else None,
+                    "commands": ["tools", "doctor", "call"], "read_only": self.config.tijian.read_only,
+                    "note": "Call tools to discover schemas; Tijian daily plans are separate from Runtime wake events"})
             prompt = workflow.render("wake", envelope)
             self.agent_health = "starting"
+            stage = "startup"
             pid, identity = await agent.start(binding, run_id)
             self.store.record_process(run_id, pid, identity)
             await agent.ready()
+            stage = "session"
             state = await agent.state()
             if state.get("isSettled") is not True:
                 raise ConflictError("Agent session is not settled before dispatch")
             self.store.record_session(run_id, state)
+            stage = "dispatch"
             # This commit MUST happen before the first write of the prompt frame.
             self.store.dispatch(run_id)
             self.agent_health = "running"
@@ -122,26 +181,55 @@ class Runtime:
             path = Path(state["sessionFile"])
             if not path.is_file():
                 raise AgentError("Completed session file was not persisted")
+            output = {"status": "unavailable", "text": None, "truncated": False}
+            if result == "completed" and getattr(agent, "agent_invoked", None) is not False:
+                try:
+                    response = await asyncio.wait_for(agent.command("get_last_assistant_text"), min(5, self.config.agent.ack_timeout_seconds))
+                    text = response.get("text")
+                    if isinstance(text, str):
+                        encoded = text.encode("utf-8")
+                        output = {"status": "available", "text": encoded[:16384].decode("utf-8", errors="ignore"),
+                                  "truncated": len(encoded) > 16384}
+                except AgentError as error:
+                    if error.code != "agent_output_unsupported":
+                        raise  # Persistence/transport errors still invalidate success.
+                except (TimeoutError, UnicodeError):
+                    # A missing optional result never replaces completion evidence.
+                    pass
+            # Disposal can still fail while flushing a session. Preserve intent until
+            # the settled process has exited cleanly, including persistence at EOF.
+            await agent.stop()
+            if agent.process.returncode != 0:
+                raise AgentError("OMP did not exit cleanly after settling", code="agent_shutdown_failed")
             self.store.finish(run_id, "succeeded" if result == "completed" else "failed",
-                              result=result, settled=True, error=None if result == "completed" else "agent_turn_failed")
+                              result=result, settled=True, error=None if result == "completed" else "agent_turn_failed",
+                              exit_code=agent.process.returncode, record_failure=result != "completed", output=output)
             terminal = True
         except asyncio.CancelledError:
+            interrupted = True
+            failure_code = "agent_restart_requested" if self.pending_restart and self.active_scope == (self.pending_restart["workflow_id"], self.pending_restart["task_id"]) else "daemon_shutdown"
             raise
-        except (RuntimeContractError, OSError, TimeoutError, ValueError):
+        except RuntimeContractError as error:
+            failure_code = error.code
+            retryable = isinstance(error, AgentError) and stage in ("startup", "session")
+        except (OSError, TimeoutError, ValueError):
             # Errors contain no prompt/provider text. Unknown post-intent outcome is never retried.
-            pass
+            retryable = stage in ("startup", "session")
+            failure_code = "agent_start_failed" if retryable else "dispatch_interrupted"
         finally:
             try:
                 await agent.stop(abort=not terminal)
             finally:
                 if not terminal:
                     run = self.store.run(run_id)
-                    self.store.finish(run_id, "uncertain" if run["dispatch_intent_at"] else "blocked",
-                                      error="dispatch_interrupted" if run["dispatch_intent_at"] else "agent_start_or_workflow_failed",
-                                      exit_code=agent.process.returncode if agent.process else None)
-                elif agent.process:
-                    with self.store.transaction() as db:
-                        db.execute("UPDATE runs SET agent_exit_code=? WHERE run_id=?", (agent.process.returncode, run_id))
+                    if self.stop_event.is_set() or (self.pending_restart and self.active_scope == (self.pending_restart["workflow_id"], self.pending_restart["task_id"])):
+                        interrupted, retryable = True, False
+                        failure_code = "daemon_shutdown" if self.stop_event.is_set() else "agent_restart_requested"
+                    self.store.finish(run_id, "uncertain" if run["dispatch_intent_at"] else ("failed" if retryable else "blocked"),
+                                      error=failure_code,
+                                      exit_code=agent.process.returncode if agent.process else None,
+                                      automatic_retry=retryable and not run["dispatch_intent_at"],
+                                      record_failure=not interrupted and (retryable or bool(run["dispatch_intent_at"])))
                 self.agent_health = "idle" if terminal else "degraded"
                 run = self.store.run(run_id)
                 print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler", "event_id": event["event_id"],
@@ -150,14 +238,70 @@ class Runtime:
     async def schedule_loop(self):
         while not self.stop_event.is_set():
             self.changed.clear()
+            if self.pending_restart:
+                await self.restart_agent(self.pending_restart)
+                self.pending_restart = None
+                continue
             event = self.store.claim_due(self.owner)
             if event:
-                await self.dispatch_event(event)
+                self.active_scope = (event["workflow_id"], event["task_id"])
+                self.active_dispatch = asyncio.create_task(self.dispatch_event(event))
+                try:
+                    await asyncio.shield(self.active_dispatch)
+                except asyncio.CancelledError:
+                    if self.stop_event.is_set():
+                        if not self.active_dispatch.done() and not self.active_dispatch.cancelling():
+                            self.active_dispatch.cancel()
+                        await asyncio.gather(self.active_dispatch, return_exceptions=True)
+                        raise
+                    if self.pending_restart is None:
+                        raise
+                finally:
+                    self.active_dispatch = None
+                    self.active_scope = None
                 continue
             try:
                 await asyncio.wait_for(self.changed.wait(), self.config.server.poll_interval_seconds)
             except TimeoutError:
                 pass
+
+    async def restart_agent(self, job):
+        adapter = OmpRpc(self.config, self.lock_fds, self.config_path)
+        status, error = "failed", "agent_restart_failed"
+        self.store.update_restart(job["restart_id"], "running")
+        self.agent_health = "restarting"
+        try:
+            binding = self.store.binding_for_task(job["task_id"], job["workflow_id"])
+            workflow = self.provider.describe(job["workflow_id"])
+            if binding["workspace"] != str(workflow.workspace) or binding["workflow_revision"] != workflow.revision:
+                raise ConflictError("Bound workflow or workspace changed")
+            if binding["session_file"] and not Path(binding["session_file"]).is_file():
+                raise ConflictError("Bound session is missing; restart cannot create a replacement")
+            await adapter.start(binding, job["restart_id"])
+            await adapter.ready()
+            state = await adapter.state()
+            path = self.store._session_file(state.get("sessionFile"), Path(binding["session_dir"]))
+            if state.get("isSettled") is not True or not isinstance(state.get("sessionId"), str):
+                raise AgentError("Restarted agent did not report a settled session")
+            if binding["session_file"] and (str(path) != binding["session_file"] or state["sessionId"] != binding["session_id"]):
+                raise ConflictError("Restarted agent returned another session identity")
+            await adapter.stop()
+            if adapter.process.returncode != 0:
+                raise AgentError("Restarted agent failed during disposal")
+            if job["reset_circuit"]:
+                self.store.reset_supervisor()
+            status, error = "succeeded", None
+        except asyncio.CancelledError:
+            status, error = "interrupted", "daemon_shutdown"
+            raise
+        except (RuntimeContractError, OSError, TimeoutError, ValueError):
+            self.store.supervisor_failure(error)
+        finally:
+            try:
+                await adapter.stop(abort=status != "succeeded")
+            finally:
+                self.store.update_restart(job["restart_id"], status, error)
+                self.agent_health = "idle" if status == "succeeded" else "degraded"
 
     async def connection(self, reader, writer):
         task = asyncio.current_task()
@@ -177,6 +321,7 @@ class Runtime:
                 pass
 
     async def serve(self):
+        enable_subreaper()
         ensure_private_directory(self.config.state_dir)
         ensure_private_directory(self.config.state_dir / "sessions")
         socket_path = Path(self.config.server.socket_path)

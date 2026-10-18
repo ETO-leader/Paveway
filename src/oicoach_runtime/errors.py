@@ -30,3 +30,7 @@ class DaemonError(RuntimeContractError):
 
 class AgentError(RuntimeContractError):
     code = "agent_protocol_error"
+
+    def __init__(self, message, *, code="agent_protocol_error"):
+        super().__init__(message)
+        self.code = code

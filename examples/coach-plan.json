@@ -1,0 +1,13 @@
+{
+  "mode": "plan",
+  "timezone": "Asia/Singapore",
+  "date": "2026-10-18",
+  "message": "请根据以下数据安排训练。日期和时间是示例，使用前请修改。不要猜测题目难度或题面。",
+  "available_windows": [{"start": "16:00", "end": "18:00"}],
+  "breaks": [{"start": "17:00", "end": "17:15"}],
+  "goals": [
+    {"problem": "P1001", "target": "solve", "progress": "已有思路，尚未编码", "used_solution": false},
+    {"problem": "P1002", "target": "explore", "progress": "尚未读题", "used_solution": false}
+  ],
+  "auto_followup": false
+}

@@ -57,8 +57,14 @@ class ConfigTests(TemporaryCase):
                  text.replace('executable = "omp"', 'executable = "omp --auto-approve"'),
                  text.replace('executable = "omp"', 'executable = "./omp"'),
                  text.replace('adapter = "omp-rpc"', 'adapter = "shell"'),
+                 text.replace('model = ""', 'model = "--auto-approve"'),
+                 text.replace('tools_enabled = true', 'tools_enabled = 1'),
+                 text.replace('extensions_enabled = true', 'extensions_enabled = "false"'),
                  text.replace('uncertain_event_policy = "manual_review"', 'uncertain_event_policy = "retry"'),
                  text.replace("backoff_initial_seconds = 2", "backoff_initial_seconds = 999"),
+                 text.replace("jitter_ratio = 0.2", "jitter_ratio = 2"),
+                 text.replace("jitter_ratio = 0.2", "jitter_ratio = true"),
+                 text.replace("cooldown_seconds = 60", "cooldown_seconds = 0"),
                  text.replace("[queue]", "[queue]\nunknown = 1"),
                  "unknown = 1\n" + text,
                  text.replace(str(self.state), "relative"),
@@ -135,7 +141,7 @@ class InitTests(TemporaryCase):
                                  "--config", str(self.config_path), "--state-dir", str(self.state),
                                  "--workflow-root", str(self.workflows)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["schema_version"], 1)
+        self.assertEqual(json.loads(result.stdout)["schema_version"], 2)
         with contextlib.redirect_stderr(io.StringIO()) as stream:
             result = main(["doctor", "--json", "--config", str(self.root / "missing")])
         self.assertEqual(result, 1)
@@ -149,7 +155,7 @@ class DatabaseTests(TemporaryCase):
 
     def test_schema_and_read_only_inspection(self):
         report = initialize_database(self.database)
-        self.assertEqual(report, {"schema_version": 1, "integrity": "ok", "journal_mode": "wal"})
+        self.assertEqual(report, {"schema_version": 2, "integrity": "ok", "journal_mode": "wal"})
         with sqlite3.connect(self.database) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"events", "runs", "session_bindings", "runtime_metadata", "audit_log"} <= tables)
@@ -158,7 +164,7 @@ class DatabaseTests(TemporaryCase):
         self.assertFalse((self.root / "absent.sqlite3").exists())
 
     def test_unknown_schema_is_preserved(self):
-        for version in (0, 1, 99):
+        for version in (0, 1, 2, 99):
             with self.subTest(version=version):
                 path = self.root / f"v{version}.sqlite3"
                 with sqlite3.connect(path) as connection:
@@ -185,7 +191,7 @@ class DatabaseTests(TemporaryCase):
         with sqlite3.connect(self.database) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
-        self.assertEqual(initialize_database(self.database)["schema_version"], 1)
+        self.assertEqual(initialize_database(self.database)["schema_version"], 2)
 
     def test_database_symlink_is_rejected(self):
         initialize_database(self.database)

@@ -138,17 +138,20 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ConflictError):
             self.store.retry(event["event_id"])
         self.store.retry(event["event_id"], confirmed=True)
+        self.now += timedelta(seconds=3)
         claimed = self.store.claim_due("new-daemon")
         self.assertNotEqual(claimed["run_id"], run_id)
         self.assertEqual(claimed["attempt"], 2)
         self.assertEqual(self.store.run(run_id)["status"], "uncertain")
 
-    def test_reconcile_predispatch_is_blocked_not_replayed(self):
+    def test_reconcile_predispatch_is_requeued_after_backoff(self):
         event = self.enqueue()
         self.store.claim_due("old")
         self.store.reconcile()
-        self.assertEqual(self.store.event(event["event_id"])["status"], "blocked")
+        self.assertEqual(self.store.event(event["event_id"])["status"], "queued")
         self.assertIsNone(self.store.claim_due("new"))
+        self.now += timedelta(seconds=3)
+        self.assertIsNotNone(self.store.claim_due("new"))
 
     def test_success_cannot_be_recorded_from_ack_only(self):
         _, run_id = self.active()
@@ -157,6 +160,20 @@ class StoreTests(unittest.TestCase):
             self.store.finish(run_id, "succeeded", result="completed", settled=False)
         with self.assertRaises(ConflictError):
             self.store.finish(run_id, "succeeded", result="completed", settled=True)
+
+    def test_predispatch_retry_resets_only_unpersisted_provisional_session(self):
+        event = self.enqueue()
+        claimed = self.store.claim_due("daemon")
+        workflow = Workflow("echo", "1", self.root, "per_task", {})
+        binding = self.store.bind(claimed, workflow)
+        missing = str(Path(binding["session_dir"]) / "not-yet-persisted.jsonl")
+        self.store.record_session(claimed["run_id"], {"sessionFile": missing, "sessionId": "provisional"})
+        self.store.finish(claimed["run_id"], "blocked", error="startup_interrupted")
+        self.store.retry(event["event_id"])
+        new_event = self.store.claim_due("daemon")
+        new_binding = self.store.bind(new_event, workflow)
+        self.assertIsNone(new_binding["session_file"])
+        self.assertIsNone(new_binding["session_id"])
 
     def test_event_pages_are_bounded_and_offsets_are_validated(self):
         for index in range(103):

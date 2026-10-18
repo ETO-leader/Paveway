@@ -8,8 +8,9 @@ from pathlib import Path
 
 from .errors import StorageError
 
-SCHEMA_VERSION = 1
-REQUIRED_TABLES = {"runtime_metadata", "session_bindings", "events", "runs", "audit_log"}
+SCHEMA_VERSION = 2
+V1_TABLES = {"runtime_metadata", "session_bindings", "events", "runs", "audit_log"}
+REQUIRED_TABLES = V1_TABLES | {"memory_notes"}
 
 
 def inspect_database(path: Path) -> dict:
@@ -30,7 +31,7 @@ def inspect_database(path: Path) -> dict:
 
 
 def initialize_database(path: Path) -> dict:
-    """Bootstrap v1, refusing future or foreign schemas without modifying them."""
+    """Migrate known schemas transactionally; refuse foreign/future databases."""
     if path.is_symlink():
         raise StorageError("Database path must not be a symlink")
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -47,12 +48,14 @@ def initialize_database(path: Path) -> dict:
         connection.execute("BEGIN IMMEDIATE")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-        if version == SCHEMA_VERSION:
-            if not REQUIRED_TABLES <= {row[0] for row in tables}:
-                raise StorageError("Database claims v1 but required tables are missing; no migration applied")
-            connection.execute("COMMIT")
-        elif version == 0 and not tables:
-            sql = files("oicoach_runtime").joinpath("migrations/001_initial.sql").read_text(encoding="utf-8")
+        names = {row[0] for row in tables}
+        required = REQUIRED_TABLES if version == 2 else V1_TABLES
+        if version not in (0, 1, 2) or (version == 0 and tables) or (version > 0 and not required <= names):
+            raise StorageError("Refusing an unknown or newer database schema; no migration applied")
+        for target, filename in ((1, "001_initial.sql"), (2, "002_memory.sql")):
+            if target <= version:
+                continue
+            sql = files("oicoach_runtime").joinpath("migrations/" + filename).read_text(encoding="utf-8")
             # execute individually: executescript would implicitly commit the transaction.
             statement = ""
             for line in sql.splitlines(keepends=True):
@@ -62,10 +65,8 @@ def initialize_database(path: Path) -> dict:
                     statement = ""
             if statement.strip():
                 raise StorageError("Incomplete packaged migration")
-            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            connection.execute("COMMIT")
-        else:
-            raise StorageError("Refusing an unknown or newer database schema; no migration applied")
+            connection.execute(f"PRAGMA user_version={target}")
+        connection.execute("COMMIT")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
     except sqlite3.Error:

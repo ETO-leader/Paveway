@@ -20,6 +20,11 @@ class AgentConfig:
     adapter: str = "omp-rpc"
     executable: str = "omp"
     profile: str = ""
+    model: str = ""
+    tools_enabled: bool = True
+    extensions_enabled: bool = True
+    skills_enabled: bool = True
+    rules_enabled: bool = True
     startup_timeout_seconds: float = 30
     ack_timeout_seconds: float = 30
     turn_timeout_seconds: float = 3600
@@ -33,6 +38,8 @@ class RestartConfig:
     window_seconds: float = 300
     backoff_initial_seconds: float = 2
     backoff_max_seconds: float = 120
+    cooldown_seconds: float = 60
+    jitter_ratio: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,15 @@ class QueueConfig:
     default_max_attempts: int = 3
     expired_event_policy: str = "keep"
     uncertain_event_policy: str = "manual_review"
+
+
+@dataclass(frozen=True)
+class TijianConfig:
+    enabled: bool = False
+    executable: str = "tijian"
+    timeout_seconds: float = 120
+    max_output_bytes: int = 8388608
+    read_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +67,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
+    tijian: TijianConfig = field(default_factory=TijianConfig)
 
     @property
     def database_path(self) -> Path:
@@ -92,10 +109,16 @@ def _section(cls, raw: object):
     baseline = cls()
     for key, value in raw.items():
         default = getattr(baseline, key)
-        if isinstance(default, str):
+        if isinstance(default, bool):
+            valid = type(value) is bool
+        elif isinstance(default, str):
             valid = isinstance(value, str) and "\0" not in value
+        elif key == "max_output_bytes":
+            valid = type(value) is int and 1024 <= value <= 67108864
         elif isinstance(default, int) and not key.endswith("_seconds"):
             valid = type(value) is int and 1 <= value <= 1_000_000
+        elif key == "jitter_ratio":
+            valid = type(value) in (int, float) and 0 <= value <= 1
         else:
             valid = type(value) in (int, float) and 0 < value <= 31_536_000 and math.isfinite(value)
         if not valid:
@@ -130,20 +153,28 @@ def load_config(path: Path) -> Config:
         raise ConfigError("agent must use omp-rpc and an executable name or absolute path, not a shell command")
     if "/" in agent.executable and not Path(agent.executable).is_absolute():
         raise ConfigError("agent.executable cannot be a relative path")
+    if any(value.startswith("-") or len(value) > 256 for value in (agent.model, agent.profile)):
+        raise ConfigError("agent.model/profile must be bounded selectors, not CLI flags")
     restart = _section(RestartConfig, raw.get("restart", {}))
     if restart.backoff_initial_seconds > restart.backoff_max_seconds:
         raise ConfigError("Initial backoff exceeds maximum backoff")
+    if restart.max_failures_per_window > 1000:
+        raise ConfigError("restart.max_failures_per_window cannot exceed 1000")
     queue = _section(QueueConfig, raw.get("queue", {}))
     if queue.expired_event_policy != "keep" or queue.uncertain_event_policy != "manual_review":
         raise ConfigError("Only keep/manual_review queue policies are supported")
-    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue)
+    tijian = _section(TijianConfig, raw.get("tijian", {}))
+    if not tijian.executable or (not Path(tijian.executable).is_absolute() and
+                                ("/" in tijian.executable or any(c.isspace() for c in tijian.executable))):
+        raise ConfigError("tijian.executable must be an executable name or absolute path")
+    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue, tijian=tijian)
 
 
 def config_text(config: Config) -> str:
     # JSON string quoting is compatible with TOML basic strings for filesystem paths.
     lines = ["schema_version = 1", f"state_dir = {json.dumps(str(config.state_dir), ensure_ascii=False)}",
              f"workflow_root = {json.dumps(str(config.workflow_root), ensure_ascii=False)}"]
-    for name in ("server", "agent", "restart", "queue"):
+    for name in ("server", "agent", "restart", "queue", "tijian"):
         section = getattr(config, name)
         lines.extend(["", f"[{name}]"])
         for f in fields(section):

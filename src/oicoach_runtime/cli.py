@@ -4,6 +4,9 @@ import json
 import os
 import sqlite3
 import sys
+import uuid
+import math
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,7 +15,7 @@ from .config import (absolute_path, config_text, default_config_path, defaults,
                      ensure_private_directory, load_config, ServerConfig)
 from .db import initialize_database
 from .doctor import diagnose
-from .errors import ConfigError, RuntimeContractError
+from .errors import ConfigError, RuntimeContractError, DaemonError
 from .ipc import request
 from .models import EventStatus
 
@@ -56,7 +59,7 @@ def initialize(path: Path, state_dir: str | None = None, workflow_root: str | No
     if not config.workflow_root.is_dir():
         raise ConfigError("workflow_root must be a directory")
     schema = initialize_database(config.database_path)
-    return {"api_version": 1, "milestone": "M1", "config_created": created, "config": str(path),
+    return {"api_version": 1, "milestone": "M4", "config_created": created, "config": str(path),
             "database": str(config.database_path), **schema, "daemon_started": False}
 
 
@@ -73,8 +76,109 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true", help="Machine-readable v1 JSON output")
     for command in (init, doctor):
         common(command)
+    verify = commands.add_parser("verify-omp", help="Inspect real OMP in a disposable workspace; model turns are opt-in")
+    common(verify)
+    verify.add_argument("--with-model", action="store_true", help="Run three small model turns to verify resume and task isolation")
     common(commands.add_parser("serve", help="Run the persistent foreground daemon"))
     common(commands.add_parser("status", help="Query daemon, queue and adapter status"))
+    ui = commands.add_parser("ui", help="Open the interactive terminal interface backed by CLI subprocesses")
+    common(ui)
+    ui.add_argument("--workflow", help="Initially selected workflow; otherwise choose in the UI")
+    ui.add_argument("--task", default="training")
+    service = commands.add_parser("service", help="Render, install and manage owned systemd user units")
+    service_commands = service.add_subparsers(dest="operation", required=True)
+    for name in ("render", "install", "status", "logs", "start", "stop", "restart", "enable", "disable", "uninstall"):
+        child = service_commands.add_parser(name)
+        common(child)
+        child.add_argument("--name", default="oicoach-runtime.service")
+        if name in ("render", "install"):
+            child.add_argument("--working-directory", type=Path)
+        if name == "install":
+            child.add_argument("--replace", action="store_true", help="Update a unit already owned by this configuration")
+        if name in ("enable", "disable"):
+            child.add_argument("--now", action="store_true")
+        if name == "logs":
+            child.add_argument("--lines", type=int, default=50)
+    workflow = commands.add_parser("workflow", help="Create and inspect editable external workflows")
+    workflow_commands = workflow.add_subparsers(dest="operation", required=True)
+    for name in ("create", "list", "show", "connect-tijian"):
+        child = workflow_commands.add_parser(name)
+        common(child)
+        if name != "list":
+            child.add_argument("identifier")
+        if name == "create":
+            child.add_argument("--workspace", type=Path, required=True)
+            child.add_argument("--template", choices=("coach", "example"), default="coach")
+    ask = commands.add_parser("ask", help="Queue an immediate workflow request; read its result with runs output")
+    common(ask)
+    ask.add_argument("--workflow", required=True)
+    ask.add_argument("--task", required=True)
+    message = ask.add_mutually_exclusive_group(required=True)
+    message.add_argument("--message")
+    message.add_argument("--message-file", type=Path)
+    ask.add_argument("--mode", choices=("plan", "checkin", "review"), default="plan")
+    ask.add_argument("--dedupe-key")
+    ask.add_argument("--wait", action="store_true", help="Wait for completion and print the saved final reply")
+    ask.add_argument("--timeout", type=float, default=180, help="Wait budget in seconds; timing out does not cancel the event")
+    memory = commands.add_parser("memory", help="Maintain scoped persistent notes with optimistic version checks")
+    memory_commands = memory.add_subparsers(dest="operation", required=True)
+    for name in ("put", "show", "list", "delete", "recall"):
+        child = memory_commands.add_parser(name)
+        common(child)
+        child.add_argument("--workflow", required=True)
+        child.add_argument("--task", required=name == "recall", help="Omit for workflow-wide notes")
+        if name in ("put", "show", "delete"):
+            child.add_argument("--key", required=True)
+        if name == "put":
+            child.add_argument("--title", required=True)
+            content = child.add_mutually_exclusive_group(required=True)
+            content.add_argument("--content")
+            content.add_argument("--content-file", type=Path)
+            child.add_argument("--kind", choices=("fact", "preference", "summary", "hypothesis"), default="fact")
+            child.add_argument("--pinned", action="store_true")
+            child.add_argument("--source-event")
+            child.add_argument("--expires-at")
+        if name in ("put", "delete"):
+            child.add_argument("--expected-version", type=int, required=name == "delete", default=0,
+                               help="0 creates; updates/deletes require the observed version")
+        if name == "list":
+            child.add_argument("--query", default="")
+            child.add_argument("--offset", type=int, default=0)
+    history = commands.add_parser("history", help="Search stored requests/replies and read native OMP session text")
+    history_commands = history.add_subparsers(dest="operation", required=True)
+    for name in ("search", "show", "messages"):
+        child = history_commands.add_parser(name)
+        common(child)
+        if name == "show":
+            child.add_argument("identifier")
+        else:
+            child.add_argument("--workflow", required=True)
+            child.add_argument("--task", required=name == "messages")
+            child.add_argument("--query", default="")
+            child.add_argument("--offset", type=int, default=0)
+    tijian = commands.add_parser("tijian", help="Tijian JSON CLI adapter and optional stdio MCP bridge")
+    tijian_commands = tijian.add_subparsers(dest="operation", required=True)
+    for name in ("tools", "doctor", "call", "mcp-config", "mcp"):
+        child = tijian_commands.add_parser(name)
+        common(child)
+        if name == "doctor":
+            child.add_argument("--with-data", action="store_true", help="Also verify three read queries against local Tijian data")
+        if name == "call":
+            child.add_argument("name", help="Operation from tijian tools, e.g. problem_get")
+            data = child.add_mutually_exclusive_group()
+            data.add_argument("--arguments", default="{}", help="Operation arguments as a JSON object")
+            data.add_argument("--arguments-file", type=Path, help="JSON object file, at most 64 KiB")
+    agent = commands.add_parser("agent", help="Control managed agent processes without replaying prompts")
+    agent_commands = agent.add_subparsers(dest="operation", required=True)
+    restart = agent_commands.add_parser("restart", help="Stop a task's active run and probe a fresh process using its session")
+    common(restart)
+    restart.add_argument("--task", required=True)
+    restart.add_argument("--workflow")
+    restart.add_argument("--reason", default="manual restart")
+    restart.add_argument("--reset-circuit", action="store_true", help="Reset supervisor cooldown and failure history after a successful process probe")
+    show = agent_commands.add_parser("show", help="Inspect a durable restart job")
+    common(show)
+    show.add_argument("identifier")
     schedule = commands.add_parser("schedule", help="Persist a wake event through the daemon")
     common(schedule)
     schedule.add_argument("--workflow", required=True)
@@ -100,7 +204,15 @@ def parser() -> argparse.ArgumentParser:
             show = children.add_parser("show")
             show.add_argument("identifier")
             common(show)
+        if category == "runs":
+            output = children.add_parser("output", help="Read the captured final assistant reply, at most 16 KiB UTF-8")
+            output.add_argument("identifier")
+            common(output)
         if category == "events":
+            wait = children.add_parser("wait", help="Wait for an event to reach a terminal state without cancelling it")
+            wait.add_argument("identifier")
+            wait.add_argument("--timeout", type=float, default=180)
+            common(wait)
             for action in ("cancel", "reschedule"):
                 edit = children.add_parser(action)
                 edit.add_argument("identifier")
@@ -117,6 +229,43 @@ def parser() -> argparse.ArgumentParser:
 
 
 def remote_arguments(args):
+    if args.command in ("memory", "history"):
+        if args.command == "history" and args.operation == "show":
+            return "history.show", {"run_id": args.identifier}
+        raw = {"workflow_id": args.workflow}
+        if args.task is not None:
+            raw["task_id"] = args.task
+        if hasattr(args, "key"):
+            raw["key"] = args.key
+        if hasattr(args, "query"):
+            raw.update(query=args.query, offset=args.offset)
+        if hasattr(args, "expected_version"):
+            raw["expected_version"] = args.expected_version
+        if args.operation == "put":
+            content = args.content
+            if args.content_file:
+                with args.content_file.open("rb") as stream:
+                    try:
+                        content = stream.read(4097).decode("utf-8")
+                    except UnicodeError:
+                        raise RuntimeContractError("Memory content must be UTF-8 text") from None
+            raw.update(title=args.title, content=content, kind=args.kind, pinned=args.pinned,
+                       source_event_id=args.source_event, expires_at=args.expires_at)
+        return args.command + "." + args.operation, raw
+    if args.command == "ask":
+        text = args.message
+        if args.message_file:
+            with args.message_file.open("rb") as stream:
+                encoded = stream.read(32769)
+            try:
+                text = encoded.decode("utf-8")
+            except UnicodeError:
+                raise RuntimeContractError("Message file must be UTF-8 text") from None
+        if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 32768 or "\0" in text:
+            raise RuntimeContractError("Message must be nonempty UTF-8 text at most 32 KiB")
+        return "schedule", {"workflow_id": args.workflow, "task_id": args.task, "reason": "user " + args.mode,
+            "dedupe_key": args.dedupe_key or str(uuid.uuid4()), "payload": {"mode": args.mode, "message": text},
+            "at": "now"}
     if args.command == "schedule":
         payload = {}
         if args.payload_file:
@@ -138,6 +287,13 @@ def remote_arguments(args):
         return "schedule", raw
     if args.command == "status":
         return "status", {}
+    if args.command == "agent":
+        if args.operation == "show":
+            return "agent.show", {"restart_id": args.identifier}
+        raw = {"task_id": args.task, "reason": args.reason, "reset_circuit": args.reset_circuit}
+        if args.workflow:
+            raw["workflow_id"] = args.workflow
+        return "agent.restart", raw
     raw = {}
     if args.operation == "list":
         raw["offset"] = args.offset
@@ -156,11 +312,38 @@ def remote_arguments(args):
     return f"{args.command}.{args.operation}", raw
 
 
+def wait_for_event(config, event_id, timeout, *, with_output=False):
+    if not math.isfinite(timeout) or not 0 < timeout <= 86400:
+        raise RuntimeContractError("Wait timeout must be finite and between 0 and 86400 seconds")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            event = request(config.server.socket_path, "events.show", {"event_id": event_id})
+            if event["status"] in ("succeeded", "failed", "blocked", "uncertain", "dead_letter", "cancelled"):
+                result = {"event": event} if with_output else event
+                if with_output:
+                    result["output"] = request(config.server.socket_path, "runs.output", {"run_id": event["run_id"]}) if event["run_id"] else None
+                return {"api_version": 1, "ok": event["status"] == "succeeded", "result": result}
+        except DaemonError:
+            pass  # A service restart does not cancel the durable event.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            error = RuntimeContractError("Event is still pending or daemon is unavailable; inspect events show " + event_id + ". It was not cancelled")
+            error.code = "wait_timeout"
+            raise error
+        time.sleep(min(0.2, remaining))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         path = (args.config or (Path(os.environ["OICOACH_CONFIG"]) if os.environ.get("OICOACH_CONFIG") else default_config_path())).absolute()
-        if args.command == "init":
+        if args.command == "ui":
+            if args.json:
+                raise RuntimeContractError("The terminal UI is interactive; use the individual CLI commands for JSON")
+            from .tui import run
+            return run(path, workflow=args.workflow, task=args.task)
+        elif args.command == "init":
             report = initialize(path, args.state_dir, args.workflow_root)
         elif args.command == "doctor":
             report = diagnose(load_config(path), path)
@@ -168,11 +351,85 @@ def main(argv: list[str] | None = None) -> int:
             from .scheduler import Runtime
             asyncio.run(Runtime(load_config(path), path).serve())
             return 0
+        elif args.command == "verify-omp":
+            from .smoke import verify_omp
+            report = asyncio.run(verify_omp(load_config(path), with_model=args.with_model))
+        elif args.command == "service":
+            from . import service
+            service.unit_name(args.name)
+            if args.operation == "render":
+                report = {"api_version": 1, "unit": args.name,
+                          "unit_text": service.render(path, working_directory=args.working_directory)}
+            elif args.operation == "install":
+                report = service.install(path, name=args.name, working_directory=args.working_directory, replace=args.replace)
+            elif args.operation == "status":
+                report = service.status(path, name=args.name)
+            elif args.operation == "logs":
+                report = service.logs(path, name=args.name, lines=args.lines)
+            else:
+                report = service.control(path, args.operation, name=args.name, now=getattr(args, "now", False))
+        elif args.command == "workflow":
+            from .workflow_setup import create, describe, connect_tijian
+            from .workflows import WorkflowProvider
+            config = load_config(path)
+            provider = WorkflowProvider(config.workflow_root)
+            if args.operation == "create":
+                report = create(config, args.identifier, args.workspace, args.template)
+            elif args.operation == "connect-tijian":
+                report = connect_tijian(config, path, args.identifier)
+            elif args.operation == "show":
+                report = {"api_version": 1, "workflow": describe(provider.describe(args.identifier))}
+            else:
+                report = {"api_version": 1, "workflows": [describe(provider.describe(p.name)) for p in sorted(config.workflow_root.iterdir()) if p.is_dir()]}
+        elif args.command == "tijian":
+            from .integrations.tijian import TijianClient, catalog, mcp_configuration
+            if args.operation == "tools":
+                report = catalog()
+            elif args.operation == "mcp-config":
+                report = mcp_configuration(path)
+            else:
+                tijian_config = load_config(path).tijian
+                if args.operation == "mcp":
+                    from .integrations.tijian_mcp import serve
+                    asyncio.run(serve(tijian_config))
+                    return 0
+                client = TijianClient(tijian_config)
+                if args.operation == "doctor":
+                    report = asyncio.run(client.diagnose(args.with_data))
+                else:
+                    data = args.arguments
+                    if args.arguments_file:
+                        with args.arguments_file.open("rb") as stream:
+                            data = stream.read(65537)
+                    if len(data.encode() if isinstance(data, str) else data) > 65536:
+                        raise RuntimeContractError("Tijian arguments exceed 64 KiB")
+                    try:
+                        values = json.loads(data)
+                    except (ValueError, UnicodeError, RecursionError):
+                        raise RuntimeContractError("Tijian arguments must be a JSON object") from None
+                    report = {"api_version": 1, "result": asyncio.run(client.call(args.name, values))}
         else:
             config = load_config(path)
-            command, raw = remote_arguments(args)
-            report = {"api_version": 1, "result": request(config.server.socket_path, command, raw)}
-        if args.json or args.command != "doctor":
+            if args.command == "events" and args.operation == "wait":
+                report = wait_for_event(config, args.identifier, args.timeout)
+            else:
+                if args.command == "ask" and args.wait and (not math.isfinite(args.timeout) or not 0 < args.timeout <= 86400):
+                    raise RuntimeContractError("Wait timeout must be finite and between 0 and 86400 seconds")
+                command, raw = remote_arguments(args)
+                result = request(config.server.socket_path, command, raw)
+                report = wait_for_event(config, result["event_id"], args.timeout, with_output=True) if args.command == "ask" and args.wait else {"api_version": 1, "result": result}
+        if args.command == "service" and args.operation == "render" and not args.json:
+            print(report["unit_text"], end="")
+        elif args.command == "runs" and args.operation == "output" and not args.json:
+            print(report["result"]["text"] if report["result"]["status"] == "available" else report["result"]["status"])
+            if report["result"].get("truncated"):
+                print("Final reply truncated to 16 KiB; the full session remains in the private sessions directory", file=sys.stderr)
+        elif args.command == "ask" and args.wait and not args.json:
+            output = report["result"]["output"]
+            print(output["text"] if output and output["status"] == "available" else json.dumps(report["result"], ensure_ascii=False))
+            if output and output.get("truncated"):
+                print("Final reply truncated to 16 KiB; the full session remains in the private sessions directory", file=sys.stderr)
+        elif args.json or args.command != "doctor":
             print(json.dumps(report, ensure_ascii=False))
         else:
             for check in report["checks"]:
@@ -180,6 +437,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.get("ok", True) else 1
     except RuntimeContractError as error:
         output = {"api_version": 1, "error": {"code": error.code, "message": str(error)}}
+        if hasattr(error, "outcome"):
+            output["error"]["outcome"] = error.outcome
     except (OSError, sqlite3.Error):
         # Do not leak arbitrary filesystem contents or SQLite statements through errors.
         output = {"api_version": 1, "error": {"code": "io_error", "message": "Filesystem or database operation failed; check paths and permissions"}}

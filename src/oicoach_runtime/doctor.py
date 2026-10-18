@@ -31,7 +31,7 @@ def probe_omp(executable: str) -> list[dict]:
         missing = [flag for flag in REQUIRED_FLAGS if not re.search(re.escape(flag) + r"(?=[=\s,]|$)", help_result.stdout)]
         return [{"check": "omp", "status": "FAIL" if missing else "PASS",
                  "detail": f"OMP {matched[1]}; missing flags: {', '.join(missing) if missing else 'none'}"},
-                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags verified only; real-provider RPC and session integration still require M2 verification"}]
+                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags only; use verify-omp --with-model to verify this configuration's RPC and model sessions"}]
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
         return [{"check": "omp", "status": "FAIL", "detail": "OMP version/help probe failed or timed out"}]
 
@@ -76,9 +76,20 @@ def diagnose(config: Config, config_path: Path) -> dict:
     else:
         checks.append({"check": "workflows", "status": "FAIL", "detail": "Configured workflow root is missing"})
     checks.extend(probe_omp(config.agent.executable))
+    if config.tijian.enabled:
+        checks.append({"check": "tijian", "status": "PASS" if shutil.which(config.tijian.executable) else "FAIL",
+                       "detail": "Executable path check only; use tijian doctor --with-data for JSON CLI and data verification"})
     try:
         runtime = request(config.server.socket_path, "status")
         checks.append({"check": "daemon", "status": "PASS", "detail": runtime})
     except RuntimeContractError:
         checks.append({"check": "daemon", "status": "WARN", "detail": "Daemon is offline or its private socket is unavailable; run serve"})
-    return {"api_version": 1, "milestone": "M1", "ok": not any(c["status"] == "FAIL" for c in checks), "checks": checks}
+    from .service import status as service_status
+    try:
+        service = service_status(config_path)
+        healthy = service.get("managed") and service.get("ActiveState") == "active"
+        failed = service.get("managed") and service.get("ActiveState") == "failed"
+        checks.append({"check": "systemd", "status": "PASS" if healthy else ("FAIL" if failed else "WARN"), "detail": service})
+    except RuntimeContractError:
+        checks.append({"check": "systemd", "status": "WARN", "detail": "User service manager unavailable; foreground serve remains usable"})
+    return {"api_version": 1, "milestone": "M4", "ok": not any(c["status"] == "FAIL" for c in checks), "checks": checks}

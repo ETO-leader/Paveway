@@ -1,0 +1,260 @@
+"""Opt-in real upstream CLI/use-case verification in isolated harness profiles."""
+
+import asyncio
+import importlib.util
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import unittest
+import uuid
+from dataclasses import replace
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+from oicoach_runtime.config import Config, TijianConfig, config_text, load_config
+from oicoach_runtime.integrations.tijian import TijianClient, TijianError, mcp_configuration
+from oicoach_runtime.errors import RuntimeContractError
+from oicoach_runtime.ipc import request
+from oicoach_runtime.models import utc_text
+
+ENABLED = bool(os.environ.get("OICOACH_TEST_TIJIAN_SOURCE_CLI") and os.environ.get("OICOACH_TEST_TIJIAN_SOURCE_SEED"))
+
+
+@unittest.skipUnless(ENABLED, "build the documented Tijian source CLI and set SOURCE_CLI/SOURCE_SEED")
+class RealSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="pw-tijian-source-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.environment = {"TIJIAN_RUNTIME_MODE": "harness", "TIJIAN_PROFILE_ROOT": str(self.root / "profile")}
+        self.environ_patch = patch.dict(os.environ, self.environment)
+        self.environ_patch.start()
+        self.addCleanup(self.environ_patch.stop)
+        process = await asyncio.create_subprocess_exec(os.environ["OICOACH_TEST_TIJIAN_SOURCE_SEED"],
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+        self.assertEqual(process.returncode, 0, stderr.decode())
+        self.config = TijianConfig(enabled=True, executable=os.environ["OICOACH_TEST_TIJIAN_SOURCE_CLI"])
+        self.client = TijianClient(self.config)
+
+    async def test_real_problem_history_plan_and_query_roundtrip(self):
+        self.assertTrue((await self.client.diagnose(with_data=True))["ok"])
+        initial = (await self.client.call("problem_get", {"problem": "P1001"}))["data"]
+        self.assertEqual(initial["problem"]["status"], "unseen")
+        self.assertIn("statementMd", initial["problem"])
+        preview = await self.client.call("problem_status", {"problems": ["P1001"], "status": "explored", "dry_run": True})
+        self.assertTrue(preview["dryRun"])
+        self.assertEqual((await self.client.call("problem_get", {"problem": "P1001"}))["data"], initial)
+        for status in ("explored", "attempted", "solved"):
+            await self.client.call("problem_status", {"problems": ["P1001"], "status": status})
+        metadata = (await self.client.call("problem_get", {"problem": "P1001"}))["data"]
+        self.assertEqual(metadata["problem"]["status"], "solved")
+        self.assertEqual([item["action"] for item in metadata["statusHistory"]], ["explored", "attempted", "solved"])
+        await self.client.call("problem_edit", {"problem": "P1001", "difficulty": 7.5, "quality": 9})
+        self.assertEqual((await self.client.call("problem_get", {"problem": "P1001"}))["data"]["problem"]["quality"], 9)
+        await self.client.call("history_import", {"problem": "P1002", "at": "2026-10-17 14:30", "status": "explored"})
+        await self.client.call("plan_add", {"problems": ["P1001", "P1002"], "target": "solve", "date": "2026-10-18"})
+        await self.client.call("plan_target", {"problem": "P1002", "target": "explore", "date": "2026-10-18"})
+        plan = await self.client.call("plan_show", {"date": "2026-10-18"})
+        self.assertIn("P1002", json.dumps(plan["data"]))
+        await self.client.call("plan_remove", {"problem": "P1001", "date": "2026-10-18"})
+        await self.client.call("plan_carry", {"date": "2026-10-19"})
+        await self.client.call("plan_clear", {"date": "2026-10-18", "confirm": True})
+        daily = await self.client.call("daily_show", {"from": "2026-10-17", "to": "2026-10-18"})
+        self.assertGreater(len(daily["data"]["days"]), 0)
+        found = await self.client.call("search", {"query": "source integration"})
+        self.assertEqual(len(found["data"]), 2)
+        listed = await self.client.call("problem_list", {"status": "solved", "has_statement": True})
+        self.assertEqual([item["id"] for item in listed["data"]], ["P1001"])
+
+    async def test_real_articles_export_and_backup_restore(self):
+        article = self.root / "fixture.md"
+        article.write_text("# Source integration list\n\n[P1001](https://www.luogu.com.cn/problem/P1001)\n")
+        await self.client.call("article_import", {"path": str(article)})
+        articles = (await self.client.call("article_list", {}))["data"]
+        self.assertEqual(len(articles), 1)
+        article_id = articles[0]["id"]
+        shown = await self.client.call("article_show", {"id": article_id})
+        self.assertIn("P1001", json.dumps(shown["data"]))
+        output = self.root / "export.md"
+        await self.client.call("article_export", {"id": article_id, "output": str(output), "confirm": True})
+        self.assertIn("P1001", output.read_text())
+        backup = self.root / "backup.zip"
+        await self.client.call("backup_export", {"path": str(backup), "format": "native", "confirm": True})
+        verified = await self.client.call("backup_verify", {"path": str(backup)})
+        self.assertEqual(verified["data"]["problems"], 2)
+        await self.client.call("problem_remove", {"problem": "P1002", "confirm": True})
+        self.assertEqual((await self.client.call("problem_stats", {}))["data"]["total"], 1)
+        await self.client.call("backup_import", {"path": str(backup), "confirm": True})
+        self.assertEqual((await self.client.call("problem_stats", {}))["data"]["total"], 2)
+
+    async def test_network_and_desktop_dependencies_fail_without_fake_success(self):
+        # Harness network policy prevents contacting real OJs or using user credentials.
+        for name, args in (("problem_add", {"problems": ["P1003"]}),
+                           ("problem_refetch", {"problems": ["P1001"]}),
+                           ("problem_vector_compute", {"problems": ["P1001"]})):
+            try:
+                result = await self.client.call(name, args)
+            except TijianError as error:
+                self.assertEqual(error.outcome, "uncertain")
+            else:
+                # Upstream batch commands can return a valid envelope reporting per-item failure.
+                self.assertFalse(result["changed"], (name, result))
+
+    @unittest.skipUnless(importlib.util.find_spec("mcp"), "install .[tijian]")
+    async def test_sdk_mcp_calls_real_upstream_status_and_statement(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        path = self.root / "runtime.toml"
+        path.write_text(config_text(Config(self.root / "state", self.root / "workflows", tijian=self.config)))
+        entry = mcp_configuration(path)["mcpServers"]["tijian"]
+        parameters = StdioServerParameters(command=entry["command"], args=entry["args"], env=self.environment)
+        async with stdio_client(parameters) as (reader, writer):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                changed = await session.call_tool("tijian_problem_status", {"problems": ["P1001"], "status": "explored"})
+                self.assertFalse(changed.isError)
+                read = await session.call_tool("tijian_problem_get", {"problem": "P1001"})
+                self.assertFalse(read.isError)
+                self.assertEqual(read.structuredContent["data"]["problem"]["status"], "explored")
+
+    @unittest.skipUnless(importlib.util.find_spec("mcp") and os.environ.get("OICOACH_TEST_TIJIAN_OMP_CONFIG"),
+                         "set OICOACH_TEST_TIJIAN_OMP_CONFIG for an actual model + upstream source roundtrip")
+    async def test_real_omp_model_reads_real_tijian_through_mcp(self):
+        from oicoach_runtime.adapters.omp_rpc import OmpRpc
+        base = load_config(Path(os.environ["OICOACH_TEST_TIJIAN_OMP_CONFIG"]))
+        sessions = self.root / "sessions"
+        sessions.mkdir(mode=0o700)
+        config = replace(base, state_dir=self.root / "runtime-state", workflow_root=self.root / "workflows",
+            tijian=replace(self.config, read_only=True), agent=replace(base.agent,
+                tools_enabled=False, extensions_enabled=False, skills_enabled=False, rules_enabled=False,
+                startup_timeout_seconds=30, turn_timeout_seconds=90, settle_timeout_seconds=15, graceful_stop_seconds=1))
+        path = self.root / "runtime.toml"
+        path.write_text(config_text(config))
+        mcp = mcp_configuration(path)
+        mcp["mcpServers"]["tijian"]["env"] = self.environment
+        (self.root / ".mcp.json").write_text(json.dumps(mcp))
+        adapter = OmpRpc(config, config_path=path)
+        try:
+            run_id = str(uuid.uuid4())
+            await adapter.start({"workspace": str(self.root), "session_dir": str(sessions), "session_file": None}, run_id)
+            await adapter.ready()
+            tool_names = []
+            async with asyncio.timeout(15):
+                while not any(name.endswith("tijian_problem_get") for name in tool_names):
+                    tool_names = [tool["name"] for tool in (await adapter.state()).get("dumpTools", [])]
+                    await asyncio.sleep(0.05)
+            result = await adapter.prompt(run_id,
+                "Integration test: call only mcp__tijian_problem_get with problem='P1001', exactly once. "
+                "Do not use shell, filesystem or any other tools. After receiving its result, reply only DONE.",
+                lambda: None, lambda _: None)
+            self.assertEqual(result, "completed")
+            messages = (await adapter.command("get_messages"))["messages"]
+            evidence = [message for message in messages if message.get("role") == "toolResult" and
+                        "tijian" in message.get("toolName", "")]
+            self.assertEqual(len(evidence), 1, "No unique actual Tijian tool result; history shape=" +
+                repr([(m.get("role"), m.get("toolName"), sorted(m)) for m in messages]))
+            self.assertFalse(evidence[0].get("isError", False))
+            self.assertIn("P1001 source integration", json.dumps(evidence[0], ensure_ascii=False))
+        finally:
+            await adapter.stop(abort=True)
+
+    @unittest.skipUnless(importlib.util.find_spec("mcp") and os.environ.get("OICOACH_TEST_TIJIAN_OMP_CONFIG"),
+                         "set OICOACH_TEST_TIJIAN_OMP_CONFIG for the full daemon/model/Tijian project path")
+    async def test_project_cli_daemon_model_tijian_and_persisted_completion(self):
+        from oicoach_runtime.adapters.omp_rpc import OmpRpc
+        base = load_config(Path(os.environ["OICOACH_TEST_TIJIAN_OMP_CONFIG"]))
+        project = self.root / "project"
+        script = Path(__file__).resolve().parents[1] / "examples/prepare_tijian.py"
+        prepare = await asyncio.create_subprocess_exec(sys.executable, str(script), "--directory", str(project),
+            "--tijian-executable", self.config.executable, "--omp-executable", base.agent.executable,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(prepare.communicate(), 15)
+        self.assertEqual(prepare.returncode, 0, stderr.decode())
+        path = project / "config.toml"
+        config = load_config(path)
+        config = replace(config, server=replace(config.server, poll_interval_seconds=0.05),
+            agent=replace(base.agent, tools_enabled=False, extensions_enabled=False, skills_enabled=False,
+                rules_enabled=False, startup_timeout_seconds=30, turn_timeout_seconds=90,
+                settle_timeout_seconds=15, graceful_stop_seconds=1))
+        path.write_text(config_text(config))
+        mcp = mcp_configuration(path)
+        mcp["mcpServers"]["tijian"]["env"] = self.environment
+        (project / "workspace/.mcp.json").write_text(json.dumps(mcp))
+        (project / "workflows/tijian/event.md").write_text(
+            "Integration test: call mcp__tijian_problem_get exactly once with problem='P1001'. "
+            "Do not use any other tools. After the tool returns, reply only DONE.\n"
+            "Runtime event data: ${event_json}\n")
+
+        async def api(command, arguments=None):
+            return await asyncio.to_thread(request, config.server.socket_path, command, arguments)
+
+        with (project / "daemon.log").open("w") as log:
+            daemon = await asyncio.create_subprocess_exec(sys.executable, "-m", "oicoach_runtime", "serve",
+                "--config", str(path), stdout=log, stderr=log)
+            try:
+                async with asyncio.timeout(10):
+                    while True:
+                        self.assertIsNone(daemon.returncode, "Daemon exited before becoming ready")
+                        try:
+                            if (await api("status"))["daemon"] == "running":
+                                break
+                        except RuntimeContractError:
+                            pass
+                        await asyncio.sleep(0.05)
+                due = utc_text(datetime.now(timezone.utc) + timedelta(seconds=2))
+                cli = await asyncio.create_subprocess_exec(sys.executable, "-m", "oicoach_runtime", "schedule",
+                    "--config", str(path), "--workflow", "tijian", "--task", "whole-project",
+                    "--at", due, "--reason", "full project running test", "--dedupe-key", "whole-project-1",
+                    "--json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdout, stderr = await asyncio.wait_for(cli.communicate(), 10)
+                self.assertEqual(cli.returncode, 0, stderr.decode())
+                event = json.loads(stdout)["result"]
+                # The scheduling CLI has exited; the separate daemon owns execution.
+                async with asyncio.timeout(150):
+                    while True:
+                        current = await api("events.show", {"event_id": event["event_id"]})
+                        if current["status"] in ("succeeded", "failed", "blocked", "uncertain", "dead_letter"):
+                            break
+                        await asyncio.sleep(0.1)
+                self.assertEqual(current["status"], "succeeded", current)
+                self.assertEqual(current["attempt"], 1)
+                run = await api("runs.show", {"run_id": current["run_id"]})
+                self.assertEqual(run["prompt_result_status"], "completed")
+                self.assertIsNotNone(run["acknowledged_at"])
+                self.assertIsNotNone(run["settled_at"])
+                self.assertEqual(run["agent_exit_code"], 0)
+                self.assertEqual(len(await api("runs.list")), 1)
+            finally:
+                if daemon.returncode is None:
+                    daemon.terminate()
+                try:
+                    await asyncio.wait_for(daemon.wait(), 10)
+                except TimeoutError:
+                    daemon.kill()
+                    await daemon.wait()
+
+        # Verify the committed session after daemon shutdown, without another prompt.
+        with closing(sqlite3.connect(config.database_path)) as database:
+            database.row_factory = sqlite3.Row
+            binding = dict(database.execute("SELECT * FROM session_bindings WHERE binding_id=?", (run["binding_id"],)).fetchone())
+        self.assertTrue(Path(binding["session_file"]).is_file())
+        self.assertEqual(binding["last_successful_run_id"], run["run_id"])
+        inspector = OmpRpc(config, config_path=path)
+        try:
+            await inspector.start(binding, str(uuid.uuid4()))
+            await inspector.ready()
+            state = await inspector.state()
+            self.assertEqual(state["sessionId"], binding["session_id"])
+            messages = (await inspector.command("get_messages"))["messages"]
+            evidence = [message for message in messages if message.get("role") == "toolResult" and
+                        "tijian" in message.get("toolName", "")]
+            self.assertEqual(len(evidence), 1)
+            self.assertFalse(evidence[0].get("isError", False))
+            self.assertIn("P1001 source integration", json.dumps(evidence[0], ensure_ascii=False))
+        finally:
+            await inspector.stop(abort=True)

@@ -1,0 +1,23 @@
+# Example only. Prefer `oicoach-runtime service render --config /absolute/config.toml`.
+# Replace all /ABSOLUTE paths and set PATH for your OMP/Tijian installation.
+[Unit]
+Description=Paveway OI Agent Runtime
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/ABSOLUTE/venv/bin/python -m oicoach_runtime serve --config /ABSOLUTE/config.toml
+WorkingDirectory=/ABSOLUTE/workspace
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/ABSOLUTE/agent/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

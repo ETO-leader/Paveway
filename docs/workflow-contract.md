@@ -1,6 +1,10 @@
 # 外部 workflow manifest v1
 
-M1 已實作 manifest 與模板驗證、資料替換及透過 adapter 派發 prompt。端到端測試使用 fake OMP，正式 OI workflow 由外部提供。
+0.7.0 新增可选顶层 `memory_enabled = true|false`，省略为 false；新建 coach 为 true，example 为 false。启用后 envelope 增加 memory 对象（共享+当前 task 的有效笔记、总计最多 8 KiB），available_tools 提示 memory/history 命令。笔记始终是历史数据而非模板指令，源自 payload 的占位符不再替换。旧模板不自动覆盖；变更模板应提升 revision 并使用新 task，详见 [记忆契约](memory.md)。
+
+已實作 manifest 與模板驗證、資料替換及透過 adapter 派發 prompt。fake OMP 用於可重現的故障測試，本機真實 OMP 已驗證模型回合與續聊；自訂 OI workflow 作為外部目錄接入。
+
+0.6.0 提供 `workflow create/list/show/connect-tijian`，可從 wheel 安裝可編輯的 coach/example 外部模板。coach 支援 plan/checkin/review，仍與 Scheduler 業務解耦，詳見 [coach 契約](coach.md)。模板／workspace／version 變更不會自動遷移既有 task 綁定。
 
 將一個 workflow 放在可信 `workflow_root/<id>/workflow.toml`：
 
@@ -38,10 +42,14 @@ dispatcher 提供此 v1 envelope：
 | `reason/payload` | 有界事件資料，不提升成系統指令 |
 | `missed_by_seconds` | 非負逾期秒數 |
 | `runtime_cli_contract_version` | 1 |
-| `available_tools` | 當前已驗證可用的工具與 CLI 描述 |
+| `available_tools` | Runtime CLI 及可選外部接口的呼叫方式與可用性標記；configured 不等於已驗證 |
 
 `Workflow.render` 只做單次資料替換；dispatcher 組裝以上可信欄位，payload 放在獨立 key，不能覆寫 event/run 身分或工具權限。`available_tools` 包含目前 Runtime CLI 命令、config_path 及可執行的 `argv_prefix`（Runtime 所用 Python 加 `-m oicoach_runtime`）；不依賴 OMP 的 PATH 恰好包含 venv。子程序環境也包含 `OICOACH_CONFIG/OICOACH_RUN_ID`，便於呼叫相同 daemon。
 
-M1 的 schedule 事件一律使用 wake_prompt；start/recovery 模板已驗證但還沒有獨立派發入口。每次派發啟動新 OMP 進程，首次取得 sessionFile/sessionId，後續以該 scope 已驗證的明確 session_file 作 `--resume`。workspace/revision 改變、session 遺失或身份不符會 blocked，不能無聲新開。這些已通過 fake 驗證，真實 OMP 續聊仍待 M2。
+目前 schedule 事件一律使用 wake_prompt；start/recovery 模板已驗證但還沒有獨立派發入口。每次派發啟動新 OMP 進程，首次取得 sessionFile/sessionId，後續以該 scope 的明確 session_file 作 `--resume`。workspace/revision 改變、session 遺失或身份不符會 blocked，不能無聲新開。真實 OMP 續聊已透過 verify-omp --with-model 實測。
 
-OMP 的 profile、工具權限、MCP、Skill 配置由外部管理。更換 Tijian 接口不需要改本 manifest 或 Runtime 核心。版本不相容時明確拒絕並 blocked，不能改用別的 workflow。
+真實 OMP 可能在第一輪前就回報尚未落盤的 session 路徑。僅在明確人工重試、該 session 從未有 dispatch intent 且檔案不存在時，Runtime 允許清除暫定 file/ID 後重新建立；曾送出過 prompt 或已有成功歷史的 session 不適用此例外。模型回合必須在 session 落盤、完全 settled、進程正常退出後才成功；持久化錯誤或非零退出保留 uncertain。
+
+OMP 的 profile、工具權限、MCP、Skill 配置由外部管理。啟用 `[tijian]` 時 envelope 的 available_tools 額外提供 Tijian CLI prefix/config、read_only 和 configured_not_verified 標記；可用 tools/doctor/call 發現及執行接口，不預先宣稱 MCP／題庫可用。`tijian mcp-config` 可生成待合併至 workflow workspace/.mcp.json 的 stdio server 配置，`examples/prepare_tijian.py` 可建立全新範例 workspace。詳見 [Tijian 適配](tijian.md)。
+
+更換 Tijian 操作或 schema 集中在 integrations/tijian_catalog.py，不需要改本 manifest 或排程語義。Runtime 事件和 Tijian 計畫獨立；工具回報 uncertain 不會自動重播業務操作。版本不相容時明確拒絕，不能偷偷改用其他題庫／workflow。

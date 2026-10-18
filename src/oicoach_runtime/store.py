@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .errors import ConflictError, NotFoundError, RuntimeContractError, StorageError
 from .models import EventStatus, parse_timestamp, session_key, utc_text, validate_id
+from .supervisor import RestartPolicy
 
 
 def now_utc():
@@ -32,9 +33,10 @@ def canonical_json(value):
 
 
 class Store:
-    def __init__(self, config, clock=now_utc):
+    def __init__(self, config, clock=now_utc, policy=None):
         self.config = config
         self.clock = clock
+        self.policy = policy or RestartPolicy(config.restart)
         self.connection = sqlite3.connect(config.database_path.as_uri() + "?mode=rw", uri=True,
                                           isolation_level=None, timeout=5)
         self.connection.row_factory = sqlite3.Row
@@ -64,6 +66,32 @@ class Store:
     def audit(self, db, event_id, run_id, transition, error=None):
         db.execute("INSERT INTO audit_log(timestamp_utc,component,event_id,run_id,transition,error_code) VALUES (?,?,?,?,?,?)",
                    (self.timestamp(), "store", event_id, run_id, transition, error))
+
+    def metadata(self, key, default=None):
+        row = self.connection.execute("SELECT value FROM runtime_metadata WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return default
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            raise StorageError("Invalid runtime metadata") from None
+
+    @staticmethod
+    def _set_metadata(db, key, value):
+        db.execute("INSERT INTO runtime_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, canonical_json(value)))
+
+    def supervisor_state(self):
+        return self.policy.validate(self.metadata("supervisor_v1", self.policy.empty()))
+
+    def supervisor_failure(self, error):
+        with self.transaction() as db:
+            self._set_metadata(db, "supervisor_v1", self.policy.failure(self.supervisor_state(), self.clock(), error))
+            self.audit(db, None, None, "supervisor_failure", error)
+
+    def reset_supervisor(self):
+        with self.transaction() as db:
+            self._set_metadata(db, "supervisor_v1", self.policy.empty())
+            self.audit(db, None, None, "supervisor_reset")
 
     def _get(self, table, key, identifier):
         # table/key are internal literals, never client-controlled identifiers.
@@ -122,7 +150,7 @@ class Store:
         if at is not None:
             if run_id is not None:
                 raise RuntimeContractError("at cannot specify an anchor run")
-            due = utc_text(parse_timestamp(at))
+            due = self.timestamp() if at == "now" else utc_text(parse_timestamp(at))
             mode, status = "at", "queued"
         else:
             if type(after_turn) not in (int, float) or not 0 <= after_turn <= 31_536_000:
@@ -130,7 +158,7 @@ class Store:
             validate_id(run_id)
             after_turn = float(after_turn)
             due, mode, status = None, "after_turn", "waiting_anchor"
-        fingerprint = hashlib.sha256(canonical_json([reason, payload, mode, due, after_turn, run_id]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(canonical_json([reason, payload, mode, "now" if at == "now" else due, after_turn, run_id]).encode()).hexdigest()
         with self.transaction() as db:
             existing = db.execute("SELECT event_id,request_fingerprint FROM events WHERE workflow_id=? AND task_id=? AND dedupe_key=?",
                                   (workflow_id, task_id, dedupe_key)).fetchone()
@@ -156,7 +184,7 @@ class Store:
     def modify(self, event_id, expected_version, at=None, cancel=False):
         if type(expected_version) is not int or expected_version < 1:
             raise RuntimeContractError("expected_version must be a positive integer")
-        due = utc_text(parse_timestamp(at)) if at is not None else None
+        due = (self.timestamp() if at == "now" else utc_text(parse_timestamp(at))) if at is not None else None
         with self.transaction() as db:
             event = self.event(event_id)
             if event["version"] != expected_version or event["status"] not in ("queued", "waiting_anchor"):
@@ -177,6 +205,8 @@ class Store:
     def claim_due(self, owner):
         stamp = self.timestamp()
         with self.transaction() as db:
+            if not self.policy.allowed(self.supervisor_state(), self.clock()):
+                return None
             if db.execute("SELECT 1 FROM runs WHERE status IN ('leased','running')").fetchone():
                 return None
             row = db.execute("SELECT event_id FROM events WHERE status='queued' AND not_before_utc<=? ORDER BY not_before_utc,created_at,event_id LIMIT 1", (stamp,)).fetchone()
@@ -262,23 +292,43 @@ class Store:
                 db.execute("UPDATE runs SET prompt_result_status=? WHERE run_id=?", (result, run_id))
                 self.audit(db, self.run(run_id)["event_id"], run_id, "prompt_result_" + result)
 
-    def finish(self, run_id, status, *, result=None, settled=False, error=None, exit_code=None):
+    def output(self, run_id):
+        run = self.run(run_id)
+        saved = self.metadata("output:" + run_id)
+        return saved if saved is not None else {"status": "pending" if run["status"] in ("leased", "running") else "unavailable",
+                                               "text": None, "truncated": False}
+
+    def finish(self, run_id, status, *, result=None, settled=False, error=None, exit_code=None,
+               automatic_retry=False, record_failure=False, output=None):
         if status not in ("succeeded", "failed", "blocked", "uncertain"):
             raise RuntimeContractError("Invalid terminal run status")
         with self.transaction() as db:
             run = self.run(run_id)
             if run["status"] not in ("leased", "running"):
                 raise ConflictError("Run already completed")
+            if automatic_retry and (run["dispatch_intent_at"] is not None or status != "failed"):
+                raise ConflictError("Automatic retry requires a proven pre-dispatch failure")
             if status == "succeeded" and (not settled or result != "completed" or not run["dispatch_intent_at"]
                                            or not run["acknowledged_at"] or run["prompt_result_status"] != "completed"):
                 raise ConflictError("Success requires dispatched prompt completion and settled evidence")
             stamp = self.timestamp()
+            event = self.event(run["event_id"])
+            event_status = ("queued" if event["attempt"] < event["max_attempts"] else "dead_letter") if automatic_retry else status
+            if record_failure or automatic_retry:
+                self._set_metadata(db, "supervisor_v1", self.policy.failure(self.supervisor_state(), self.clock(), error))
+            elif status == "succeeded":
+                self._set_metadata(db, "supervisor_v1", self.policy.empty())
+            if output is not None and status == "succeeded":
+                self._set_metadata(db, "output:" + run_id, output)
             db.execute("UPDATE runs SET status=?,prompt_result_status=COALESCE(?,prompt_result_status),settled_at=?,completed_at=?,error_code=?,agent_exit_code=? WHERE run_id=?",
                        (status, result, stamp if settled else None, stamp, error, exit_code, run_id))
             db.execute("UPDATE events SET status=?,completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_utc=NULL,last_error_code=?,version=version+1 WHERE event_id=?",
-                       (status, stamp, stamp, error, run["event_id"]))
+                       (event_status, None if event_status == "queued" else stamp, stamp, error, run["event_id"]))
             if run["binding_id"]:
                 binding_status = "ready" if settled else ("uncertain" if run["dispatch_intent_at"] else "blocked")
+                if automatic_retry:
+                    binding_status = "ready"
+                    self._reset_provisional(db, run["binding_id"], event["event_id"], run_id)
                 db.execute("UPDATE session_bindings SET status=?,last_successful_run_id=CASE WHEN ?='succeeded' THEN ? ELSE last_successful_run_id END,updated_at=? WHERE binding_id=?",
                            (binding_status, status, run_id, stamp, run["binding_id"]))
             anchors = db.execute("SELECT event_id,relative_seconds FROM events WHERE anchor_run_id=? AND status='waiting_anchor'", (run_id,)).fetchall()
@@ -291,13 +341,26 @@ class Store:
                     db.execute("UPDATE events SET status='blocked',last_error_code='anchor_failed',version=version+1,updated_at=? WHERE event_id=?", (stamp, anchor["event_id"]))
                     transition = "blocked"
                 self.audit(db, anchor["event_id"], run_id, transition)
-            self.audit(db, run["event_id"], run_id, status, error)
+            self.audit(db, run["event_id"], run_id, event_status, error)
 
     def reconcile(self):
         # Only call after acquiring the runtime lock and confirming no old managed group survives.
         active = self.connection.execute("SELECT run_id,dispatch_intent_at FROM runs WHERE status IN ('leased','running')").fetchall()
         for row in active:
-            self.finish(row["run_id"], "uncertain" if row["dispatch_intent_at"] else "blocked", error="daemon_interrupted")
+            self.finish(row["run_id"], "uncertain" if row["dispatch_intent_at"] else "failed", error="daemon_interrupted",
+                        automatic_retry=not row["dispatch_intent_at"], record_failure=True)
+        job_id = self.metadata("last_restart_id")
+        if job_id:
+            job = self.restart_job(job_id)
+            if job["status"] in ("requested", "running"):
+                self.update_restart(job_id, "interrupted", error="daemon_interrupted")
+
+    def _reset_provisional(self, db, binding_id, event_id, run_id):
+        binding = db.execute("SELECT * FROM session_bindings WHERE binding_id=?", (binding_id,)).fetchone()
+        dispatched = db.execute("SELECT 1 FROM runs WHERE binding_id=? AND dispatch_intent_at IS NOT NULL LIMIT 1", (binding_id,)).fetchone()
+        if binding["session_file"] and not Path(binding["session_file"]).is_file() and not dispatched:
+            db.execute("UPDATE session_bindings SET session_file=NULL,session_id=NULL WHERE binding_id=?", (binding_id,))
+            self.audit(db, event_id, run_id, "provisional_session_reset")
 
     def retry(self, event_id, confirmed=False):
         with self.transaction() as db:
@@ -313,13 +376,61 @@ class Store:
             if event["run_id"]:
                 run = self.run(event["run_id"])
                 if run["binding_id"]:
-                    binding = db.execute("SELECT status FROM session_bindings WHERE binding_id=?", (run["binding_id"],)).fetchone()
-                    if binding[0] == "uncertain" and not confirmed:
+                    binding = db.execute("SELECT * FROM session_bindings WHERE binding_id=?", (run["binding_id"],)).fetchone()
+                    if binding["status"] == "uncertain" and not confirmed:
                         raise ConflictError("Session is uncertain; review external effects and confirm duplicate risk")
+                    self._reset_provisional(db, run["binding_id"], event_id, event["run_id"])
                     db.execute("UPDATE session_bindings SET status='ready',updated_at=? WHERE binding_id=?", (self.timestamp(), run["binding_id"]))
             db.execute("UPDATE events SET status='queued',completed_at=NULL,last_error_code=NULL,version=version+1,updated_at=? WHERE event_id=?", (self.timestamp(), event_id))
             self.audit(db, event_id, event["run_id"], "manual_retry")
         return self.event(event_id)
+
+    def binding_for_task(self, task_id, workflow_id=None):
+        validate_id(task_id)
+        if workflow_id is not None:
+            validate_id(workflow_id)
+        rows = self.connection.execute("SELECT * FROM session_bindings WHERE task_id=? AND (? IS NULL OR workflow_id=?)", (task_id, workflow_id, workflow_id)).fetchall()
+        if not rows:
+            raise NotFoundError("Task has no session binding")
+        if len(rows) != 1:
+            raise ConflictError("Task ID is ambiguous; specify --workflow")
+        return dict(rows[0])
+
+    def request_restart(self, task_id, workflow_id=None, reason="manual restart", reset_circuit=False):
+        bounded_text(reason, 4096, "restart reason")
+        if type(reset_circuit) is not bool:
+            raise RuntimeContractError("reset_circuit must be boolean")
+        with self.transaction() as db:
+            previous = self.metadata("last_restart_id")
+            if previous and self.restart_job(previous)["status"] in ("requested", "running"):
+                raise ConflictError("A restart is already pending")
+            binding = self.binding_for_task(task_id, workflow_id)
+            job_id = str(uuid.uuid4())
+            job = {"restart_id": job_id, "workflow_id": binding["workflow_id"], "task_id": task_id,
+                   "status": "requested", "reason": reason, "reset_circuit": reset_circuit,
+                   "created_at": self.timestamp(), "updated_at": self.timestamp(), "error_code": None,
+                   "prompt_replayed": False}
+            self._set_metadata(db, "restart:" + job_id, job)
+            self._set_metadata(db, "last_restart_id", job_id)
+            self.audit(db, None, job_id, "agent_restart_requested")
+        return job
+
+    def restart_job(self, job_id):
+        validate_id(job_id)
+        job = self.metadata("restart:" + job_id)
+        if job is None:
+            raise NotFoundError("Restart job does not exist")
+        return job
+
+    def update_restart(self, job_id, status, error=None):
+        if status not in ("running", "succeeded", "failed", "interrupted"):
+            raise RuntimeContractError("Invalid restart job status")
+        with self.transaction() as db:
+            job = self.restart_job(job_id)
+            job.update(status=status, error_code=error, updated_at=self.timestamp())
+            self._set_metadata(db, "restart:" + job_id, job)
+            self.audit(db, None, job_id, "agent_restart_" + status, error)
+        return job
 
     def status(self):
         counts = {status.value: 0 for status in EventStatus}
@@ -327,4 +438,6 @@ class Store:
         last_success = self.connection.execute("SELECT max(completed_at) FROM runs WHERE status='succeeded'").fetchone()[0]
         recent_error = self.connection.execute("SELECT error_code FROM runs WHERE error_code IS NOT NULL ORDER BY completed_at DESC LIMIT 1").fetchone()
         return {"counts": counts, "active_runs": [dict(r) for r in self.connection.execute("SELECT * FROM runs WHERE status IN ('leased','running')")],
+                "supervisor": self.policy.describe(self.supervisor_state(), self.clock()),
+                "last_restart": self.restart_job(self.metadata("last_restart_id")) if self.metadata("last_restart_id") else None,
                 "last_success_at": last_success, "recent_error_code": recent_error[0] if recent_error else None}

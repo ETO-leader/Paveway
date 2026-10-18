@@ -1,0 +1,10 @@
+{
+  "mode": "review",
+  "timezone": "Asia/Singapore",
+  "message": "请复盘这次训练，区分独立完成与借助提示的结果，给出下一次训练建议。",
+  "results": [
+    {"problem": "P1001", "minutes": 20, "outcome": "独立通过", "used_solution": false},
+    {"problem": "P1002", "minutes": 55, "outcome": "看提示后口胡，尚未编码", "used_solution": true}
+  ],
+  "auto_followup": false
+}

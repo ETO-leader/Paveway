@@ -8,6 +8,7 @@ import sys
 import subprocess
 import time
 import uuid
+import re
 from pathlib import Path
 
 
@@ -34,7 +35,12 @@ def main():
     parser.add_argument("--mode")
     parser.add_argument("--no-ui", action="store_true")
     parser.add_argument("--profile")
+    parser.add_argument("--model")
+    for option in ("tools", "extensions", "skills", "rules"):
+        parser.add_argument("--no-" + option, action="store_true")
     args = parser.parse_args()
+    with (args.cwd / "fake-starts.jsonl").open("a") as launches:
+        launches.write(json.dumps({"pid": os.getpid(), "session_dir": str(args.session_dir), "resumed": bool(args.resume)}) + "\n")
     mode_file = args.cwd / "fake-mode"
     startup_mode = mode_file.read_text().strip() if mode_file.exists() else "normal"
     if startup_mode == "crash-before-ready":
@@ -49,6 +55,7 @@ def main():
         session = {"session_id": str(uuid.uuid4()), "prompts": []}
         session_file.write_text(json.dumps(session))
     settled = True
+    exit_code = 0
     emit({"type": "ready", "protocolVersion": 1}, split=True)
     for line in sys.stdin:
         request = json.loads(line)
@@ -56,11 +63,33 @@ def main():
         if request["type"] == "get_state":
             emit({"type": "response", "command": "get_state", "id": request_id, "success": True,
                   "data": {"sessionFile": str(session_file), "sessionId": session["session_id"], "isSettled": settled}})
+        elif request["type"] == "get_last_assistant_text":
+            last = session["prompts"][-1]["payload"] if session["prompts"] else {}
+            if last.get("fake_mode") == "output-persistence-notice":
+                emit({"type": "notice", "source": "session-persistence", "level": "error"})
+                continue
+            emit({"type": "response", "command": "get_last_assistant_text", "id": request_id, "success": True,
+                  "data": {"text": last.get("fake_reply", "fake completion")}})
+        elif request["type"] == "get_messages":
+            messages = []
+            marker = ""
+            for envelope in session["prompts"]:
+                instruction = envelope["payload"].get("instruction", "")
+                match = re.search(r"PAVEWAY_[0-9a-f]+", instruction)
+                if match:
+                    marker = match.group()
+                answer = marker if instruction.startswith("Repeat the exact") else ("READY" if match else "EMPTY")
+                messages.extend([{"role": "user", "content": json.dumps(envelope)}, {"role": "assistant", "content": [{"type": "text", "text": answer}]}])
+            emit({"type": "response", "command": "get_messages", "id": request_id, "success": True, "data": {"messages": messages}})
         elif request["type"] == "prompt":
-            envelope = json.loads(request["message"])
+            envelope = json.loads(request["message"].splitlines()[-1])
             session["prompts"].append(envelope)
             session_file.write_text(json.dumps(session))
             mode = envelope["payload"].get("fake_mode", startup_mode)
+            if mode == "persistence-error":
+                exit_code = 15
+            if mode == "persistence-notice":
+                emit({"type": "notice", "source": "session-persistence", "level": "error", "message": "private failure detail"})
             settled = False
             if mode == "crash-before-ack":
                 return 10
@@ -85,10 +114,22 @@ def main():
                                         capture_output=True, timeout=5)
                 if result.returncode:
                     return 14
+            if mode in ("memory-tool", "memory-tool-crash"):
+                result = subprocess.run([*envelope["available_tools"][0]["argv_prefix"], "memory", "put",
+                    "--workflow", envelope["workflow_id"], "--task", envelope["task_id"],
+                    "--key", "turn-note", "--title", "Progress", "--content", "口胡未编码",
+                    "--source-event", envelope["event_id"], "--json"], capture_output=True, timeout=5)
+                if result.returncode:
+                    return 17
+                if mode == "memory-tool-crash":
+                    return 18
             if mode == "needs-user":
                 emit({"type": "extension_ui_request", "id": "permission", "method": "confirm"})
                 continue
-            if mode == "hold":
+            if mode in ("hold", "hold-with-tool"):
+                if mode == "hold-with-tool":
+                    tool = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+                    (args.cwd / "fake-tool-pid").write_text(str(tool.pid))
                 (args.cwd / "fake-entered").write_text(str(os.getpid()))
                 while not (args.cwd / "fake-release").exists():
                     time.sleep(0.01)
@@ -110,7 +151,8 @@ def main():
         elif request["type"] == "abort":
             settled = True
             emit({"type": "response", "id": request_id, "command": "abort", "success": True})
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
