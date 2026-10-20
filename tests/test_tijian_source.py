@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from oicoach_runtime.config import Config, TijianConfig, config_text, load_config
-from oicoach_runtime.integrations.tijian import TijianClient, TijianError, mcp_configuration
+from oicoach_runtime.integrations.tijian import TijianClient, TijianError, configure, mcp_configuration
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.models import utc_text
@@ -70,6 +70,21 @@ class RealSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(found["data"]), 2)
         listed = await self.client.call("problem_list", {"status": "solved", "has_statement": True})
         self.assertEqual([item["id"] for item in listed["data"]], ["P1001"])
+
+    async def test_setup_initializes_empty_profile_without_fixture_problems(self):
+        path = self.root / "fresh-runtime.toml"
+        path.touch(mode=0o600)
+        path.write_text(config_text(Config(self.root / "fresh-state", self.root / "fresh-workflows")))
+        profile = self.root / "fresh-profile"
+        with patch.dict(os.environ, {"TIJIAN_PROFILE_ROOT": str(profile)}):
+            report = await configure(path, self.config.executable, True)
+            self.assertTrue(report["ok"], report)
+            self.assertTrue((profile / "data/tijian.db").is_file())
+            configured = load_config(path).tijian
+            self.assertTrue(configured.enabled)
+            self.assertTrue(configured.read_only)
+            result = await TijianClient(configured).call("problem_stats", {})
+            self.assertEqual(result["data"]["total"], 0)
 
     async def test_real_articles_export_and_backup_restore(self):
         article = self.root / "fixture.md"

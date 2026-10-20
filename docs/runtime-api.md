@@ -106,3 +106,5 @@ IPC command 為 `status/schedule/events.list/events.show/events.cancel/events.re
 0.11.1 的 daemon 默认初始化一个 Runtime 共用的本地数据 Git 仓库；缺少 remote 时不会联网。`sync remote --remote URL` 设置远端，`--remote ''` 移除远端，均保留设备身份、提交、分支、间隔与 enabled 状态。已有设置不会被自动初始化覆盖。
 
 0.12.0 的 `workflow customize skill-put ID --category oi-introduce|user-information|personal-skill` 指定用户 Skill 分类；可省略，新建默认 personal-skill，编辑保留原分类。旧记录无 category 字段仍有效。分类通过既有 CAS 保存与 Git 同步，下次派发时所有启用类别的正文同时加入系统上下文。
+
+0.13.0 新增 `tijian setup --executable PATH [--read-only|--no-read-only]`，验证协议及数据读取后原子更新私密 Runtime 配置；诊断失败不保存，配置并发变化报 conflict。不重启 daemon、不触发业务写入；MCP 绑定仍通过 `workflow connect-tijian ID`。

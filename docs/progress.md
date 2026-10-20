@@ -260,3 +260,16 @@ OMP 適配器按已安裝 18.10.4 的 prompt_result.error/httpStatus 分類失�
 确认并修复 UI 恢复漏洞：恢复到运行中的 run 时，旧逻辑立即将其标记 seen，展示没有最终回复的占位，不设置 pending，后续不追踪。现在继续轮询至终态，仅对完成 run 去重；用户输入按 event 去重。等待时显示已用时间及最终回复显示方式；空闲时每 15 秒检查当前 task 最近 5 条 run，自动补上后台/其他窗口回复，避免仅靠重开触发恢复。只读核对，不重新 ask，不修改草稿。
 
 UI 测试 **24 项、31.959 秒通过**（`/tmp/paveway-refresh-tests.log`），含新增运行中恢复、自动发现后台回复及不重复显示单元验证；实际 PTY 扩展覆盖退出后 daemon 仍执行、重进恢复等待、完成后无需手动刷新出现回复并保留草稿，原事件 attempt=1、run 数仍为 1。安装包已更新至 0.12.2；实际本机 QOJ 原回复也通过新版 UI client 恢复，核对没有创建新 run。此轮仅更新 UI，无需重启 daemon，正在打开的旧 UI 需重开一次以加载代码。依赖检查、git diff --check 通过。
+
+
+## 2026-10-20（Asia/Singapore）— 0.13.0 Tijian 实际启用
+
+用户反馈 test01 返回 tijian_disabled。检查确认旧 Runtime 配置关闭、没有已安装的 Tijian 执行文件，之前 /tmp 验收构建已不在。本次重新拉取上游，HEAD 与现有固定契约同为 b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f；将 Rust/cargo 与真实源码 CLI 构建放入 gitignored .runtime 持久目录，未修改全局 shell 配置或上游代码。
+
+新增 `tijian setup --executable PATH [--read-only|--no-read-only]`：核对可执行文件、JSON help、本地搜索初始化、统计、计划及题单读取，成功后原子更新私密 Runtime 配置；失败保留原配置，检查期间并发更改报 conflict。只通过上游 canonical API 初始化 schema，不直接修改 SQLite、不插入测试题。工作目录 .mcp.json 保存本机路径，加入项目根忽略规则。新安装 stats 等纯读取不能创建数据库的问题经真实源码重现后由 setup 初始化流程处理。
+
+旧适配与新 setup/部署定向 28 项、32.052 秒：26 通过、2 外部 opt-in 跳过（`/tmp/paveway-tijian-validated-tests.log`），含新增真正空 profile 初始化验证。真实源码库专项 6 项、52.586 秒：4 通过、2 模型项跳过（`/tmp/paveway-tijian-real-source-tests.log`），验证状态/历史/评分/计划/日报、题单/备份/恢复、MCP 调用及外部依赖失败语义。另执行真实模型完整项目链路 1 项、56.320 秒通过（`/tmp/paveway-tijian-model-project.log`）：CLI 退出后独立 daemon → OMP → MCP → 真正源码题库 → 持久完成，核对唯一真实工具返回、attempt=1。无向用户题库添加 fixtures。
+
+本机 test01 已启用，doctor --with-data 全 PASS，官方 MCP SDK 实际发现 26 项工具并查询正常 profile 的 total=0。进一步检查 OMP 默认内置工具模式下 Tijian 出现在系统上下文和 xd:// 挂载设备；仅查看顶层 dumpTools 不能判断 MCP 不可用，禁用内置工具的对照则直接显示 26 项 MCP 工具。原始顶层工具等待探针因此超时，随后根据安装版本源码明确其为原生呈现方式，而非 MCP 断连。
+
+确认无 active_runs 后将本机服务更新至 0.13.0，服务 active、daemon running，Tijian enabled；原 prompt/User Skill/Git 设置保持不变。现在是上游源码 CLI 接入，不代表安装或验收完整 Desktop；远程提交/提交同步等 GUI-only 功能仍没有新增 CLI 入口。README、接口与 Tijian 文档已更新。私密 Runtime 配置、模型凭证、题库、.mcp.json、Rust 工具链与二进制均不进入源码提交。

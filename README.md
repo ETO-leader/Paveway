@@ -4,7 +4,7 @@
 
 Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化用户请求与定时检查，按顺序唤醒正确的会话，连接 Tijian 题库与训练数据，保存可查询的执行结果与恢复记录。
 
-当前版本 **0.12.2**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
+当前版本 **0.13.0**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
 ## 能做什么
 
@@ -202,7 +202,17 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
 
 Tijian 日计划不是 Runtime 唤醒队列。适配器调用 Tijian 自己的 JSON CLI/canonical application，不直接读写其 SQLite。
 
-安装 Tijian 后，修改 Runtime 配置中已有的 [tijian] 表；旧配置没有时再新增，避免重复 TOML 表：
+安装 Tijian 后，可先校验并自动启用接口（0.13.0）：
+
+```bash
+.venv/bin/oicoach-runtime tijian setup --executable /absolute/path/to/tijian \
+  --config "$PWD/.runtime/config.toml" --json
+.venv/bin/oicoach-runtime workflow connect-tijian test01 --config "$PWD/.runtime/config.toml"
+```
+
+setup 会检查真实 JSON CLI 协议、题库统计、计划与题单读取，成功后才原子保存配置；失败保留原配置。可加 `--read-only` 或 `--no-read-only`，省略时保留原值。连接后在无活动回合时重启 daemon，新建的 OMP 进程即可加载 Tijian 工具。
+
+也可以手动修改 Runtime 配置中已有的 [tijian] 表；旧配置没有时再新增，避免重复 TOML 表：
 
 ```toml
 [tijian]

@@ -41,7 +41,17 @@ MCP 工具名為 `tijian_<operation>`；CLI `tijian call` 可接受帶或不帶 
 .venv/bin/oicoach-runtime tijian tools --json
 ```
 
-在既有 Runtime TOML 加入以下設定；舊配置可省略整個表，預設停用：
+0.13.0 提供先验收后启用的配置命令：
+
+```bash
+.venv/bin/oicoach-runtime tijian setup --executable /absolute/path/to/tijian \
+  --config "$PWD/.runtime/config.toml" --json
+.venv/bin/oicoach-runtime workflow connect-tijian test01 --config "$PWD/.runtime/config.toml"
+```
+
+setup 检查可执行文件、JSON CLI help 及三项实际数据读取；只有全部成功，才启用并原子保存 Runtime 配置。其余机器配置按原值保留，配置文件仍为 0600；失败不保存，配置若在检查期间变化则报 conflict。可指定 `--read-only` / `--no-read-only`，省略时保留原设置。该命令可能触发 Tijian 正常的数据库初始化，但不会添加测试题或业务记录。配置保存不会中断活动请求；在空闲时重启 daemon 才会更新其 envelope，下一轮 OMP 启动时加载 workspace 的 MCP 设置。`.mcp.json` 包含本机路径，应放在本地忽略范围，不上传机器配置。
+
+在既有 Runtime TOML 也可手动加入以下設定；舊配置可省略整個表，預設停用：
 
 ```toml
 [tijian]
@@ -140,3 +150,24 @@ OICOACH_TEST_TIJIAN_OMP_CONFIG="$PWD/.runtime/config.toml" \
 省略最後一個 OMP 環境變數時跳過真實模型測試，其餘原碼測試不需要模型憑證。seeder 強制要求 harness mode；測試建立全新的 profile 並清理，不碰使用者題庫。建置工具只建立臨時 Rust project，記錄 provenance；沒有修改或安裝上游程式。若用自訂 cargo 安裝位置，額外傳 --cargo ABS_CARGO 並提供對應 CARGO_HOME/RUSTUP_HOME。
 
 上游非桌面測試：command/control/core 通過；usecase 首次平行執行有一項 `successful_upsert_returns_semantic_index_change` 失敗（ok=0，預期 1），未修改上游，該測試單獨重跑與整個 usecase 串行重跑均通過。不可將首次失敗刪去或宣稱預設平行全套無條件通過。仍未驗證完整 Desktop UI、運行中 Desktop 的 projection routing、需 Desktop 的向量重算、真實外部 OJ／模型供應商；網路受限和缺 Desktop 的路徑只驗證會報錯／逐項失敗，不冒充成功抓取。
+
+
+## 0.13.0 本机接通与持久构建
+
+本次从上游实际拉取并核对 HEAD 仍为 b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f。Linux 使用 `examples/build_tijian_source_cli.py` 构建未修改的上游 run_cli/cli_control 入口，连接真实 core/command/usecase/control，不是 Python 模拟题库；没有链接 Desktop UI，也不是上游正式发行包。正式 Desktop 执行器专属能力仍受前述限制。
+
+本机产物放在项目 `.runtime/tijian-build/debug/tijian-source-cli`，源码构建工程放在 `.runtime/tijian-cli-source`，不依赖会被清理的 `/tmp`。有 Rust/cargo 的环境可使用以下持久输出（SOURCE 是上述固定版本的 Tijian checkout，输出工程目录需尚未存在）：
+
+```bash
+CARGO_TARGET_DIR="$PWD/.runtime/tijian-build" \
+  .venv/bin/python examples/build_tijian_source_cli.py \
+  --source /absolute/Tijian --output "$PWD/.runtime/tijian-cli-source"
+.venv/bin/oicoach-runtime tijian setup \
+  --executable "$PWD/.runtime/tijian-build/debug/tijian-source-cli" \
+  --config "$PWD/.runtime/config.toml" --json
+.venv/bin/oicoach-runtime workflow connect-tijian test01 --config "$PWD/.runtime/config.toml"
+```
+
+新安装首次 setup 会先执行上游本地 search，以 canonical 路径初始化数据库/schema，再验证纯读取；这是因为上游 stats/plan/article 直接以只读方式打开，数据库不存在时会失败。不会执行 seeder，不添加问题、计划或训练记录。普通 doctor --with-data 仍只作读取验证，不自动初始化数据库。
+
+本机 test01 已启用 CLI 与 workspace MCP，重启空闲 daemon 后生效。真实正常 profile 的 MCP 返回 26 项工具，题库统计 total=0；已有题库需另行导入或选择正确的数据环境。源数据测试的 P1001/P1002 只存在于临时 harness profile，不属于用户题库。默认启用 OMP 内置工具时，MCP 可挂载为 xd:// 设备，不一定作为顶层 dumpTools 项显示；已核对实际系统上下文包含 Tijian，并使用官方 MCP SDK 成功查询正式空库。

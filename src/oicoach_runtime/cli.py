@@ -211,9 +211,13 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--offset", type=int, default=0)
     tijian = commands.add_parser("tijian", help="Tijian JSON CLI adapter and optional stdio MCP bridge")
     tijian_commands = tijian.add_subparsers(dest="operation", required=True)
-    for name in ("tools", "doctor", "call", "mcp-config", "mcp"):
+    for name in ("setup", "tools", "doctor", "call", "mcp-config", "mcp"):
         child = tijian_commands.add_parser(name)
         common(child)
+        if name == "setup":
+            child.add_argument("--executable", required=True)
+            child.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
+                               help="Preserve the existing setting when omitted")
         if name == "doctor":
             child.add_argument("--with-data", action="store_true", help="Also verify three read queries against local Tijian data")
         if name == "call":
@@ -491,6 +495,9 @@ def main(argv: list[str] | None = None) -> int:
             from .integrations.tijian import TijianClient, catalog, mcp_configuration
             if args.operation == "tools":
                 report = catalog()
+            elif args.operation == "setup":
+                from .integrations.tijian import configure
+                report = asyncio.run(configure(path, args.executable, args.read_only))
             elif args.operation == "mcp-config":
                 report = mcp_configuration(path)
             else:

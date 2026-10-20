@@ -6,10 +6,12 @@ import os
 import shutil
 import signal
 import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 
-from ..config import TijianConfig
-from ..errors import RuntimeContractError
+from ..config import TijianConfig, config_text, load_config
+from ..errors import ConflictError, RuntimeContractError
 from .tijian_catalog import OPERATIONS, UPSTREAM_REVISION, UPSTREAM_URL
 
 
@@ -28,6 +30,40 @@ def catalog():
 def mcp_configuration(config_path: Path):
     return {"mcpServers": {"tijian": {"command": sys.executable,
             "args": ["-m", "oicoach_runtime", "tijian", "mcp", "--config", str(config_path.absolute())]}}}
+
+
+async def configure(config_path: Path, executable: str, read_only=None):
+    """Verify the real executable and data reads before enabling the integration."""
+    path = config_path.absolute()
+    info = path.lstat()
+    if path.is_symlink() or not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ConflictError("Runtime config must be a private owned regular file")
+    original = path.read_bytes()
+    config = load_config(path)
+    resolved = shutil.which(executable)
+    if resolved is None:
+        raise TijianError("tijian_not_found", "Install Tijian and provide an executable path")
+    candidate = replace(config, tijian=replace(config.tijian, enabled=True,
+        executable=str(Path(resolved).absolute()),
+        read_only=config.tijian.read_only if read_only is None else read_only))
+    diagnostics = await TijianClient(candidate.tijian).diagnose(with_data=True, initialize=True)
+    if not diagnostics["ok"]:
+        return {"api_version": 1, "ok": False, "configured": False, "diagnostics": diagnostics}
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(config_text(candidate).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+            if path.is_symlink() or path.read_bytes() != original:
+                raise ConflictError("Runtime config changed during validation; reload before setup")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return {"api_version": 1, "ok": True, "configured": True, "executable": candidate.tijian.executable,
+            "read_only": candidate.tijian.read_only, "diagnostics": diagnostics,
+            "daemon_restart_required": True,
+            "next_step": "Connect the workflow with workflow connect-tijian, then restart an idle daemon"}
 
 
 class TijianClient:
@@ -139,7 +175,7 @@ class TijianClient:
         await asyncio.gather(*tasks, return_exceptions=True)
         await process.wait()
 
-    async def diagnose(self, with_data=False):
+    async def diagnose(self, with_data=False, *, initialize=False):
         checks = []
         try:
             help_result = await self.call("help", {})
@@ -149,6 +185,12 @@ class TijianClient:
             checks.append({"check": "tijian_json_cli", "status": "PASS" if compatible else "FAIL",
                            "detail": "JSON envelope and required command syntax " + ("recognized" if compatible else "incompatible")})
             if compatible and with_data:
+                if initialize:
+                    # Upstream search opens its canonical DB/schema without business mutation.
+                    # Pure read commands otherwise cannot open a fresh installation's DB.
+                    await self.call("search", {"query": "paveway-setup", "limit": 1})
+                    checks.append({"check": "data_initialization", "status": "PASS",
+                                   "detail": "Canonical database open completed through a local search"})
                 for name in ("problem_stats", "plan_show", "article_list"):
                     await self.call(name, {})
                     checks.append({"check": name, "status": "PASS", "detail": "Read query completed; contents omitted"})

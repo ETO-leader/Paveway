@@ -9,3 +9,4 @@ dist/
 .runtime-smoke/
 .runtime-tijian/
 *.service.env
+/.mcp.json

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from oicoach_runtime.config import Config, TijianConfig, config_text, load_config
 from oicoach_runtime.errors import ConfigError, RuntimeContractError
-from oicoach_runtime.integrations.tijian import TijianClient, TijianError, catalog, mcp_configuration
+from oicoach_runtime.integrations.tijian import TijianClient, TijianError, catalog, configure, mcp_configuration
 from oicoach_runtime.integrations.tijian_catalog import OPERATIONS
 
 HAS_MCP = importlib.util.find_spec("mcp") is not None
@@ -113,6 +113,42 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.fake.chmod(0o700)
         self.config = TijianConfig(enabled=True, executable=str(self.fake), timeout_seconds=3)
         self.client = TijianClient(self.config)
+
+    async def test_setup_verifies_reads_and_preserves_runtime_settings(self):
+        path = self.root / "runtime.toml"
+        path.touch(mode=0o600)
+        previous = Config(self.root / "state", self.root / "workflows", tijian=TijianConfig(read_only=True))
+        path.write_text(config_text(previous))
+        report = await configure(path, str(self.fake))
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["daemon_restart_required"])
+        current = load_config(path)
+        self.assertTrue(current.tijian.enabled)
+        self.assertTrue(current.tijian.read_only)
+        self.assertEqual(current.agent, previous.agent)
+        self.assertEqual(current.state_dir, previous.state_dir)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        trace = [json.loads(line) for line in (self.root / "trace.jsonl").read_text().splitlines()]
+        self.assertEqual(trace, [["help"], ["search", "paveway-setup", "--limit", "1"],
+                                 ["problem", "stats"], ["plan", "show"], ["article", "list"]])
+        result = subprocess.run([sys.executable, "-m", "oicoach_runtime", "tijian", "setup", "--executable", str(self.fake),
+                                 "--no-read-only", "--config", str(path), "--json"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(load_config(path).tijian.read_only)
+
+    async def test_setup_failure_leaves_disabled_config_unchanged(self):
+        path = self.root / "runtime.toml"
+        path.touch(mode=0o600)
+        path.write_text(config_text(Config(self.root / "state", self.root / "workflows")))
+        original = path.read_bytes()
+        with self.assertRaises(TijianError):
+            await configure(path, str(self.root / "missing"))
+        self.assertEqual(path.read_bytes(), original)
+        self.fake.write_text(self.fake.read_text().replace("problem get problem status", "unsupported"))
+        report = await configure(path, str(self.fake))
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["configured"])
+        self.assertEqual(path.read_bytes(), original)
 
     async def test_all_operations_reach_json_cli_with_exact_tokens(self):
         for name, args, expected in CASES:
