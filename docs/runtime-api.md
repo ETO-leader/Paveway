@@ -2,7 +2,7 @@
 
 ## M4 可用命令
 
-0.8.0 新增 `ui [--workflow ID] [--task ID] [--config PATH]` 终端交互入口，不接受 --json、不增加 daemon API 或改动数据库版本；所有业务操作仍经 CLI 子进程调用。启动与快捷键见 [终端 UI](terminal-ui.md)。
+`ui [--workflow ID] [--task ID] [--config PATH]` 在 0.9.0 改为对话记录＋常驻输入框、slash 命令与方向键选择。Enter 发送、Ctrl+J 换行，数字/q 不再是导航键。它不接受 --json，不增加 daemon API 或改动 DB 版本，业务仍经 CLI 子进程调用，见 [终端 UI](terminal-ui.md)。
 
 0.7.0 新增 `memory put/show/list/delete/recall` 与 `history search/show/messages`，均经 daemon 控制 socket，沿用 API v1。完整参数、scope/CAS/有效期、分页/截断及错误语义见 [记忆与历史接口](memory.md#ipc-契约)。数据库独立升至 v2，不改变请求 envelope。
 
@@ -67,7 +67,7 @@ ask --workflow ID --task ID (--message TEXT | --message-file PATH)
 events wait EVENT_ID [--timeout SECONDS]
 runs output RUN_ID
 service render|install [--working-directory ABS] [--name UNIT]
-service install [--replace]
+service install [--replace] [--capture-env NAME ...]
 service status|logs|start|stop|restart|enable|disable|uninstall [--name UNIT]
 ```
 
@@ -96,3 +96,13 @@ Unix domain socket，控制資料夾 0700、socket 0600，透過 SO_PEERCRED 檢
 回應保留 `api_version/id`，成功使用 `result`，失敗使用 `error.code/message`。拒絕未知版本、未知欄位及不符參數。無法解析的 frame 可能回 `id:null`。ID 使用 ASCII `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`。
 
 IPC command 為 `status/schedule/events.list/events.show/events.cancel/events.reschedule/runs.list/runs.show/runs.output/recover.list/recover.retry/agent.restart/agent.show`；arguments 使用 snake_case。agent.restart 接受 task_id、可選 workflow_id/reason/reset_circuit；agent.show 接受 restart_id。ask/wait 是 CLI 的組合操作，不新增另一個 mutation path。CLI 保留 server 的 conflict 等結構化錯誤碼，不把業務錯誤重新包成 daemon_unavailable。
+
+模型回合失敗會在既有 event.last_error_code/last_error_message 與 run.error_code/error_message 保存安全分類摘要（例如 agent_auth_failed／HTTP 401），不儲存供應商原始請求、金鑰或錯誤回應。認證、權限、模型不存在、限流、超時、5xx 及中止有各自分類，其他保留 agent_turn_failed。原有 schema/API 版本不變，仍不自動重播已派送請求。
+
+0.10.0 新增本地公开 CLI `workflow customize show/prompt/skill-put/skill-enable/skill-disable/skill-delete ID`，写入要求当前 `--expected-revision`，正文用 `--content-file`，由 UI `/prompt`、`/skills` 调用。不增加 daemon IPC 命令或更改数据库版本；详见 [自定义接口与生效规则](customization.md)。
+
+0.11.0 新增 `sync setup/remote/status/now/run/pause/resume/conflicts/resolve/bind/history/show/messages`，管理独立用户数据仓库。仅 `sync now` 使用新增 daemon IPC `sync.request`（无参数，返回 requested/previous_completion），唤醒独立后台同步器；其他命令读写本地专用同步数据。无需更改现有 config/DB schema；完整参数和分支/冲突语义见 [Git 同步](git-sync.md)。
+
+0.11.1 的 daemon 默认初始化一个 Runtime 共用的本地数据 Git 仓库；缺少 remote 时不会联网。`sync remote --remote URL` 设置远端，`--remote ''` 移除远端，均保留设备身份、提交、分支、间隔与 enabled 状态。已有设置不会被自动初始化覆盖。
+
+0.12.0 的 `workflow customize skill-put ID --category oi-introduce|user-information|personal-skill` 指定用户 Skill 分类；可省略，新建默认 personal-skill，编辑保留原分类。旧记录无 category 字段仍有效。分类通过既有 CAS 保存与 Git 同步，下次派发时所有启用类别的正文同时加入系统上下文。

@@ -8,3 +8,4 @@ dist/
 .runtime/
 .runtime-smoke/
 .runtime-tijian/
+*.service.env

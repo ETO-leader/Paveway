@@ -1,4 +1,4 @@
-# Linux systemd user 部署（M4，0.6.0）
+# Linux systemd user 部署（M4，0.9.0）
 
 需要可用的 user manager、systemctl、systemd-analyze 和 journalctl。先安裝套件、init、workflow create，再執行 doctor／verify-omp。venv、配置、workspace 和 state 放在可持久使用的絕對路徑。
 
@@ -18,6 +18,15 @@ install 在 temporary unit 上執行 `systemd-analyze --user verify`，成功才
 生成內容包括絕對 venv Python ExecStart、WorkingDirectory、PATH 快照、PYTHONUNBUFFERED=1、UMask=0077、Restart=on-failure/RestartSec=3、Unit 區段的 StartLimitIntervalSec=60/StartLimitBurst=5、TimeoutStopSec=60、KillMode=control-group、journal 輸出。保留 venv symlink，不 resolve 成系統 Python。`packaging/systemd/oicoach-runtime.service` 是含佔位符的示例；正式使用生成器。
 
 PATH 是安裝時快照；工具位置改變後更新 unit 再手動 restart。API key 不會複製進 unit，使用 OMP 已有認證或使用者管理的服務環境；新終端 env 不自動進入已啟動的 manager。沒有設定可能破壞 Agent/MCP 的私有 /tmp 或目錄隔離；工具權限由 OMP／使用者管理。
+
+若 OMP 使用終端環境中的模型憑證，必須明確保存給服務使用：
+
+```bash
+oicoach-runtime service install --replace --capture-env OPENAI_API_KEY --config /absolute/config.toml
+oicoach-runtime service restart --config /absolute/config.toml
+```
+
+`--capture-env NAME` 可重複，僅接受當前 shell 中存在的變量名；值不經 argv，也不寫入 unit 或回傳 JSON。以原子替換建立配置旁 `config.service.env`、權限 0600，生成的 EnvironmentFile 在重啟／下次登入時讀取，不依賴臨時 manager import。已保存變量合併保留，普通 install 不覆寫，更新憑證後需重新捕獲並 restart。拒絕 symlink、不私密或非本工具管理的既有檔案，以及含控制字元的值；請勿提交或分享此檔案。uninstall 保留環境檔，刪除憑證需另行移除。未指定捕獲時不自動複製任何憑證，也不修改 OMP 全域認證。服務使用相同 config 時共用其環境檔。
 
 ```bash
 oicoach-runtime service stop --config /absolute/config.toml

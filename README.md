@@ -4,7 +4,7 @@
 
 Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化用户请求与定时检查，按顺序唤醒正确的会话，连接 Tijian 题库与训练数据，保存可查询的执行结果与恢复记录。
 
-当前版本 **0.8.0**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索和终端交互 UI 已实现。
+当前版本 **0.12.2**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
 ## 能做什么
 
@@ -25,9 +25,10 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化�
 ## 环境要求
 
 - Linux，支持 pidfd、parent-death signal 和 child subreaper。本机验证环境为 Ubuntu 24.04、Python 3.12.3、systemd 255。
-- Python **3.11+**、venv、pip。核心与 Tijian CLI 适配只用标准库，MCP bridge 额外安装 `.[tijian]`。
+- Python **3.11+**、venv、pip。调度核心与 Tijian CLI 适配只用标准库；终端 UI 使用随包安装的 prompt_toolkit，MCP bridge 额外安装 `.[tijian]`。
 - 可执行且已完成模型认证的 **OMP**，本机验证版本 **18.10.4**。安装与模型配置见 [OMP 项目](https://github.com/can1357/oh-my-pi)；先确认 OMP 自身能调用模型。
 - 后台部署需要 `systemctl --user`、`systemd-analyze`、`journalctl`；前景 serve 不需要 systemd。
+- 用户数据 Git 保存/同步需要可执行的 Git；daemon 默认创建本地 Git 归档；Git 不可用时会报告同步错误，不影响 Runtime/模型工作。
 - Tijian 可选，需要提供 JSON CLI 的可执行文件。本轮核对的上游 commit 为 `b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f`。
 
 没有 Tijian 也可使用基于用户输入的 coach。Paveway 不自动登录模型/OJ，不修改 OMP 全局 profile、认证或已有聊天。
@@ -94,13 +95,43 @@ mode 指导外部 coach，不改变 Runtime 调度语义。任务 ID 由你决�
 .venv/bin/oicoach-runtime ui --config "$PWD/.runtime/config.toml"
 ```
 
-不需要安装额外 UI 包，使用 Python 标准库 curses。需要交互终端、有效 TERM 和 UTF-8 locale；至少 60 列 × 12 行，建议 100 × 30。管道/脚本使用原有 CLI，ui 不接受 --json。
+0.9.0 按本机 OMP 18.10.4 的交互安排重做：上方保留对话记录，底部始终有输入框，直接打字，**Enter 发送、Ctrl+J / Alt+Enter 换行**。`q`、数字等均为普通输入，不再用于全局切页或退出。
 
-`1–8` / Tab 切换概览、对话、事件、记忆、历史、Workflow、服务、恢复。按 `?` 查看帮助，`r` 刷新，`s` 切换 workflow/task。对话页按 Enter 输入中文或多行内容，Ctrl+D 提交，Esc 取消；`m` 切换安排/反馈/复盘。等待期间界面可操作，完成后显示最终回复；当前没有 token/工具执行的实时流。
+输入 `/` 查看命令，Tab 补全，方向键选择，Enter 确认，Esc 返回。例如 `/workflow` 选环境，`/task training` 接续任务，`/new` 新任务，`/mode review` 切复盘，`/events` 查队列，`/memory` 管笔记，`/history` 查历史，`/service` 管服务，`/help` 看完整说明。选单和表单在输入区中展开，后台回覆仍能更新；保存失败时笔记草稿保留。保存确认期间输入的下一条命令会排队并显示状态，确认后执行，避免连续操作时被清空。
 
-记忆页支持新建/读取/编辑/删除，`w` 切共享与当前 task，保存使用现版本防止覆盖。事件页可安排和取消未派发事件；历史页可搜索输入/回复和查询会话原文。服务页可安装、启动、停止和读日志，均需明确按键，不会自动启用登录启动或 linger。恢复页只查看，不自动重播 uncertain。
+需要交互终端、有效 TERM 和 UTF-8 locale，建议 80×24 或更大；编辑器负责中文折行、多行贴上、滚动和缩放。prompt_toolkit 由 pip 自动安装，测试的屏幕解析器 pyte 属于 `.[test]` 可选依赖。当前显示保存的最终回复，没有 token/tool 实时流。
 
-UI 的所有数据操作由独立 CLI 子进程执行，使用相同配置和 daemon，界面不直接修改数据库。输入正文通过 0600 临时文件传递，正常操作后清理；终端输出过滤控制序列。提交未确认时按 `v` 用原去重标识核对，避免换标识重复提交。`q` / Ctrl+C 关闭界面，不停止独立 daemon、不取消已入库的请求；再次打开可刷新历史找回结果。完整快捷键、首次部署、分页及限制见 [终端 UI 说明](docs/terminal-ui.md)。
+所有数据操作仍调用独立 CLI 子进程，UI 不直接写数据库，也不自动启动/停止 daemon。正文用私密临时文件传递；提交未确认时 `/retry-send` 用原标识幂等核对。Ctrl+C 清空草稿；空输入连续两次 Ctrl+C、空输入 Ctrl+D 或 `/quit` 退出，不取消已入库事件。完整操作见 [终端 UI 说明](docs/terminal-ui.md)。
+
+在 UI 中自定义系统提示词和三类用户 Skill（0.12.0）：
+
+```text
+/prompt           查看 / 编辑 / 恢复默认系统提示词
+/prompt edit      选择 append（追加）或 replace（替换），输入正文后保存
+/skills           选择 OI Introduce / user information / personal skill
+/skills add       选择分类，再输入名称、用途描述、Markdown 正文
+/skills category training-review  移动已有 Skill 的分类
+```
+
+长任务等待期间显示耗时；重新进入 UI 会接着追踪运行中的请求，完成后自动显示最终回复。空闲时每 15 秒核对当前 task 最近 5 个 run，补上其他窗口或后台完成的结果。此为状态轮询，暂不显示逐 token/工具实时流。
+
+Enter 下一项/保存，Ctrl+J 换行；改动保存在当前 workflow，其他 workflow 不受影响。下次派发请求时由 OMP 原生系统提示词/Skill 加载器读取，不需要重启 daemon，现有 task 也可继续。旧历史和已开始的回合不变；保存冲突会保留草稿。三类已启用 Skill 的正文每轮同时加入系统上下文；旧 Skill 默认归入 personal skill。Skill 禁用时不加载；停用工具不影响正文加载。完整范围、生效规则、上限与 CLI 见 [自定义说明](docs/customization.md)。从旧版升级时需先在空闲状态重启 daemon 一次，让它加载新版程序。
+
+多设备 Git 保存与自动同步（0.11.1）：
+
+```text
+/sync remote      手动设置 remote；清空后仅本地保存
+/sync setup       高级设置：现有数据目录、分支和同步间隔
+/sync now         请求后台立即同步，完成后显示结果
+/sync status      查看最近结果
+/sync conflicts   选择并发修改版本 / 查看新设备待绑定配置
+/sync history     查询所有设备已拉取的历史
+/sync pause       暂停自动同步
+```
+
+保存自定义 prompt、User Skill，以及已结束对话的输入/回复和过滤后的原生文字历史。daemon 首次启动自动在 `state_dir/user-data-git` 建立独立仓库，同一 Runtime 的所有 workflow/task 和教练对话共用它，不必先设置 remote。默认每 60 秒本地 commit，有明确配置的 remote 才自动 pull/push；UI 退出后继续运行。另一设备使用自己的数据目录与认证，配置同一 remote；已有同 ID 的未修改 workflow 自动应用，新 ID 用 `/sync bind ID` 指定本机 workspace。
+
+机器配置/凭证、活跃 SQLite、执行队列和 OMP 可执行会话不导入其他设备；并发配置编辑保留两边版本，不强推覆盖。remote 留空时仅本地 Git 保存，不复用源码 origin。完整范围、离线/冲突行为、CLI 与限制见 [多设备 Git 同步](docs/git-sync.md)。
 
 ## systemd 后台服务
 
@@ -120,7 +151,7 @@ UI 的所有数据操作由独立 CLI 子进程执行，使用相同配置和 da
 
 默认 unit 为 `oicoach-runtime.service`，安装到 `$XDG_CONFIG_HOME/systemd/user`，未设置时为 `~/.config/systemd/user`。自定义 XDG 目录需与 user manager 的搜索环境一致。各 service 命令可用 `--name training-runtime.service` 选择自定义名称；同一 state/socket 仍只允许一个 daemon。
 
-unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMask=0077、Restart=on-failure、启动频率限制、60 秒停止预算及 KillMode=control-group。不会把 API key 等环境变量复制进 unit；使用 OMP 已有认证或自行管理服务环境。服务不会自动继承之后打开的终端变量。[systemd 执行环境文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)。
+unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMask=0077、Restart=on-failure、启动频率限制、60 秒停止预算及 KillMode=control-group。服务不会自动继承终端的 API key；可用下面的显式命令，把指定变量保存到配置旁的私密 `config.service.env`（0600），供下次登入/重启读取。金钥不进入 unit、命令行或日志；默认安装不复制凭证。[systemd 执行环境文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)。
 
 ```bash
 .venv/bin/oicoach-runtime service stop --config "$PWD/.runtime/config.toml"
@@ -129,6 +160,15 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
 .venv/bin/oicoach-runtime service disable --now --config "$PWD/.runtime/config.toml"
 .venv/bin/oicoach-runtime service uninstall --config "$PWD/.runtime/config.toml"
 ```
+
+如果 OMP 依赖当前终端的 `OPENAI_API_KEY`，确认该变量已正确设置后执行；参数只传变量名，不传金钥：
+
+```bash
+.venv/bin/oicoach-runtime service install --replace --capture-env OPENAI_API_KEY --config "$PWD/.runtime/config.toml"
+.venv/bin/oicoach-runtime service restart --config "$PWD/.runtime/config.toml"
+```
+
+其他实际需要的模型变量可重复 `--capture-env NAME`。变量缺失会明确报错，重新捕获会更新指定变量并保留其他已捕获值；普通重新安装不会清空凭证。更换金钥后重新执行以上命令。卸载服务保留此私密文件，彻底移除凭证时自行删除；不要提交或分享 `*.service.env`。服务重启前应等待活动回合结束。
 
 - disable 不带 --now 只取消自动启用，不停止当前服务。
 - uninstall 先 disable/stop，再删除属于当前配置的 unit，**保留 DB、workflow 和会话**；拒绝操作其他程序或其他配置的同名 unit。
@@ -382,7 +422,7 @@ SQLite 使用 WAL，不能只复制主 DB 而遗漏 WAL；使用 SQLite backup A
 没有模型凭证也可跑单元/fixture/MCP SDK 主流程，真实模型/systemd/Tijian 源码测试为 opt-in：
 
 ```bash
-.venv/bin/python -m pip install '.[tijian]'
+.venv/bin/python -m pip install '.[tijian,test]'
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests -v
 
@@ -409,6 +449,18 @@ systemd 测试创建独立 UUID unit，执行启停/启用/禁用、SIGKILL 和�
 
 0.8.0 的无 opt-in 主回归 **138 项：125 通过、13 跳过，无失败（127.383 秒）**。随后新增真实 UI 模型验收并单独通过 **1 项（15.748 秒）**；补强 UTF-8 locale 边界后重跑 UI 专项 **11 项全部通过（5.662 秒）**，含实际 PTY 中文输入、缩放、终端恢复和退出后任务继续。未把 0.7.0 的全部实机结果称为本次重跑；测试命令与时间点见运行报告。
 
+0.9.0 重做对话式 UI 后，最终安装包主回归 **147 项：133 通过、14 跳过，无失败（119.460 秒）**，其中 UI 专项 18 项通过，覆盖实际终端连续增改笔记、排程、取消及保存确认竞态。另跑真实 UI → CLI → daemon → OMP 模型验收 **1 项通过（11.367 秒）**。本轮未重跑上述全部 Tijian/systemd 实机 opt-in，详见运行报告。
+
+2026-10-20 后续修正 systemd 凭证持久载入及失败原因显示，最终主回归 **152 项：138 通过、14 跳过，无失败（140.787 秒）**，另两项真实 systemd 验收通过。当前后台服务已实际通过模型请求并保存 `CONNECTION_OK`；对话和历史可显示 HTTP 401 等安全原因，详见运行报告。
+
+0.10.0 新增 UI 自定义系统提示词与用户 Skill 后，最终主回归 **162 项：146 通过、16 跳过、无失败（152.133 秒）**，含 UI 21 项。另两项真实 OMP 自定义验收通过（65.902 秒），确认系统提示词进入真正的 system 层、模型读取 Skill 正文，以及同会话下一轮替换生效。具体边界见运行报告。
+
+0.11.0 新增独立 Git 多设备配置/历史同步后，最终安装包主回归 **174 项：158 通过、16 跳过、无失败（178.887 秒）**。含两个 daemon 自动同步、实际 bare remote 往返/并发冲突、离线提交与队列隔离，以及 UI 22 项中的真实终端配置/后台 push/历史查询/暂停。本机已实际运行本地 Git 保存；互联网 remote 尚未指定，完整范围见运行报告。
+
+0.11.1 默认本地 Git 与 UI remote 配置补充后，完整回归 **178 项：162 通过、16 跳过、无失败（195.150 秒）**，覆盖未配置远端的自动归档、多教练共用仓库、remote 移除保留数据和实际终端操作。本机服务已升级并核对归档成功，仍为纯本地模式。
+
+0.12.0 三类 Skill 同时加载后，完整回归 **180 项：164 通过、16 跳过、无失败（214.227 秒）**。实际 OMP 原生加载另验收通过，确认 append/replace 都包含三类完整正文；本机服务已升级。
+
 只想试队列且不调用真实模型，可从 checkout 生成 fake demo，目的配置须不存在：
 
 ```bash
@@ -430,7 +482,7 @@ systemd 测试创建独立 UUID unit，执行启停/启用/禁用、SIGKILL 和�
 | 服务启动失败/锁冲突 | 停止同 state/socket 的前景进程，查 service status/logs，不删锁 |
 | systemctl --user 不可用 | 先前景 serve，配置好主机 user manager 后再部署 |
 | 启动频率超限 | 修复问题后 systemctl --user reset-failed oicoach-runtime.service，再 service start |
-| 有 OMP 但模型失败 | 先完成 OMP 自身模型/认证配置，再 verify-omp --with-model |
+| 有 OMP 但模型失败 | 对话/历史显示错误码与处理提示；HTTP 401 检查 OMP 认证和服务的 `--capture-env`，更新后重启 |
 | ask 等待超时 | 查事件；它仍可能执行，不要无去重键盲目重发 |
 | 回复 unavailable | 查 run/Agent 版本；旧 run 或 local-only 没有本轮回复 |
 | workflow 改后 blocked | 恢复原 workspace/version，或新版本使用新 task |

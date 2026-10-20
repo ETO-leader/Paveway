@@ -172,3 +172,91 @@ workflow manifest 可選 memory_enabled，舊設定省略為 false，新 coach �
 安裝包無 opt-in 主回歸 **138 項，127.383 秒：125 通過、13 跳過，無失敗**；之後新增真實模型 UI 用例定向 **1 項、15.748 秒通過**，再補強 UTF-8 locale 邊界後重跑 UI 專項 **11 項、5.662 秒通過**。實際 PTY 測到中文輸入、縮放、q 退出、termios 恢復及退出後 daemon 完成原事件；真實模型另驗 UI controller 到 CLI/daemon/OMP/最終回覆與畫面資料。時間點與輸出檔見 [運行報告](runtime-testing.md)。
 
 README 與 [終端 UI 說明](terminal-ui.md) 補齊啟動、首次部署、按鍵、分頁、生命週期與限制。目前顯示最終回覆，沒有 token/tool 即時串流；UI 不自動開啟 systemd/linger，不接管或替換 OMP 自身的 TUI。
+
+## 2026-10-19（Asia/Singapore）— 0.9.0 對話式 UI 重做
+
+依使用者反饋重現操作不執行／混亂問題，實際啟動本機 OMP 18.10.4 觀察其終端安排，改用 prompt_toolkit 常駐底部輸入框、上方對話、slash 補全及方向鍵選擇器。Enter 發送或執行選中命令，Tab 只補全，Ctrl+J/Alt+Enter 換行，數字/q 均為普通文字；移除數字切頁和 Ctrl+D 提交表單。`ui_client.py` 保留公開 CLI 子進程傳輸，UI 不直接讀寫 DB。版本升至 0.9.0，API/config/workflow/DB 版本不變。
+
+真實 PTY 連續新增/修改筆記、排程及取消測出保存確認會清除後續命令，以及最後一欄正文與下一命令拼接的競態。現在提交即清空輸入，保存確認只還原未被修改的原草稿；忙碌時一條 slash 命令可排隊，狀態可見、可取消，確認後執行並檢查原 scope/generation。修正預填編輯器光標回到開頭、表單回上一項後丟失已填值；保存失敗保留答案。背景回覆可在編輯表單時收取，時間順序顯示，不覆蓋新草稿。
+
+UI 專項 18 項通過（11.917 秒）；真實模型定向驗收 1 項通過（11.367 秒），涵蓋 UI controller → CLI → daemon → OMP → 最終回覆與畫面資料。實際 PTY 另驗中文、多行貼上、slash Enter 一次執行、方向鍵選環境、縮放、termios 恢復和退出後任務繼續；pyte 僅為測試依賴，CI 同步安裝。最終完整回歸見 [運行報告](runtime-testing.md)。README 和終端操作文件已重寫，沒有啟用預設服務或修改 linger。目前仍顯示最終回覆，沒有 token/tool 即時流。
+
+最終安裝包無 opt-in 主回歸 **147 項，119.460 秒：133 通過、14 跳過，無失敗**（`/tmp/paveway-ui09-final-regression.log`），包含最終 UI 的 18 項。skip 為需要指定模型、systemd 或 Tijian 真實環境的 opt-in；其中 UI 真實模型另行通過。 文件連結、shell/TOML 示例、pip check 和 git diff --check 通過。
+
+## 2026-10-20（Asia/Singapore）— systemd 憑證與模型錯誤顯示
+
+使用者回報 test01/training 的 `test` 失敗，查明 OMP 回傳 HTTP 401，user service 沒有繼承終端 OPENAI_API_KEY；原有 Runtime 把 prompt_result.error 丟棄，UI 只能顯示無最終回覆。新增 `service install --capture-env NAME`（可重複），明確捕獲選定變量至配置旁 0600 的受管理環境檔，unit 僅載入路徑，不含秘密；普通安裝保留既有檔案，捕獲合併／更新，缺失變量、非法內容或不安全檔案拒絕修改。加入 gitignore，無全域 manager 環境或 OMP 認證變更。實測 systemd EnvironmentFile 是原樣路徑而非 ExecStart 引號參數，已用含空格/引號/百分號/美元符的真實 unit 和值驗證。
+
+OMP 適配器按已安裝 18.10.4 的 prompt_result.error/httpStatus 分類失敗，只持久化受控摘要，不將任意供應商回應或請求寫入 DB／journal。使用既有 event/run 錯誤欄位，無 DB/API 版本變動；對話、歷史恢復／詳情、事件清單顯示原因與操作提示。401、403、404、408/timeout、429、5xx 和中止有區分，未知保留通用失敗。仍等待 settled 並正常回收，不自動重播。
+
+已更新實際 enabled user service 並重啟，核對 daemon 的憑證與 shell 完全相同（只輸出比對結果）。同一 systemd daemon 新測試任務成功保存 `CONNECTION_OK`（event e675777f-4186-4e2f-94dc-54b35b646c31，attempt 1），前一失敗連線檢查保存安全 401 摘要；經真實 CLI 讀回 history 到 UI controller，確認錯誤和成功回覆都可見。原 test 失敗記錄未修改、未重播。最終測試結果見 [運行報告](runtime-testing.md)。
+
+最終主回歸 **152 項、140.787 秒：138 通過、14 跳過、無失敗**；另真實 systemd 定向 **2 項、16.530 秒通過**。UI 19 項、公開接口與文件檢查通過；已部署服務 enabled/active，實際模型 CONNECTION_OK。詳細命令與驗收邊界見運行報告。
+
+## 2026-10-20（Asia/Singapore）— 0.10.0 UI 自定义系统提示词与用户 Skill
+
+新增 `/prompt`（查看、编辑 append/replace、确认恢复默认）及 `/skills`（方向键管理、新增、查看、编辑、启停、确认删除）。使用现有底部多行输入区及公开 CLI 子进程，保存冲突保留草稿。新增 `workflow customize`，以当前 revision 和文件锁做 CAS、0600 原子保存，按 workflow 隔离；缺省不改变原有行为，不修改 OMP 全局配置、coach 模板或 manifest 版本。
+
+`customization.py` 在派发时加载设置，OMP 启动前生成当前 run 的不可变私密快照，使用原生 --append-system-prompt/--system-prompt 及 --config 的 skills.customDirectories 加载。系统提示不混入普通事件 payload，Skill 生成原生 SKILL.md 由模型按描述发现/按需读取；`skills_enabled=false` 不加载，`tools_enabled=false` 时原生 OMP 不提供 Skill 读取目录，UI 提示限制。用户设置版本不改变既有会话绑定，下一轮可继续同一 task；旧历史及快照不抹除，已开始回合不受编辑影响。
+
+真实 PTY 已完成多行提示词编辑、Skill 新增/编辑及预填追加、派发并核对快照、停用、恢复默认、确认删除。另验证并发保存的 conflict 保留草稿、其他 workflow 隔离及同 task 下一轮配置更新。真实 OMP 验收通过 append/replace 系统提示及原生 Skill 元数据；真实模型实际读 Skill 正文，回覆两个分别只存在于系统提示/Skill 正文的随机识别码，再用更新系统提示恢复同一 session，回覆新识别码。定向原生验收 **2 项、65.902 秒通过**（`/tmp/paveway-custom-real-acceptance.log`），未将指令文件冒充普通用户消息。最终完整回归见 [运行报告](runtime-testing.md)。README、新增 [自定义说明](customization.md) 和接口/架构/UI 文档已同步。
+
+最终安装包主回归 **162 项、152.133 秒：146 通过、16 跳过、无失败**（`/tmp/paveway-custom-regression.log`），其中 UI 21 项；skip 为模型、Tijian 或 systemd 的 opt-in，原生自定义两项另行实际通过。 文件链接、shell/TOML 示例、pip check 和 git diff --check 通过。
+
+本机已安装 0.10.0，在确认无活动回合后重启默认 user service，核对 enabled/active；test01 的自定义设置仍为默认 revision 0，未替用户填入示例提示词或 Skill，原模型凭证保持不变。使用中的旧 UI 需要关闭重开以加载新命令。
+
+## 2026-10-20（Asia/Singapore）— 0.11.0 Git 用户配置与历史同步
+
+实现独立 `git_sync.py`、`sync` CLI 和 `/sync` 方向键菜单/设置向导。使用专用用户数据 Git 仓库，原生 git init/fetch/merge/commit/push；不复用源码 origin，不强推。运行中的 daemon 热加载私密同步设置，在独立后台线程周期运行；UI 可立即请求并轮询结果，退出 UI 后仍运行。Git/网络错误只记同步状态，不进入 Agent 熔断或阻塞训练。
+
+按 workflow 同步 UI prompt/User Skill；内容寻址版本图记录父版本，单 head 自动按 CAS 导入，多 head 保留本机和远端版本并要求明确选择，不做覆盖式合并。新设备缺少 workflow 时待绑定本机 workspace，使用本地模板与权限，不复制他机路径。按 device_id 归档终态 run 输入/最终回复/安全错误及经验证的 user/assistant 文字原文；过滤 thinking、工具调用与 toolResult，保留 all_branches 身份。活动队列、SQLite、凭证/服务环境文件、原生可执行会话和 L2 笔记不导入其他设备。原文活动检查同时考虑导出事务后新开始的回合，变化/不完整档案保留前次导出。
+
+双设备实际 bare remote 专项最初 8 项通过（17.419 秒），补强读取校验后 9 项通过（21.098 秒）。两 daemon 自动同步/失败不阻塞模型专项 2 项、12.326 秒通过。UI 22 项、27.151 秒通过，含实际 PTY 填写 remote、后台 push、查询同步历史与暂停。主回归首轮 173 项、175.003 秒：157 通过、16 跳过；最终安装包补强后结果见 [运行报告](runtime-testing.md)。测试未依赖互联网 Git 服务，不声称已验证未指定的 SSH/HTTPS remote。
+
+本机已创建私密独立 Git 仓库并启用本地自动保存；daemon 在空闲时升级至 0.11.0，保持 enabled/active。后台实际归档 4 个终态 run、2 份原生文字会话，生成 2 个 Git 提交；未追踪 SQLite、机器 config、凭证文件，并核对当前模型 key 未出现在导出 JSON 中。未收到用户的数据 remote，因此保持 remote 空，不联网推送、不借用代码仓库 origin。README、[Git 同步说明](git-sync.md)、接口、架构和 UI 操作文件已更新。
+
+最终安装包完整回归 **174 项、178.887 秒：158 通过、16 跳过、无失败**（`/tmp/paveway-sync-final-regression.log`）。包括同步专项 9 项、两 daemon 自动同步/故障隔离、UI 22 项和所有既有无 opt-in 流程；需要真实模型/Tijian/systemd 环境的 opt-in 仍明确跳过，本轮未冒充重新执行全部旧版实机验收。 文档链接、shell/TOML 示例、pip check 和 git diff --check 通过。
+
+
+## 2026-10-20（Asia/Singapore）— 0.11.1 默认本地 Git 与 UI remote 入口
+
+按用户补充要求，daemon 初次启动自动建立 `state_dir/user-data-git`，同一 Runtime 内所有教练、workflow/task 共用一个独立仓库；无需先填写 remote。无 remote 时只产生本地提交，不 fetch/push，也不采用源码仓库 origin。已有配置、设备身份、提交与暂停开关不被初始化覆盖，初始化失败独立记录并退避。
+
+新增 `/sync remote` 单字段 UI 表单和 `sync remote --remote URL` CLI。可添加、修改或清空远端；清空后保留本地历史继续归档。修改 remote 保留仓库、分支、设备身份、间隔和暂停状态。`/sync` 菜单显示仅本地/远端模式，并明确所有教练对话共用仓库。README、同步说明、UI、接口、架构和运维文档同步更新。
+
+新增实际本地 Git 默认初始化、多个 workflow 共用归档、无网络操作、初始化幂等、远端修改/移除保留身份/提交/暂停，以及无 daemon 配置入口测试；扩展真实 PTY 测试，验证清空 remote 后没有 origin 且保留暂停状态。故障隔离测试在 daemon 启动前配置无效 remote，避免把首次初始化持锁的时序混入网络失败注入。
+
+
+完整安装包回归 **178 项、195.150 秒：162 通过、16 跳过、无失败**（`/tmp/paveway-default-git-regression.log`），命令 `.venv/bin/python -m unittest discover -s tests -v`。跳过项仍为真实模型/Tijian/systemd 的 opt-in；本次双设备远端以实际本地 bare Git 仓库验证，未连接未配置的互联网远端。依赖检查、编译、文档本地链接和 `git diff --check` 通过。
+
+本机已安装 0.11.1，并在确认 active_runs 为空后重启 user service。服务 enabled/active，daemon running；核对原同步设置、设备身份与仓库路径完全一致，remote 仍为空且 Git 没有 origin。重启后自动归档成功，保留现有 4 条终态 run，未上传远端。旧 UI 需关闭重开以加载 `/sync remote`。
+
+
+## 2026-10-20（Asia/Singapore）— 0.12.0 三类 Skill 同时加载
+
+用户 Skill 分为 OI Introduce（oi-introduce）、user information（user-information）、personal skill（personal-skill）。`/skills` 按分类管理，新增时选择分类；`/skills category NAME` 或菜单“移动分类”调整已有项目，保留正文与启停状态。CLI skill-put 增加可选 --category；省略时新建默认 personal-skill、编辑保留原分类。旧记录缺字段时兼容解释，不改写内容寻址记录或已有历史。
+
+每轮不可变快照将三类已启用 Skill 正文同时加入真实系统上下文，按三类及名称稳定排序；append/replace 均加载，停用项与全局禁用除外，工具关闭不影响正文。原生 SKILL.md 与目录发现保留。分类经既有 CAS 原子保存与 Git 配置同步，不改 DB/schema，不填入未经用户提供的个人资料。
+
+定向单元/Git/终端测试 **41 项、62.682 秒通过**（`/tmp/paveway-skills-targeted.log`）。实际安装的 OMP RPC get_state.systemPrompt 验收 **1 项、3.833 秒通过**（`/tmp/paveway-skills-native.log`），验证 append/replace 中三类完整正文同时存在；该原生验收没有调用模型。完整回归另验证扩展 PTY 中分类移动与快照不变。
+
+
+完整安装包回归 **180 项、214.227 秒：164 通过、16 跳过、无失败**（`/tmp/paveway-skills-regression.log`），命令 `.venv/bin/python -m unittest discover -s tests -v`。包括扩展真实 PTY 分类选择/移动、正文同时入系统快照、移动后旧快照不变，以及既有 Git、记忆、故障恢复测试。16 项为模型/Tijian/systemd opt-in，实际 OMP 三类原生加载验收另行通过，未将其冒充模型调用。依赖、编译、文档链接与 git diff --check 通过。
+
+本机已安装 0.12.0，在确认没有活动回合后重启 user service，核对 enabled/active、daemon running。原有自定义配置和 Git 设置保持一致，remote 仍为空；没有填入示例个人资料或替用户创建 Skill 正文。重开 UI 后 `/skills` 即显示三个分类，保存的启用内容从下次派发开始同时加载。
+
+
+## 2026-10-20（Asia/Singapore）— 0.12.1 Skill 用途描述上限
+
+按用户要求，将 Skill 用途描述的后端 UTF-8 字节上限与 UI 表单上限由 1024 调至 65536（64 KiB），并在表单标签及自定义文档中标明。独立临时配置验证 65536 字节中文描述可保存，65537 字节拒绝且不覆盖原内容；实际 OMP RPC get_state 确认完整描述与正文进入系统上下文，无模型调用。
+
+现有自定义与 UI 回归 **29 项、36.499 秒全部通过**（`/tmp/paveway-skill-limit-tests.log`）；pip check、git diff --check 通过。已安装 0.12.1，在确认无活动回合后重启本机 user service，daemon running/服务 active，Git 设置保持原样。旧 UI 需重开以采用新的输入上限。
+
+
+## 2026-10-20（Asia/Singapore）— 0.12.2 UI 恢复运行中请求与自动核对
+
+调查用户的 QOJ 查询：事件 ef8f760c-3e6f-4e16-a056-91a5cbea49d9 于 15:33:00.715 UTC 创建，15:35:39.502 完成，实际约 159 秒。原生会话记录显示多轮 read/eval 工具与模型往返，最终回复在 settled 时已保存；回复说明 QOJ 登录限制和浏览器检查超时。本次未重跑网络请求，无法仅据已关闭 UI 的记录断言其当时未显示的唯一原因。
+
+确认并修复 UI 恢复漏洞：恢复到运行中的 run 时，旧逻辑立即将其标记 seen，展示没有最终回复的占位，不设置 pending，后续不追踪。现在继续轮询至终态，仅对完成 run 去重；用户输入按 event 去重。等待时显示已用时间及最终回复显示方式；空闲时每 15 秒检查当前 task 最近 5 条 run，自动补上后台/其他窗口回复，避免仅靠重开触发恢复。只读核对，不重新 ask，不修改草稿。
+
+UI 测试 **24 项、31.959 秒通过**（`/tmp/paveway-refresh-tests.log`），含新增运行中恢复、自动发现后台回复及不重复显示单元验证；实际 PTY 扩展覆盖退出后 daemon 仍执行、重进恢复等待、完成后无需手动刷新出现回复并保留草稿，原事件 attempt=1、run 数仍为 1。安装包已更新至 0.12.2；实际本机 QOJ 原回复也通过新版 UI client 恢复，核对没有创建新 run。此轮仅更新 UI，无需重启 daemon，正在打开的旧 UI 需重开一次以加载代码。依赖检查、git diff --check 通过。

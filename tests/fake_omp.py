@@ -36,6 +36,9 @@ def main():
     parser.add_argument("--no-ui", action="store_true")
     parser.add_argument("--profile")
     parser.add_argument("--model")
+    parser.add_argument("--system-prompt", type=Path)
+    parser.add_argument("--append-system-prompt", type=Path)
+    parser.add_argument("--config", type=Path)
     for option in ("tools", "extensions", "skills", "rules"):
         parser.add_argument("--no-" + option, action="store_true")
     args = parser.parse_args()
@@ -138,10 +141,11 @@ def main():
             if mode == "local-only":
                 settled = True
                 continue
-            result = "error" if mode == "provider-error" else "completed"
+            result = "error" if mode in ("provider-error", "auth-error") else "completed"
             emit({"type": "prompt_result", "id": "unrelated", "status": "completed", "sessionSettled": True})
             delayed = mode in ("delayed-settle", "crash-before-settled")
-            emit({"type": "prompt_result", "id": request_id, "status": result, "agentInvoked": True, "sessionSettled": not delayed}, split=True)
+            detail = {"error": {"httpStatus": 401, "message": "Invalid API key: sk-private-test-value Authorization: Bearer private-token", "retryable": False}} if mode == "auth-error" else {}
+            emit({"type": "prompt_result", "id": request_id, "status": result, "agentInvoked": True, "sessionSettled": not delayed, **detail}, split=True)
             if mode == "crash-before-settled":
                 return 12
             if delayed:

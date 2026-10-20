@@ -1,10 +1,10 @@
 # Runtime 架構 v1
 
-狀態：0.8.0 已實作 M0–M4、L2 筆記、L3 歷史檢索與終端 UI；需求來源為 `documents-for-agents/introduce.md`，工程順序依 `.codex/skills/SKILL.md`。另附獨立、可編輯的初版 coach workflow；記憶提煉策略在外部模板中。
+狀態：0.12.0 已實作 M0–M4、L2 筆記、L3 歷史檢索與對話式終端 UI；需求來源為 `documents-for-agents/introduce.md`，工程順序依 `.codex/skills/SKILL.md`。另附獨立、可編輯的初版 coach workflow；記憶提煉策略在外部模板中。
 
 ## 已實作
 
-Python 3.11+、Linux；核心與 Tijian CLI 適配僅用標準庫，MCP bridge 使用可選 SDK。`oicoach-runtime` 入口位於 `src/oicoach_runtime/cli.py`，提供初始化、診斷、常駐服務、排程與恢復管理。
+Python 3.11+、Linux；調度核心與 Tijian CLI 適配僅用標準庫，終端編輯器依賴 prompt_toolkit，MCP bridge 使用可選 SDK。`oicoach-runtime` 入口位於 `src/oicoach_runtime/cli.py`，提供初始化、診斷、常駐服務、排程與恢復管理。
 
 | 組件 | 責任 |
 | --- | --- |
@@ -24,7 +24,9 @@ Python 3.11+、Linux；核心與 Tijian CLI 適配僅用標準庫，MCP bridge �
 | `service.py` | 生成／校驗／安裝及管理屬於當前 config 的 systemd user unit；安裝不啟用 |
 | `workflow_setup.py`、`bundled/*.md` | 安裝可編輯的外部 coach/example 模板，合併專案 Tijian MCP 配置 |
 | `memory.py` | 通用 scoped 筆記/CAS/有效期/有界注入；只讀查詢既有 run 與 OMP 原文，不包含 OI 記憶提煉策略 |
-| `tui.py` | curses 終端前端，背景執行公開 CLI 子進程；不直接讀寫 DB、不接管 daemon 生命週期 |
+| `git_sync.py` | 独立用户数据 Git 仓库、配置版本图/CAS 导入、按设备文字归档与后台同步，不恢复活动队列 |
+| `customization.py` | workflow 范圍系統提示詞/用戶 Skill 的 CAS、私密保存與每輪 OMP 原生輸入快照 |
+| `tui.py`、`ui_client.py` | 對話記錄/常駐編輯器/slash 選單；背景執行公開 CLI 子進程，不直接讀寫 DB、不接管 daemon 生命週期 |
 
 fake OMP 持續驗證故障與競態；本機 OMP 18.10.4 另通過真實模型回合、兩次喚醒續聊與跨 task 隔離。verify-omp 可在每個環境重現。0.7.0 只新增 memory_notes 表，DB 升級到 v2；既有 queue/run/session/output 不刪除或重播。
 
@@ -32,7 +34,7 @@ fake OMP 持續驗證故障與競態；本機 OMP 18.10.4 另通過真實模型�
 
 ```mermaid
 flowchart TD
-    TUI[curses UI] --> CLI
+    TUI[對話式終端 UI] --> CLI
     CLI[CLI / 本地 API] --> IPC[Unix socket v1]
     IPC --> Store[SQLite Store]
     IPC --> Memory[Memory / History]
@@ -69,7 +71,7 @@ flowchart TD
 | M3 | backoff、circuit breaker、安全自動重啟、agent restart | 已實作；daemon 的服務管理器部署仍屬 M4 |
 | M4 | systemd、狀態與操作診斷、部署與外部接入 | 已實作並以實際安裝的 user unit 驗證；Tijian 原碼 CLI/MCP 全鏈路通過 |
 | 記憶 | L2 scoped 筆記、L3 歷史、模型維護及有界注入 | 0.7.0 已實作；真實模型寫入、重啟及新 task 讀取通過 |
-| 終端 UI | 經公開 CLI 執行對話、事件、記憶、歷史、workflow 和服務 | 0.8.0 已實作；中文 PTY、退出後任務繼續完成已測 |
+| 終端 UI | 經公開 CLI 執行對話、事件、記憶、歷史、workflow 和服務 | 0.9.0 改為常駐輸入區及 slash/方向鍵，PTY 驗證真實畫面與貼上 |
 
 M3 的 systemd 部署驗收已在 M4 補齊。每次 wake 建立新 OMP 進程，完成、settled 且正常退出後才 commit 成功，後續以明確 session file 恢復。僅啟動階段且未記錄 dispatch intent 的傳輸／進程失敗可自動重試；永久 workflow/session 錯誤 blocked，送出後不確定則 uncertain。provider error 或執行中 crash 可增加熔斷計數，但不重送該 prompt。
 
@@ -78,3 +80,9 @@ M3 的 systemd 部署驗收已在 M4 補齊。每次 wake 建立新 OMP 進程�
 Runtime 與 guardian 都使用 Linux subreaper；OMP root 在 guardian 死亡時也收到 parent-death signal，並保留 Runtime flock 直到退出。adapter 用 pidfd 對自有 guardian 發送信號，監控 returncode 避免孤兒工具持有 pipe 導致長時間漏判退出，並清理收養的同組後代。此機制針對受管程序組；M4 仍需 service cgroup 的完整服務生命週期邊界。
 
 每個 adapter 共享一個 cancellation-shielded cleanup task；restart 或 shutdown 取消派發等待時，後續清理會等待同一個有界 stop，避免重複讀 pipe、提前關閉 pidfd 或讓前後兩個進程重疊。
+
+0.11.0 的 Git 同步任务独立于前景 scheduler，在后台线程用独立只读 SQLite 事务导出终态记录。共享配置按父版本图识别冲突，导入只通过 customization 的锁/CAS，不写活动队列。同步设置可热加载；网络失败保留本地提交并记录独立状态，不修改 Agent 熔断器。详见 [Git 同步](git-sync.md)。
+
+0.11.1 在独立同步任务首次运行时初始化默认本地仓库；仓库身份在 Runtime/state_dir 层级，全部 workflow/task 共用，不按对话创建仓库。无 remote 不发起网络操作，已有配置（包括暂停）不被初始化覆盖。初始化失败只记录同步状态并退避，不阻止队列服务。
+
+0.12.0 将用户 Skill 分为 OI Introduce、user information、personal skill。UI `/skills` 按三类管理，`/skills category NAME` 可移动分类；全部已启用正文每轮同时加入原生系统上下文，append/replace 都生效，停用项除外。旧记录默认 personal skill，按原文读取，保持 Git 内容寻址历史有效。

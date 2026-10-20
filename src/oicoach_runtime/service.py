@@ -16,6 +16,50 @@ DEFAULT_NAME = "oicoach-runtime.service"
 MARKER = "# Managed by oicoach-runtime; config="
 
 
+def environment_path(config_path):
+    return Path(config_path).absolute().with_suffix(".service.env")
+
+
+def capture_environment(config_path, names):
+    """Persist only explicitly selected variables, never values in argv/unit/output."""
+    path = environment_path(config_path)
+    marker = MARKER + json.dumps(str(Path(config_path).absolute()))
+    values = {}
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if path.is_symlink() or not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 65536:
+            raise ConflictError("Service environment file must be private, owned and not a symlink")
+        lines = path.read_text().splitlines()
+        if not lines or lines[0] != marker:
+            raise ConflictError("Refusing to overwrite an unmanaged service environment file")
+        try:
+            for line in lines[1:]:
+                key, value = line.split("=", 1)
+                values[key] = json.loads(value)
+        except (ValueError, TypeError):
+            raise ConflictError("Invalid managed service environment file") from None
+    for key in names:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key not in os.environ:
+            raise RuntimeContractError("Captured environment names must exist in the invoking shell")
+        values[key] = os.environ[key]
+    for key, value in values.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise RuntimeContractError("Service environment values must be single-line strings without controls")
+    text = marker + "\n" + "".join(key + "=" + json.dumps(value, ensure_ascii=False) + "\n" for key, value in sorted(values.items()))
+    if len(text.encode()) > 65536:
+        raise RuntimeContractError("Service environment file exceeds 64 KiB")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return path
+
+
 def unit_name(name):
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.service", name):
         raise RuntimeContractError("Use a simple systemd .service name without paths, templates or specifiers")
@@ -52,6 +96,8 @@ def render(config_path, *, working_directory=None):
         "[Unit]", "Description=Paveway OI Agent Runtime", "StartLimitIntervalSec=60", "StartLimitBurst=5", "",
         "[Service]", "Type=simple", "ExecStart=" + " ".join(quote(arg, expand_environment=True) for arg in argv),
         "WorkingDirectory=" + str(directory).replace("%", "%%"), 'Environment="PYTHONUNBUFFERED=1"',
+        # EnvironmentFile takes a literal path, not ExecStart-style quoted words.
+        "EnvironmentFile=-" + str(environment_path(path)).replace("%", "%%"),
         "Environment=" + quote("PATH=" + search_path), "UMask=0077", "Restart=on-failure", "RestartSec=3",
         "TimeoutStopSec=60", "KillMode=control-group", "StandardOutput=journal", "StandardError=journal", "",
         "[Install]", "WantedBy=default.target", ""])
@@ -79,7 +125,7 @@ def _owned(path, config_path):
         return False
 
 
-def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=False):
+def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=False, capture_env=()):
     name = unit_name(name)
     text = render(config_path, working_directory=working_directory)
     directory = unit_directory()
@@ -98,6 +144,8 @@ def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=F
             stream.flush()
             os.fsync(stream.fileno())
             _run(["systemd-analyze", "--user", "verify", str(temporary)])
+            if capture_env:
+                capture_environment(config_path, capture_env)
             if exists:
                 if destination.read_text() != text:
                     os.replace(temporary, destination)
@@ -107,6 +155,7 @@ def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=F
             temporary.unlink(missing_ok=True)
     _run(["systemctl", "--user", "daemon-reload"])
     return {"api_version": 1, "unit": name, "path": str(destination), "installed": True,
+            "environment_file": str(environment_path(config_path)), "captured_environment": list(capture_env),
             "enabled_or_started": False, "next_commands": [
                 ["systemctl", "--user", "enable", "--now", name],
                 ["systemctl", "--user", "status", name],

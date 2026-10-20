@@ -378,6 +378,119 @@ class RuntimeTests(unittest.TestCase):
                     self.assertIsNone(runs[0]["settled_at"])
         self.assertEqual(len(request(self.socket_path, "recover.list")), 7)
 
+    def test_provider_auth_error_is_saved_without_provider_secrets_or_replay(self):
+        event = self.schedule("auth-error", "auth-task", "auth-error")
+        finished = self.wait_status(event["event_id"], ("failed",))
+        self.assertEqual(finished["last_error_code"], "agent_auth_failed")
+        self.assertIn("401", finished["last_error_message"])
+        run = request(self.socket_path, "runs.show", {"run_id": finished["run_id"]})
+        self.assertEqual(run["error_message"], finished["last_error_message"])
+        self.assertIsNotNone(run["settled_at"])
+        self.assertEqual(finished["attempt"], 1)
+        self.assertEqual(request(self.socket_path, "runs.output", {"run_id": run["run_id"]})["status"], "unavailable")
+        for secret in ("sk-private-test-value", "private-token"):
+            self.assertNotIn(secret, json.dumps(finished) + json.dumps(run) + (self.root / "daemon.log").read_text())
+
+    def test_customization_applies_next_dispatch_without_rebinding_existing_task(self):
+        from oicoach_runtime.customization import update
+        update(self.config, "echo", 0, "prompt", mode="append", content="first prompt")
+        first = self.wait_status(self.schedule("custom-first", "custom-task")["event_id"])
+        update(self.config, "echo", 1, "prompt", mode="replace", content="second prompt")
+        second = self.wait_status(self.schedule("custom-second", "custom-task")["event_id"])
+        first_run = request(self.socket_path, "runs.show", {"run_id": first["run_id"]})
+        second_run = request(self.socket_path, "runs.show", {"run_id": second["run_id"]})
+        self.assertEqual(first_run["binding_id"], second_run["binding_id"])
+        parent = self.config.state_dir / "sessions" / first_run["binding_id"] / "customizations"
+        self.assertEqual((parent / first["run_id"] / "system.md").read_text(), "first prompt")
+        self.assertEqual((parent / second["run_id"] / "system.md").read_text(), "second prompt")
+        self.assertEqual(second["attempt"], 1)
+
+    def test_default_local_git_archives_all_coaches_without_setup(self):
+        from oicoach_runtime import git_sync
+        from oicoach_runtime.workflow_setup import create
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and not git_sync.settings(self.config):
+            time.sleep(0.02)
+        values = git_sync.settings(self.config)
+        self.assertIsNotNone(values)
+        self.assertEqual(values["remote"], "")
+        create(self.config, "another-coach", self.root, "example")
+        first = self.wait_status(self.schedule("default-git", "one")["event_id"])
+        second = request(self.socket_path, "schedule", {
+            "workflow_id": "another-coach", "task_id": "two", "reason": "integration", "dedupe_key": "other-coach",
+            "payload": {}, "at": utc_text(datetime.now(timezone.utc))})
+        second = self.wait_status(second["event_id"])
+        request(self.socket_path, "sync.request")
+        deadline = time.monotonic() + 6
+        records = []
+        while time.monotonic() < deadline:
+            records = git_sync.history(self.config)["records"]
+            if {first["run_id"], second["run_id"]} <= {r["run_id"] for r in records}:
+                break
+            time.sleep(0.05)
+        self.assertEqual({r["workflow_id"] for r in records}, {"echo", "another-coach"})
+        self.assertEqual({r["device_id"] for r in records}, {values["device_id"]})
+        self.assertEqual(git_sync.settings(self.config)["repository"], values["repository"])
+        self.assertEqual(subprocess.check_output(["git", "-C", values["repository"], "remote"], text=True), "")
+
+    def test_automatic_two_device_git_sync_without_ui_or_queue_import(self):
+        from oicoach_runtime import customization, git_sync
+        from oicoach_runtime.workflow_setup import create
+        remote = self.root / "user-remote.git"
+        subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], capture_output=True, check=True)
+        other = self.root / "other-device"
+        other.mkdir(mode=0o700)
+        path = other / "config.toml"
+        initialize(path, str(other / "state"), str(other / "workflows"))
+        base = load_config(path)
+        base = replace(base, agent=self.config.agent, server=replace(base.server, poll_interval_seconds=0.02))
+        path.write_text(config_text(base))
+        create(base, "echo", other, "example")
+        log = (other / "daemon.log").open("w")
+        daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)], stdout=log, stderr=log)
+        try:
+            event = self.wait_status(self.schedule("sync-auto", "sync-history")["event_id"])
+            customization.update(self.config, "echo", 0, "prompt", mode="append", content="automatic profile transfer")
+            git_sync.configure(self.config, self.config.state_dir / "user-data-git", str(remote), interval=10)
+            git_sync.configure(base, base.state_dir / "user-data-git", str(remote), interval=10)
+            deadline = time.monotonic() + 30
+            transferred = False
+            while time.monotonic() < deadline:
+                self.assertIsNone(daemon.poll())
+                prompt = customization.show(base, "echo")["settings"]["system_prompt"]["text"]
+                rows = git_sync.history(base)["records"]
+                if prompt == "automatic profile transfer" and any(r["run_id"] == event["run_id"] for r in rows):
+                    transferred = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(transferred, git_sync.status(base))
+            self.assertEqual(request(base.server.socket_path, "events.list"), [])
+            self.assertEqual(request(base.server.socket_path, "status")["daemon"], "running")
+        finally:
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                daemon.kill()
+                daemon.wait(timeout=5)
+            log.close()
+
+    def test_git_sync_failure_does_not_block_foreground_training(self):
+        from oicoach_runtime import git_sync
+        # Configure the failure before startup, independent of the initial archive lock.
+        self.stop()
+        git_sync.configure(self.config, self.config.state_dir / "user-data-git", str(self.root / "missing.git"), interval=10)
+        self.start()
+        event = self.schedule("sync-offline-agent", "still-runs")
+        self.assertEqual(self.wait_status(event["event_id"])["status"], "succeeded")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline and git_sync.status(self.config)["last"].get("state") != "error":
+            time.sleep(0.05)
+        self.assertEqual(git_sync.status(self.config)["last"].get("state"), "error")
+        health = request(self.socket_path, "status")
+        self.assertEqual(health["daemon"], "running")
+        self.assertEqual(health["agent_health"], "idle")
+
     def test_delayed_settle_local_completion_and_stderr_flood(self):
         for index, mode in enumerate(("delayed-settle", "local-only", "stderr-flood")):
             with self.subTest(mode=mode):

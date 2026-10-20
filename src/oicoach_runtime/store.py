@@ -298,7 +298,7 @@ class Store:
         return saved if saved is not None else {"status": "pending" if run["status"] in ("leased", "running") else "unavailable",
                                                "text": None, "truncated": False}
 
-    def finish(self, run_id, status, *, result=None, settled=False, error=None, exit_code=None,
+    def finish(self, run_id, status, *, result=None, settled=False, error=None, error_message=None, exit_code=None,
                automatic_retry=False, record_failure=False, output=None):
         if status not in ("succeeded", "failed", "blocked", "uncertain"):
             raise RuntimeContractError("Invalid terminal run status")
@@ -320,10 +320,10 @@ class Store:
                 self._set_metadata(db, "supervisor_v1", self.policy.empty())
             if output is not None and status == "succeeded":
                 self._set_metadata(db, "output:" + run_id, output)
-            db.execute("UPDATE runs SET status=?,prompt_result_status=COALESCE(?,prompt_result_status),settled_at=?,completed_at=?,error_code=?,agent_exit_code=? WHERE run_id=?",
-                       (status, result, stamp if settled else None, stamp, error, exit_code, run_id))
-            db.execute("UPDATE events SET status=?,completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_utc=NULL,last_error_code=?,version=version+1 WHERE event_id=?",
-                       (event_status, None if event_status == "queued" else stamp, stamp, error, run["event_id"]))
+            db.execute("UPDATE runs SET status=?,prompt_result_status=COALESCE(?,prompt_result_status),settled_at=?,completed_at=?,error_code=?,error_message=?,agent_exit_code=? WHERE run_id=?",
+                       (status, result, stamp if settled else None, stamp, error, error_message, exit_code, run_id))
+            db.execute("UPDATE events SET status=?,completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_utc=NULL,last_error_code=?,last_error_message=?,version=version+1 WHERE event_id=?",
+                       (event_status, None if event_status == "queued" else stamp, stamp, error, error_message, run["event_id"]))
             if run["binding_id"]:
                 binding_status = "ready" if settled else ("uncertain" if run["dispatch_intent_at"] else "blocked")
                 if automatic_retry:

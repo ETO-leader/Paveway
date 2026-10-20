@@ -7,6 +7,7 @@ import signal
 import socket
 import stat
 import sys
+import time
 import uuid
 from contextlib import ExitStack
 from pathlib import Path
@@ -43,8 +44,18 @@ class Runtime:
         self.active_dispatch = None
         self.active_scope = None
         self.pending_restart = None
+        self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
+        if command == "sync.request":
+            arguments(raw, ())
+            from . import git_sync
+            values = git_sync.settings(self.config)
+            if not values or not values["enabled"]:
+                raise RuntimeContractError("Configure and enable Git sync first")
+            before = git_sync.read_json(git_sync.local_root(self.config) / "status.json", {})
+            self.sync_wakeup.set()
+            return {"requested": True, "previous_completion": before.get("completed_at")}
         if command == "status":
             arguments(raw, ())
             supervisor = self.store.status()
@@ -123,6 +134,44 @@ class Runtime:
         self.changed.set()
         return result
 
+    async def sync_loop(self):
+        from . import git_sync
+        due = 0
+        previous_settings = None
+        while not self.stop_event.is_set():
+            interval = 60
+            values = None
+            try:
+                values = git_sync.settings(self.config)
+                if values is None and time.monotonic() >= due:
+                    await asyncio.to_thread(git_sync.ensure_local, self.config)
+                    values = git_sync.settings(self.config)
+                if values != previous_settings:
+                    due = 0
+                    previous_settings = values
+                if values and values["enabled"]:
+                    interval = values["interval_seconds"]
+                    if time.monotonic() >= due or self.sync_wakeup.is_set():
+                        self.sync_wakeup.clear()
+                        await asyncio.to_thread(git_sync.cycle, self.config)
+                        due = time.monotonic() + interval
+            except (RuntimeContractError, OSError):
+                # Sync failures remain independent of foreground queue/model execution.
+                due = time.monotonic() + interval
+                if values is None:
+                    try:
+                        git_sync.write_json(git_sync.local_root(self.config) / "status.json", {
+                            "state": "error", "completed_at": git_sync.stamp(),
+                            "error": "Local Git archive initialization failed; check Git availability and the dedicated directory"})
+                    except (RuntimeContractError, OSError):
+                        pass
+            try:
+                await asyncio.wait_for(self.sync_wakeup.wait(), timeout=5)
+                if not values or not values["enabled"]:
+                    self.sync_wakeup.clear()
+            except TimeoutError:
+                pass
+
     async def dispatch_event(self, event):
         run_id = event["run_id"]
         agent = OmpRpc(self.config, self.lock_fds, self.config_path)
@@ -134,6 +183,7 @@ class Runtime:
         try:
             workflow = self.provider.describe(event["workflow_id"])
             binding = self.store.bind(event, workflow)
+            binding["customization"] = workflow.customization
             envelope = {
                 "event_id": event["event_id"], "run_id": run_id, "workflow_id": event["workflow_id"],
                 "task_id": event["task_id"], "dedupe_key": event["dedupe_key"],
@@ -202,7 +252,8 @@ class Runtime:
             if agent.process.returncode != 0:
                 raise AgentError("OMP did not exit cleanly after settling", code="agent_shutdown_failed")
             self.store.finish(run_id, "succeeded" if result == "completed" else "failed",
-                              result=result, settled=True, error=None if result == "completed" else "agent_turn_failed",
+                              result=result, settled=True, error=None if result == "completed" else (getattr(agent, "failure_code", None) or "agent_turn_failed"),
+                              error_message=getattr(agent, "failure_message", None),
                               exit_code=agent.process.returncode, record_failure=result != "completed", output=output)
             terminal = True
         except asyncio.CancelledError:
@@ -359,6 +410,7 @@ class Runtime:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self.stop_event.set)
             scheduler = asyncio.create_task(self.schedule_loop())
+            synchronizer = asyncio.create_task(self.sync_loop())
             waiter = asyncio.create_task(self.stop_event.wait())
             print(json.dumps({"component": "daemon", "transition": "ready", "api_version": 1}), flush=True)
             try:
@@ -373,8 +425,9 @@ class Runtime:
                     client.cancel()
                 await asyncio.gather(*self.clients, return_exceptions=True)
                 scheduler.cancel()
+                synchronizer.cancel()
                 waiter.cancel()
-                await asyncio.gather(scheduler, waiter, return_exceptions=True)
+                await asyncio.gather(scheduler, synchronizer, waiter, return_exceptions=True)
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.remove_signal_handler(sig)
                 if socket_path.exists() and socket_path.lstat().st_ino == inode:

@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,13 +52,17 @@ class SystemdRestartTests(unittest.TestCase):
 
             try:
                 # Install validates before publishing and does not activate the unit.
-                report = service.install(path, name=name)
+                value = 'private test $ % " \\ value'
+                with patch.dict(os.environ, {"PAVEWAY_TEST_MODEL_KEY": value}):
+                    report = service.install(path, name=name, capture_env=["PAVEWAY_TEST_MODEL_KEY"])
                 installed = True
                 self.assertTrue(service.status(path, name=name)["managed"])
                 service.control(path, "enable", name=name)
                 self.assertEqual(service.status(path, name=name)["UnitFileState"], "enabled")
                 service.control(path, "start", name=name)
                 wait_for(lambda: request(config.server.socket_path, "status"))
+                pid = service.status(path, name=name)["MainPID"]
+                self.assertIn(("PAVEWAY_TEST_MODEL_KEY=" + value).encode(), Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"))
                 event = request(config.server.socket_path, "schedule", {"workflow_id": "example", "task_id": "installed",
                     "reason": "installed service recovery", "dedupe_key": "installed-1", "payload": {},
                     "at": utc_text(datetime.now(timezone.utc) + timedelta(seconds=5))})

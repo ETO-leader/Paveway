@@ -95,20 +95,73 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--working-directory", type=Path)
         if name == "install":
             child.add_argument("--replace", action="store_true", help="Update a unit already owned by this configuration")
+            child.add_argument("--capture-env", action="append", default=[], metavar="NAME",
+                               help="Persist this shell variable in the private service environment file; repeat for each name")
         if name in ("enable", "disable"):
             child.add_argument("--now", action="store_true")
         if name == "logs":
             child.add_argument("--lines", type=int, default=50)
     workflow = commands.add_parser("workflow", help="Create and inspect editable external workflows")
     workflow_commands = workflow.add_subparsers(dest="operation", required=True)
-    for name in ("create", "list", "show", "connect-tijian"):
+    for name in ("create", "list", "show", "connect-tijian", "customize"):
         child = workflow_commands.add_parser(name)
         common(child)
+        if name == "customize":
+            actions = child.add_subparsers(dest="customize_operation", required=True)
+            for action in ("show", "prompt", "skill-put", "skill-delete", "skill-enable", "skill-disable"):
+                operation = actions.add_parser(action)
+                common(operation)
+                operation.add_argument("identifier")
+                if action != "show":
+                    operation.add_argument("--expected-revision", type=int, required=True)
+                if action == "prompt":
+                    operation.add_argument("--mode", choices=("append", "replace"), default="append")
+                if action.startswith("skill-"):
+                    operation.add_argument("--name", required=True)
+                if action == "skill-put":
+                    operation.add_argument("--description", required=True)
+                    from .customization import SKILL_CATEGORIES
+                    operation.add_argument("--category", choices=SKILL_CATEGORIES, default=None)
+                if action in ("prompt", "skill-put"):
+                    operation.add_argument("--content-file", type=Path, required=True)
+            continue
         if name != "list":
             child.add_argument("identifier")
         if name == "create":
             child.add_argument("--workspace", type=Path, required=True)
             child.add_argument("--template", choices=("coach", "example"), default="coach")
+    sync = commands.add_parser("sync", help="Independent Git storage for user settings and archived history")
+    sync_commands = sync.add_subparsers(dest="operation", required=True)
+    for name in ("setup", "remote", "status", "now", "run", "pause", "resume", "conflicts", "resolve", "bind", "history", "show", "messages"):
+        child = sync_commands.add_parser(name)
+        common(child)
+        if name == "remote":
+            child.add_argument("--remote", required=True)
+        if name == "setup":
+            child.add_argument("--repository", type=Path, required=True)
+            child.add_argument("--remote", default="")
+            child.add_argument("--branch", default="main")
+            child.add_argument("--interval", type=int, default=60)
+        if name in ("resolve", "bind"):
+            child.add_argument("--workflow", required=True)
+        if name == "resolve":
+            choice = child.add_mutually_exclusive_group(required=True)
+            choice.add_argument("--head")
+            choice.add_argument("--keep-local", action="store_true")
+        if name == "bind":
+            child.add_argument("--workspace", type=Path, required=True)
+        if name == "history":
+            child.add_argument("--query", default="")
+            child.add_argument("--workflow")
+            child.add_argument("--offset", type=int, default=0)
+        if name in ("show", "messages"):
+            child.add_argument("--device", required=True)
+        if name == "show":
+            child.add_argument("--run", required=True)
+        if name == "messages":
+            child.add_argument("--session", required=True)
+            child.add_argument("--query", default="")
+            child.add_argument("--offset", type=int, default=0)
     ask = commands.add_parser("ask", help="Queue an immediate workflow request; read its result with runs output")
     common(ask)
     ask.add_argument("--workflow", required=True)
@@ -361,19 +414,72 @@ def main(argv: list[str] | None = None) -> int:
                 report = {"api_version": 1, "unit": args.name,
                           "unit_text": service.render(path, working_directory=args.working_directory)}
             elif args.operation == "install":
-                report = service.install(path, name=args.name, working_directory=args.working_directory, replace=args.replace)
+                report = service.install(path, name=args.name, working_directory=args.working_directory, replace=args.replace,
+                                         capture_env=args.capture_env)
             elif args.operation == "status":
                 report = service.status(path, name=args.name)
             elif args.operation == "logs":
                 report = service.logs(path, name=args.name, lines=args.lines)
             else:
                 report = service.control(path, args.operation, name=args.name, now=getattr(args, "now", False))
+        elif args.command == "sync":
+            from . import git_sync
+            config = load_config(path)
+            if args.operation == "setup":
+                report = git_sync.configure(config, args.repository, args.remote, args.branch, args.interval)
+            elif args.operation == "remote":
+                report = git_sync.set_remote(config, args.remote)
+            elif args.operation == "status":
+                report = git_sync.status(config)
+            elif args.operation == "now":
+                report = {"api_version": 1, "result": request(config.server.socket_path, "sync.request")}
+            elif args.operation == "run":
+                result = git_sync.cycle(config)
+                report = {"api_version": 1, "ok": result["state"] in ("ok", "paused"), "result": result}
+            elif args.operation in ("pause", "resume"):
+                report = git_sync.set_enabled(config, args.operation == "resume")
+            elif args.operation == "conflicts":
+                report = {"api_version": 1, "conflicts": git_sync.conflicts(config)}
+            elif args.operation == "resolve":
+                report = git_sync.resolve(config, args.workflow, args.head, args.keep_local)
+            elif args.operation == "bind":
+                from .workflow_setup import create
+                if not any(c["workflow_id"] == args.workflow for c in git_sync.conflicts(config)):
+                    raise RuntimeContractError("No unbound remote user configuration for this workflow")
+                report = create(config, args.workflow, args.workspace)
+            elif args.operation == "history":
+                report = git_sync.history(config, args.query, args.workflow, args.offset)
+            elif args.operation == "messages":
+                report = git_sync.messages(config, args.device, args.session, args.query, args.offset)
+            else:
+                report = git_sync.history_show(config, args.device, args.run)
         elif args.command == "workflow":
             from .workflow_setup import create, describe, connect_tijian
             from .workflows import WorkflowProvider
             config = load_config(path)
             provider = WorkflowProvider(config.workflow_root)
-            if args.operation == "create":
+            if args.operation == "customize":
+                from . import customization
+                if args.customize_operation == "show":
+                    report = customization.show(config, args.identifier)
+                else:
+                    values = {}
+                    if args.customize_operation in ("prompt", "skill-put"):
+                        if not args.content_file.is_file() or args.content_file.stat().st_size > 65536:
+                            raise RuntimeContractError("Customization content must be a UTF-8 file at most 64 KiB")
+                        try:
+                            values["content"] = args.content_file.read_text(encoding="utf-8")
+                        except UnicodeError:
+                            raise RuntimeContractError("Customization content must be valid UTF-8") from None
+                    if args.customize_operation == "prompt":
+                        values["mode"] = args.mode
+                    else:
+                        values["name"] = args.name
+                        if args.customize_operation == "skill-put":
+                            values["description"] = args.description
+                            values["category"] = args.category
+                    report = customization.update(config, args.identifier, args.expected_revision, args.customize_operation, **values)
+            elif args.operation == "create":
                 report = create(config, args.identifier, args.workspace, args.template)
             elif args.operation == "connect-tijian":
                 report = connect_tijian(config, path, args.identifier)

@@ -10,6 +10,8 @@ Type=simple
 ExecStart=/ABSOLUTE/venv/bin/python -m oicoach_runtime serve --config /ABSOLUTE/config.toml
 WorkingDirectory=/ABSOLUTE/workspace
 Environment=PYTHONUNBUFFERED=1
+# Optional private file produced by service install --capture-env NAME.
+EnvironmentFile=-/ABSOLUTE/config.service.env
 Environment=PATH=/ABSOLUTE/agent/bin:/usr/local/bin:/usr/bin:/bin
 UMask=0077
 Restart=on-failure

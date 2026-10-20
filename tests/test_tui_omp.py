@@ -9,7 +9,8 @@ import unittest
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from prompt_toolkit.input import DummyInput
+from prompt_toolkit.output import DummyOutput
 
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
@@ -17,7 +18,7 @@ from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.tui import CliClient, TerminalUI
 from oicoach_runtime.workflow_setup import create
-from test_tui import Screen, collect
+from test_tui import collect
 
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for a real UI model reply")
@@ -39,8 +40,7 @@ class RealUITests(unittest.TestCase):
             with (root / "daemon.log").open("w") as log:
                 daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)], stdout=log, stderr=log)
                 client = CliClient(path)
-                ui = TerminalUI(Screen(), client, "coach", "ui-real")
-                ui.page = 1
+                ui = TerminalUI(client, "coach", "ui-real", input=DummyInput(), output=DummyOutput())
                 try:
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
@@ -50,8 +50,8 @@ class RealUITests(unittest.TestCase):
                             break
                         except RuntimeContractError:
                             time.sleep(0.05)
-                    with patch.object(ui, "form", return_value="请只回复‘终端对话可用’以及识别码 " + marker + "，不调用工具，不安排提醒。"):
-                        ui.speak()
+                    ui.editor.text = "请只回复‘终端对话可用’以及识别码 " + marker + "，不调用工具，不安排提醒。"
+                    ui.accept()
                     collect(ui)
                     self.assertIsNotNone(ui.pending, ui.notice)
                     event_id = ui.pending["event_id"]
@@ -62,7 +62,7 @@ class RealUITests(unittest.TestCase):
                         time.sleep(0.05)
                     self.assertIsNone(ui.pending, ui.notice)
                     text = "\n".join(ui.chat[ui.scope])
-                    self.assertIn("教练 [succeeded]", text)
+                    self.assertIn("教练 · succeeded", text)
                     self.assertIn("终端对话可用", text)
                     event = client.call("events", "show", event_id)
                     output = client.call("runs", "output", event["run_id"])
@@ -70,7 +70,7 @@ class RealUITests(unittest.TestCase):
                     self.assertIn(marker, output["text"])
                     self.assertNotIn(marker, (root / "daemon.log").read_text())
                     ui.draw()
-                    self.assertTrue(any(marker in line for line in ui.screen.text))
+                    self.assertIn(marker, ui.transcript.text)
                     client.close()
                     self.assertIsNone(daemon.poll())
                 finally:

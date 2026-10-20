@@ -1,6 +1,6 @@
 # 操作與恢復
 
-0.8.0 可用 `oicoach-runtime ui --config PATH` 互動操作既有 CLI；不選 workflow 時從清單選擇。q/Ctrl+C 只退出 UI，不停止獨立 daemon 或取消已入庫事件。服務停止需在服務頁明確確認；unknown/uncertain 的副作用核對規則不變。詳見 [終端 UI](terminal-ui.md)。
+0.9.0 可用 `oicoach-runtime ui --config PATH`，直接在底部輸入，Enter 發送、Ctrl+J 換行，/workflow 用方向鍵選環境。q/數字是普通文字；/quit、空輸入 Ctrl+D 或連按兩次 Ctrl+C 才退出 UI，不停止獨立 daemon 或取消已入庫事件。服務停止需 /service stop 明確確認；unknown/uncertain 的核對規則不變。詳見 [終端 UI](terminal-ui.md)。
 
 0.7.0 的长期笔记通过 `memory put/show/list/delete/recall` 管理，历史通过 `history search/show/messages` 查阅，详见 [记忆说明](memory.md)。DB v1→v2 在 init/serve 中原子迁移，doctor 只读；备份需包括 DB 和 sessions。删除/过期笔记不会删除历史会话、旧回复或备份；关闭 workflow.memory_enabled 只停止新回合注入，不能撤回旧上下文。
 
@@ -82,3 +82,13 @@ oicoach-runtime agent show RESTART_ID --config PATH --json
 daemon 自動拉起由 `service` 安裝的 systemd unit 提供，包含 Restart=on-failure、啟動頻率限制及 control-group 清理。日誌只輸出結構化 ID、轉移和錯誤碼，stderr 持續排空但不保存原文；更完整的受控 debug 留待後續完善。
 
 0.6.0 新增 `ask --wait`、`events wait` 和 `runs output`。等待逾時不取消事件；重送同 scope/key 的 ask 會返回原事件，不同內容回 conflict。最終 assistant 回覆以最多 16 KiB UTF-8 保存在私密 DB metadata，不寫入日誌；截斷明確標記。local-only、舊 run 或未取得本輪文字時回 unavailable。輸出不是額外的成功證據；若查詢期間收到 session-persistence error，仍保留 uncertain。
+
+## 模型認證與失敗提示
+
+若終端 OMP 可用但服務得到 HTTP 401，先檢查 systemd 是否讀到相同模型憑證。用 `service install --replace --capture-env OPENAI_API_KEY --config PATH` 從當前已設定好的 shell 明確保存，再於無活動回合時 `service restart --config PATH`。只傳變量名，不在命令或聊天中貼金鑰；私密環境檔的位置、更新及刪除方法見 [部署](deployment.md)。
+
+新失敗會在 event/run 的錯誤欄位保存安全分類與處理提示，UI 對話、恢復及歷史顯示。例如 agent_auth_failed 是模型認證問題，agent_rate_limited 是限流或額度問題。未回填舊記錄中已丟失的細節；服務仍不自動重播已派送的失敗／uncertain，修正原因後提交新請求。
+
+0.11.0 的自动 Git 配置/历史保存由独立后台任务运行；用 `/sync status` 或 `sync status --json` 查看，不把 sync error 当 Agent 失败。网络错误保留本地提交，显式 remote 才 pull/push；配置冲突用 `/sync conflicts` 选择，禁止用强推覆盖其他设备。部署及恢复边界见 [Git 同步](git-sync.md)。
+
+0.11.1 起 daemon 默认维护本地数据 Git；`/sync remote` 配置或清空远端，清空保留本地数据。初始化失败时先确认系统 Git 可执行且默认数据目录是程序管理的独立目录，用 `/sync status` 检查；不要将源码仓库或其他仓库放在此目录。若已有同步操作持锁，等待本轮结束后再更改设置。

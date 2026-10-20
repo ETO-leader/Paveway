@@ -120,3 +120,31 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(RuntimeContractError):
                 service.install(self.path)
         self.assertEqual(list(root.iterdir()), [])
+
+    def test_service_environment_capture_is_explicit_private_and_preserved(self):
+        root = self.root / "units"
+        with patch.object(service, "unit_directory", return_value=root), patch.object(service, "_run"), \
+             patch.dict(os.environ, {"TEST_MODEL_KEY": 'secret $ % \\ " value', "TEST_MODEL_URL": "https://example.invalid"}):
+            installed = service.install(self.path, capture_env=["TEST_MODEL_KEY"])
+            env = Path(installed["environment_file"])
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("TEST_MODEL_URL=", env.read_text())
+            self.assertNotIn("secret", Path(installed["path"]).read_text() + json.dumps(installed))
+            service.install(self.path, capture_env=["TEST_MODEL_URL"])
+            self.assertIn("TEST_MODEL_KEY=", env.read_text())
+            self.assertIn("TEST_MODEL_URL=", env.read_text())
+            before = env.read_bytes()
+            with self.assertRaises(RuntimeContractError):
+                service.install(self.path, capture_env=["UNSET_PRIVATE_TEST_VARIABLE"])
+            self.assertEqual(env.read_bytes(), before)
+            env.chmod(0o644)
+            with self.assertRaises(ConflictError):
+                service.install(self.path, capture_env=["TEST_MODEL_KEY"])
+
+    def test_failed_verification_does_not_capture_credentials(self):
+        with patch.object(service, "unit_directory", return_value=self.root / "units"), \
+             patch.object(service, "_run", side_effect=RuntimeContractError("invalid unit")), \
+             patch.dict(os.environ, {"TEST_MODEL_KEY": "private"}):
+            with self.assertRaises(RuntimeContractError):
+                service.install(self.path, capture_env=["TEST_MODEL_KEY"])
+        self.assertFalse(service.environment_path(self.path).exists())

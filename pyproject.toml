@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oicoach-runtime"
-version = "0.8.0"
+version = "0.12.2"
 description = "Durable, workflow-independent OI agent runtime infrastructure"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
-dependencies = []
+dependencies = ["prompt-toolkit>=3.0.52,<4"]
 
 [project.optional-dependencies]
 tijian = ["mcp>=1.28,<2"]
+test = ["pyte>=0.8,<1"]
 
 [project.scripts]
 oicoach-runtime = "oicoach_runtime.cli:main"

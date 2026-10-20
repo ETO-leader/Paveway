@@ -2,7 +2,7 @@
 
 import json
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
 
@@ -32,6 +32,7 @@ class Workflow:
     session_policy: str
     templates: dict[str, str]
     memory_enabled: bool = False
+    customization: dict = field(default_factory=dict)
 
     def render(self, kind: str, envelope: dict) -> str:
         if kind not in self.templates:
@@ -81,7 +82,9 @@ class WorkflowProvider:
                 if not parsed.is_valid() or set(parsed.get_identifiers()) != {"event_json"}:
                     raise WorkflowError("Templates must use only the required ${event_json} variable; escape literal dollars as $$")
                 templates[kind] = template
-            return Workflow(workflow_id, raw["version"], workspace, raw["session_policy"], templates, raw.get("memory_enabled", False))
+            from .customization import load
+            return Workflow(workflow_id, raw["version"], workspace, raw["session_policy"], templates,
+                            raw.get("memory_enabled", False), load(directory))
         except WorkflowError:
             raise
         except (OSError, UnicodeError, ValueError, RuntimeError):

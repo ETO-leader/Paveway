@@ -8,6 +8,7 @@ import sys
 import uuid
 
 from ..errors import AgentError
+from ..diagnostics import prompt_failure
 from ..processes import process_identity
 from ..child import cleanup_group
 
@@ -41,6 +42,9 @@ class OmpRpc:
             argv.extend(["--profile", agent.profile])
         if agent.model:
             argv.extend(["--model", agent.model])
+        if binding.get("customization"):
+            from ..customization import snapshot
+            argv.extend(snapshot(binding["customization"], binding["session_dir"], run_id, agent.skills_enabled))
         for option in ("tools", "extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
@@ -142,6 +146,7 @@ class OmpRpc:
 
     async def prompt(self, run_id, message, on_ack, on_result):
         self.agent_invoked = None
+        self.failure_code, self.failure_message = None, None
         await self.write({"id": run_id, "type": "prompt", "message": message})
         loop = asyncio.get_running_loop()
         ack_deadline = loop.time() + self.config.agent.ack_timeout_seconds
@@ -179,6 +184,7 @@ class OmpRpc:
                 if result is not None:
                     raise AgentError("Duplicate prompt completion evidence")
                 result = frame["status"]
+                self.failure_code, self.failure_message = prompt_failure(result, frame.get("error"))
                 on_result(result)
                 settled = frame["sessionSettled"]
                 settle_deadline = loop.time() + self.config.agent.settle_timeout_seconds
