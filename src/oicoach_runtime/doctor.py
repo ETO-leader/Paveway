@@ -1,4 +1,4 @@
-"""Read-only diagnostics; never start an agent turn or inspect credentials."""
+"""Read-only diagnostics; never start an agent turn or expose credentials."""
 
 import os
 import re
@@ -76,6 +76,13 @@ def diagnose(config: Config, config_path: Path) -> dict:
     else:
         checks.append({"check": "workflows", "status": "FAIL", "detail": "Configured workflow root is missing"})
     checks.extend(probe_omp(config.agent.executable))
+    try:
+        from .proxy import status
+        proxy = status(config_path)
+        unhealthy = proxy["bypass_all"] or any(not row["tcp_reachable"] for row in proxy["checks"])
+        checks.append({"check": "proxy", "status": "WARN" if unhealthy or proxy["mode"] == "direct" else "PASS", "detail": proxy})
+    except RuntimeContractError as error:
+        checks.append({"check": "proxy", "status": "FAIL", "detail": str(error)})
     if config.tijian.enabled:
         checks.append({"check": "tijian", "status": "PASS" if shutil.which(config.tijian.executable) else "FAIL",
                        "detail": "Executable path check only; use tijian doctor --with-data for JSON CLI and data verification"})

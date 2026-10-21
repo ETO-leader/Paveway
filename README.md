@@ -2,9 +2,9 @@
 
 **Paveway is An adVanced Efficient Workflow for informAtics olYmpiads.**
 
-Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化用户请求与定时检查，按顺序唤醒正确的会话，连接 Tijian 题库与训练数据，保存可查询的执行结果与恢复记录。
+Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用户请求与定时检查，按顺序唤醒正确的会话，连接 Tijian 题库与训练数据，保存可查询的执行结果与恢复记录。
 
-当前版本 **0.13.0**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
+当前版本 **0.19.0**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
 ## 能做什么
 
@@ -12,7 +12,7 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化�
 | --- | --- |
 | 训练安排与复盘 | 独立 coach 模板支持 plan、checkin、review，根据用户输入安排训练、处理反馈和复盘 |
 | 即时请求 | ask 排队执行，可 --wait 等待并显示最终回复 |
-| 终端界面 | ui 全屏交互，中文输入、教练对话、事件、记忆、历史、workflow 和服务操作，后台调用已有 CLI |
+| 终端界面 | ui 全屏交互，中文输入、GPT对话、事件、记忆、历史、workflow 和服务操作，后台调用已有 CLI |
 | 定时跟进 | 绝对时刻或当前回合完全结束后的延迟唤醒；发送 CLI 退出后仍由独立 daemon 执行 |
 | 会话延续 | 按 workflow + task 隔离持久会话，恢复明确绑定的 session |
 | Tijian | 26 个题库、状态/历史、评分、计划、日报、题单、备份操作，以及 stdio MCP bridge |
@@ -20,7 +20,7 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI 教练框架：持久化�
 | 后台服务 | systemd user unit 的生成、校验、安装、启停、启用/禁用、查询、日志和卸载 |
 | 可观测性 | 配置/数据库/OMP/服务诊断，事件、run、最终回复与恢复记录查询 |
 
-教练提示放在外部 workflow，Runtime 不写死题目选择、训练时长或教学策略。安排仍需结合用户实际情况判断。异步回复保存在本地，目前没有网页、聊天平台推送或桌面通知。
+GPT提示放在外部 workflow，Runtime 不写死题目选择、训练时长或教学策略。安排仍需结合用户实际情况判断。异步回复保存在本地，目前没有网页、聊天平台推送或桌面通知。
 
 ## 环境要求
 
@@ -101,7 +101,24 @@ mode 指导外部 coach，不改变 Runtime 调度语义。任务 ID 由你决�
 
 需要交互终端、有效 TERM 和 UTF-8 locale，建议 80×24 或更大；编辑器负责中文折行、多行贴上、滚动和缩放。prompt_toolkit 由 pip 自动安装，测试的屏幕解析器 pyte 属于 `.[test]` 可选依赖。当前显示保存的最终回复，没有 token/tool 实时流。
 
+UI 顶栏显示当前系统时间，消息显示时间戳；日期直接使用系统时区（含对应日期的夏令时），数据库仍保存 UTC。输入框上方显示当前 workflow/task 最近的待执行任务、触发时间与实时倒计时，`/timers` 可查看最多 100 项及详情。after-turn 任务在本回合结束前显示“待起算”；倒计时到零显示“等待派发”，由 daemon 实际状态确认是否执行。重新打开 UI 会恢复队列状态。
+
+界面与 Agent 自称统一为 GPT，默认/自定义系统提示都会附加命名约定；保留 event.md、个人 Skill 和历史原文。工程 Skill 与通用模板已在源代码远端，自定义 Skill/对话则进入独立用户数据 Git，本机目前未配置该数据仓库的 remote。完整检查结果见 [Git 资料稽核](docs/privacy-audit.md)。
+
+UI 启动时会同步终端代理并检查代理 TCP 端口，也可用 `/proxy` 重查。HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY（含小写）以及 OMP 的 PI_PROXY/PI_PROXY_PROVIDER 保存在本机私密 `config.service.env`，不进入 Git。service install/start/restart 与 serve 启动会同步检查；无终端代理变量时保留已保存配置，变量显式设为空可清除此项。每次新建 OMP 子程序都会读取最新代理，无需为后续同步重启 daemon；已运行回合保持原环境。端口可达不代表模型认证或生成请求成功。
+
 所有数据操作仍调用独立 CLI 子进程，UI 不直接写数据库，也不自动启动/停止 daemon。正文用私密临时文件传递；提交未确认时 `/retry-send` 用原标识幂等核对。Ctrl+C 清空草稿；空输入连续两次 Ctrl+C、空输入 Ctrl+D 或 `/quit` 退出，不取消已入库事件。完整操作见 [终端 UI 说明](docs/terminal-ui.md)。
+
+选择模型和思考等级（0.16.0）：
+
+```text
+/select-model                       读取本机 OMP 模型清单，输入筛选、↑↓ Enter 选择
+/select-model provider/model         直接指定模型；default 恢复继承
+/select-thinking-hardness            选择思考等级
+/select-thinking-hardness high       直接指定；default 恢复继承
+```
+
+设置按 workflow 保存，所有 task 从下一次派发起生效，正在执行的回合保留旧设置；不需要为每次选择重启服务。切换到明确模型时思考等级设为 `auto`，再用第二个命令调整。菜单按模型元数据列出等级；直接输入的等级为 off/minimal/low/medium/high/xhigh/max/auto，具体兼容性由 OMP 校验。设置随现有独立 Git 用户数据仓库同步，其他设备仍需自行配置对应 provider 和凭证。升级程序后先重启空闲 daemon 并重开 UI。
 
 在 UI 中自定义系统提示词和三类用户 Skill（0.12.0）：
 
@@ -113,9 +130,11 @@ mode 指导外部 coach，不改变 Runtime 调度语义。任务 ID 由你决�
 /skills category training-review  移动已有 Skill 的分类
 ```
 
+一次性提醒可以直接说“10 分钟后提醒我检查进度”或“定时任务测试：请你设计一个 10min 的定时任务”，不需要填写 JSON。明确说“仅设计、不执行”时只给方案。默认不会主动循环跟进，排程成功以真实命令结果为准。
+
 长任务等待期间显示耗时；重新进入 UI 会接着追踪运行中的请求，完成后自动显示最终回复。空闲时每 15 秒核对当前 task 最近 5 个 run，补上其他窗口或后台完成的结果。此为状态轮询，暂不显示逐 token/工具实时流。
 
-Enter 下一项/保存，Ctrl+J 换行；改动保存在当前 workflow，其他 workflow 不受影响。下次派发请求时由 OMP 原生系统提示词/Skill 加载器读取，不需要重启 daemon，现有 task 也可继续。旧历史和已开始的回合不变；保存冲突会保留草稿。三类已启用 Skill 的正文每轮同时加入系统上下文；旧 Skill 默认归入 personal skill。Skill 禁用时不加载；停用工具不影响正文加载。完整范围、生效规则、上限与 CLI 见 [自定义说明](docs/customization.md)。从旧版升级时需先在空闲状态重启 daemon 一次，让它加载新版程序。
+Enter 下一项/保存，Ctrl+J 换行；改动保存在当前 workflow，其他 workflow 不受影响。下次派发请求时由 OMP 原生系统提示词/Skill 加载器读取，不需要重启 daemon，现有 task 也可继续。旧历史和已开始的回合不变；保存冲突会保留草稿。三类已启用 Skill 共同提供名称、分类和用途索引，正文通过 OMP 原生 `skill://名称` 按需读取，不预先加入系统上下文；旧 Skill 默认归入 personal skill。Skill 禁用时不发现；读取正文需要工具权限。完整范围、生效规则、上限与 CLI 见 [自定义说明](docs/customization.md)。从旧版升级时需先在空闲状态重启 daemon 一次，让它加载新版程序。
 
 多设备 Git 保存与自动同步（0.11.1）：
 
@@ -129,7 +148,7 @@ Enter 下一项/保存，Ctrl+J 换行；改动保存在当前 workflow，其他
 /sync pause       暂停自动同步
 ```
 
-保存自定义 prompt、User Skill，以及已结束对话的输入/回复和过滤后的原生文字历史。daemon 首次启动自动在 `state_dir/user-data-git` 建立独立仓库，同一 Runtime 的所有 workflow/task 和教练对话共用它，不必先设置 remote。默认每 60 秒本地 commit，有明确配置的 remote 才自动 pull/push；UI 退出后继续运行。另一设备使用自己的数据目录与认证，配置同一 remote；已有同 ID 的未修改 workflow 自动应用，新 ID 用 `/sync bind ID` 指定本机 workspace。
+保存自定义 prompt、User Skill，以及已结束对话的输入/回复和过滤后的原生文字历史。daemon 首次启动自动在 `state_dir/user-data-git` 建立独立仓库，同一 Runtime 的所有 workflow/task 和GPT对话共用它，不必先设置 remote。默认每 60 秒本地 commit，有明确配置的 remote 才自动 pull/push；UI 退出后继续运行。另一设备使用自己的数据目录与认证，配置同一 remote；已有同 ID 的未修改 workflow 自动应用，新 ID 用 `/sync bind ID` 指定本机 workspace。
 
 机器配置/凭证、活跃 SQLite、执行队列和 OMP 可执行会话不导入其他设备；并发配置编辑保留两边版本，不强推覆盖。remote 留空时仅本地 Git 保存，不复用源码 origin。完整范围、离线/冲突行为、CLI 与限制见 [多设备 Git 同步](docs/git-sync.md)。
 
@@ -176,7 +195,7 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
 - WorkingDirectory 支持空格、引号、百分号和美元符，拒绝反斜线与末尾空白；可用 `--working-directory /absolute/existing/path` 明确选择。
 - 需要注销后继续运行时，由你自行决定是否执行 `loginctl enable-linger "$USER"`；Paveway 不更改 linger 或登录/开机策略。
 
-## Workflow 与教练数据
+## Workflow 与GPT数据
 
 ```bash
 .venv/bin/oicoach-runtime workflow create my-coach --template coach \
@@ -194,7 +213,7 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
   --dedupe-key structured-plan-1 --payload-file examples/coach-plan.json
 ```
 
-自动跟进默认关闭。需要一次后续检查时，在 payload 明确给 `auto_followup: true` 与用户指定的 `next_check_seconds`，并给 OMP 调用 Runtime CLI 的工具权限。coach 被要求使用当前 run 的 after_turn 排程，检查成功后才声明已安排；后续事件关闭自动跟进，避免无限调用。是否真已排程以 events list/show 为准。关机/休眠期间无法准时执行，恢复后依次处理逾期事件。
+自动跟进默认关闭。用户明确请求一次定时检查（例如“定时任务测试：请你设计一个 10min 的定时任务”）即可授权本次排程，也可在 payload 明确给 `auto_followup: true` 与用户指定的 `next_check_seconds`；仅讨论设计或明确要求不执行时不排程。OMP 仍需有调用 Runtime CLI 的工具权限。coach 被要求使用当前 run 的 after_turn 排程，检查成功后才声明已安排；后续事件关闭自动跟进，避免无限调用。是否真已排程以 events list/show 为准。关机/休眠期间无法准时执行，恢复后依次处理逾期事件。
 
 调整模板应更新 manifest.version。已有 task 绑定原 workspace/revision；变更后旧 task 会 blocked，不会偷偷新建会话。继续旧 task 需恢复原条件，新版本使用新 task ID。细节见 [workflow 契约](docs/workflow-contract.md)。
 
@@ -321,7 +340,7 @@ Tijian 的 outcome=uncertain 是另一层：模型正常收到工具错误时，
 
 当前任务仍通过独立 OMP session 恢复上下文（L1）。长期笔记（L2）支持用户偏好、事实、摘要和待验证推测；历史（L3）支持搜索既有输入/回复及只读查询原生 OMP 会话文字。无需 embedding 服务或额外 MCP，不修改 OMP 全局记忆设置。
 
-新建 coach workflow 默认开启记忆注入；旧 workflow 不自动覆盖，需在 manifest 顶层加入 `memory_enabled = true` 并合并新版 coach 记忆说明。修改模板时提升 workflow version，并使用新 task，原任务绑定的旧 revision 保留。共享笔记跨本 workflow 的 task 使用，带 --task 的笔记只注入该任务。每轮注入最多 8 KiB，不自动塞入全部历史。
+新建 coach workflow 默认开启记忆注入；旧 workflow 不自动覆盖，需在 manifest 顶层加入 `memory_enabled = true` 并合并新版 coach 记忆说明。修改模板时提升 workflow version，并使用新 task，原任务绑定的旧 revision 保留。共享笔记跨本 workflow 的 task 使用，带 --task 的笔记只注入该任务。每轮记忆快照最多 **10,000 tokens**，最近对话也独立限制为 **10,000 tokens**（o200k_base，按 JSON 文本计数）。记忆快照注入系统 prompt；事件 memory 字段仅保留预算、截断状态和位置，不再重复携带 notes。完整会话、记忆总库和 Git 历史仍保留，遗漏内容按需检索；单轮输入过大也可能被截短。系统规则、Skill 目录和工具定义另计，因此这不是整个 API 请求的 20k 上限。
 
 ```bash
 # 共享偏好；新建默认 expected-version=0。
@@ -349,7 +368,7 @@ Tijian 的 outcome=uncertain 是另一层：模型正常收到工具错误时，
 
 put 还支持 --task、--content-file、--source-event、--expires-at；正文最多 4096 UTF-8 字节。更新必须带 --expected-version 读到的版本，防止并发覆盖；更新为完整替换，需重新传希望保留的属性。过期笔记不注入，删除会清空笔记内容并保留版本墓碑。历史会话/旧回复/备份不随笔记删除，不能把该命令称为彻底擦除所有记录。
 
-搜索是支持中文的字面子串检索，不是向量/语义检索。messages 返回所有历史分支的文字片段（含 parent_id），不包含图像/隐藏思考，不代表当前分支或某次 run 的完整快照。用户可让有工具权限的 coach 记住/更正/忘记明确事实；只有实际工具成功才算保存。完整限制、升级和 API 见 [记忆说明](docs/memory.md)。
+搜索是支持中文的字面子串检索，不是向量/语义检索。messages 返回所有历史分支的文字片段（含 parent_id），不包含图像/隐藏思考，不代表当前分支或某次 run 的完整快照。Agent 应在关键进展及每轮结束前及时维护有证据的记忆，用户也可要求有工具权限的 GPT 记住/更正/忘记明确事实；只有实际工具成功才算保存。完整限制、升级和 API 见 [记忆说明](docs/memory.md)。
 
 ## 完整配置参考
 
@@ -370,6 +389,7 @@ adapter = "omp-rpc"
 executable = "omp" # 可为绝对路径，不接受 shell 命令字符串
 profile = ""
 model = ""
+thinking = ""
 tools_enabled = true
 extensions_enabled = true
 skills_enabled = true
@@ -467,7 +487,17 @@ systemd 测试创建独立 UUID unit，执行启停/启用/禁用、SIGKILL 和�
 
 0.11.0 新增独立 Git 多设备配置/历史同步后，最终安装包主回归 **174 项：158 通过、16 跳过、无失败（178.887 秒）**。含两个 daemon 自动同步、实际 bare remote 往返/并发冲突、离线提交与队列隔离，以及 UI 22 项中的真实终端配置/后台 push/历史查询/暂停。本机已实际运行本地 Git 保存；互联网 remote 尚未指定，完整范围见运行报告。
 
-0.11.1 默认本地 Git 与 UI remote 配置补充后，完整回归 **178 项：162 通过、16 跳过、无失败（195.150 秒）**，覆盖未配置远端的自动归档、多教练共用仓库、remote 移除保留数据和实际终端操作。本机服务已升级并核对归档成功，仍为纯本地模式。
+0.11.1 默认本地 Git 与 UI remote 配置补充后，完整回归 **178 项：162 通过、16 跳过、无失败（195.150 秒）**，覆盖未配置远端的自动归档、多GPT共用仓库、remote 移除保留数据和实际终端操作。本机服务已升级并核对归档成功，仍为纯本地模式。
+
+0.14.0 增加系统时区时间戳与实时倒计时：基础定向 **20 项通过（26.695 秒）**，修复后台刷新与表单确认竞争后，完整 UI 加 after-turn 集成 **32 项通过（54.223 秒）**，两组覆盖 49 个不同测试。实际终端验证倒计时、到时执行一次、草稿保留及取消操作；本机服务已升级，未创建额外用户定时任务。完整范围见 [运行报告](docs/runtime-testing.md)。
+
+0.15.0 将自定义 Skill 改为原生按需读取。自定义设置/UI **38 项通过（58.498 秒）**，实际 OMP 无模型验收 **2 项通过（7.117 秒）**，确认三类索引可发现、正文不预先注入、停用工具/Skill 不退回全文注入。当前模型服务返回回合错误，模型实际读取文件的端到端验收未通过；没有将原生发现验证称作模型验收成功，见 [运行报告](docs/runtime-testing.md)。
+
+0.16.0 新增 `/select-model` 与 `/select-thinking-hardness`。配置/自定义设置/Git/完整 UI 与回合切换定向回归 **86 项通过（104.652 秒）**，实际 OMP 模型与 high/low 参数验收 **1 项通过（5.379 秒）**。包括真实 PTY 选择、下一回合生效、保持已有会话及双设备同步；本机已升级，未替用户选择模型或发起训练回合。验收不调用模型服务，详见 [运行报告](docs/runtime-testing.md)。
+
+0.17.0 增加启动代理同步/检查及后续 OMP 代理热加载。定向回归 **77 项通过（81.752 秒）**，真实 openai-codex/gpt-6-luna、low 调用返回 PROXY_OK。本机服务已取得代理，先前卡住的回合保留为 uncertain，未自动重播；可用 /new 后重新发送，或人工核对恢复原事件。详见 [运行报告](docs/runtime-testing.md)。
+
+0.18.0 统一 GPT 称谓及系统命名约定。回归 **56 通过、1 条件略过（78.777 秒）**，最终定向 **12 项通过（18.814 秒）**，真实 Luna 自述验证通过；event.md、个人配置与历史原文保留。工程 Skill 等文件确实已在源码远端，个人 Skill/对话目前在没有 remote 的独立本机 Git，见 [Git 稽核](docs/privacy-audit.md)。
 
 0.12.0 三类 Skill 同时加载后，完整回归 **180 项：164 通过、16 跳过、无失败（214.227 秒）**。实际 OMP 原生加载另验收通过，确认 append/replace 都包含三类完整正文；本机服务已升级。
 
@@ -481,7 +511,7 @@ systemd 测试创建独立 UUID unit，执行启停/启用/禁用、SIGKILL 和�
   --workflow example --task demo --at now --reason smoke --dedupe-key demo-1
 ```
 
-该 demo 的回复来自 fixture，不是模型或教练结果。
+该 demo 的回复来自 fixture，不是模型或GPT结果。
 
 ## 常见问题
 
@@ -501,7 +531,7 @@ systemd 测试创建独立 UUID unit，执行启停/启用/禁用、SIGKILL 和�
 
 ## 范围与文档
 
-已交付单机、单前景 run 框架、初版外部教练 workflow、Tijian 公开 CLI 适配和 L2 笔记/L3 字面历史检索。尚不含跨设备同步、向量语义检索、全历史自动蒸馏、网页/消息平台前端、自动荐题质量保证或多 Agent 并行。
+已交付单机、单前景 run 框架、初版外部GPT workflow、Tijian 公开 CLI 适配和 L2 笔记/L3 字面历史检索。尚不含跨设备同步、向量语义检索、全历史自动蒸馏、网页/消息平台前端、自动荐题质量保证或多 Agent 并行。
 
 完整 Tijian Desktop UI、运行中 Desktop projection routing、真实外部 OJ 抓取、需 Desktop executor 的向量重算，以及 CLI 未公开的 GUI-only 功能，仍受上游与环境限制；接口存在不等于这些实机验收已完成。未承诺 Windows/macOS Runtime；其他版本请运行验证。
 

@@ -46,7 +46,7 @@ class CliClient:
             values = {"--workflow", "--task", "--dedupe-key", "--mode", "--query", "--key", "--title", "--kind",
                       "--expected-version", "--source-event", "--expires-at", "--workspace", "--at", "--reason", "--offset",
                       "--expected-revision", "--name", "--description", "--repository", "--remote", "--branch",
-                      "--interval", "--device", "--run", "--session", "--head"}
+                      "--interval", "--device", "--run", "--session", "--head", "--model", "--thinking"}
             normalized, iterator = [], iter(map(str, arguments))
             for argument in iterator:
                 if argument in values:

@@ -76,6 +76,10 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--json", action="store_true", help="Machine-readable v1 JSON output")
     for command in (init, doctor):
         common(command)
+    proxy = commands.add_parser("proxy", help="Synchronize local proxy settings and check proxy TCP reachability")
+    proxy_commands = proxy.add_subparsers(dest="operation", required=True)
+    for action in ("sync", "status"):
+        common(proxy_commands.add_parser(action))
     verify = commands.add_parser("verify-omp", help="Inspect real OMP in a disposable workspace; model turns are opt-in")
     common(verify)
     verify.add_argument("--with-model", action="store_true", help="Run three small model turns to verify resume and task isolation")
@@ -103,12 +107,12 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--lines", type=int, default=50)
     workflow = commands.add_parser("workflow", help="Create and inspect editable external workflows")
     workflow_commands = workflow.add_subparsers(dest="operation", required=True)
-    for name in ("create", "list", "show", "connect-tijian", "customize"):
+    for name in ("create", "list", "show", "models", "connect-tijian", "customize"):
         child = workflow_commands.add_parser(name)
         common(child)
         if name == "customize":
             actions = child.add_subparsers(dest="customize_operation", required=True)
-            for action in ("show", "prompt", "skill-put", "skill-delete", "skill-enable", "skill-disable"):
+            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable"):
                 operation = actions.add_parser(action)
                 common(operation)
                 operation.add_argument("identifier")
@@ -116,6 +120,10 @@ def parser() -> argparse.ArgumentParser:
                     operation.add_argument("--expected-revision", type=int, required=True)
                 if action == "prompt":
                     operation.add_argument("--mode", choices=("append", "replace"), default="append")
+                if action == "inference":
+                    from .customization import THINKING_LEVELS
+                    operation.add_argument("--model", default=None)
+                    operation.add_argument("--thinking", choices=("", *THINKING_LEVELS), default=None)
                 if action.startswith("skill-"):
                     operation.add_argument("--name", required=True)
                 if action == "skill-put":
@@ -255,6 +263,10 @@ def parser() -> argparse.ArgumentParser:
         listing.add_argument("--offset", type=int, default=0, help="Skip records; each page contains at most 100 per status")
         if category == "events":
             listing.add_argument("--status", choices=[s.value for s in EventStatus])
+            upcoming = children.add_parser("upcoming", help="Up to 100 pending events ordered by due time; no payloads")
+            common(upcoming)
+            upcoming.add_argument("--workflow", required=True)
+            upcoming.add_argument("--task")
         elif category == "runs":
             listing.add_argument("--task")
         if category != "recover":
@@ -352,6 +364,11 @@ def remote_arguments(args):
             raw["workflow_id"] = args.workflow
         return "agent.restart", raw
     raw = {}
+    if args.command == "events" and args.operation == "upcoming":
+        raw["workflow_id"] = args.workflow
+        if args.task is not None:
+            raw["task_id"] = args.task
+        return "events.upcoming", raw
     if args.operation == "list":
         raw["offset"] = args.offset
         if args.command == "events" and args.status:
@@ -404,12 +421,20 @@ def main(argv: list[str] | None = None) -> int:
             report = initialize(path, args.state_dir, args.workflow_root)
         elif args.command == "doctor":
             report = diagnose(load_config(path), path)
+        elif args.command == "proxy":
+            from .proxy import status, synchronize
+            report = synchronize(path) if args.operation == "sync" else status(path)
         elif args.command == "serve":
+            from .proxy import synchronize
+            proxy = synchronize(path)
+            print(json.dumps({"component": "proxy", "transition": "startup_check", **proxy}), flush=True)
             from .scheduler import Runtime
             asyncio.run(Runtime(load_config(path), path).serve())
             return 0
         elif args.command == "verify-omp":
             from .smoke import verify_omp
+            from .proxy import child_environment
+            os.environ.update(child_environment(path))
             report = asyncio.run(verify_omp(load_config(path), with_model=args.with_model))
         elif args.command == "service":
             from . import service
@@ -477,12 +502,17 @@ def main(argv: list[str] | None = None) -> int:
                             raise RuntimeContractError("Customization content must be valid UTF-8") from None
                     if args.customize_operation == "prompt":
                         values["mode"] = args.mode
+                    elif args.customize_operation == "inference":
+                        values.update({key: getattr(args, key) for key in ("model", "thinking") if getattr(args, key) is not None})
                     else:
                         values["name"] = args.name
                         if args.customize_operation == "skill-put":
                             values["description"] = args.description
                             values["category"] = args.category
                     report = customization.update(config, args.identifier, args.expected_revision, args.customize_operation, **values)
+            elif args.operation == "models":
+                from .model_selection import catalog
+                report = catalog(config, args.identifier, config_path=path)
             elif args.operation == "create":
                 report = create(config, args.identifier, args.workspace, args.template)
             elif args.operation == "connect-tijian":

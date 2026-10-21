@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,6 +20,84 @@ from oicoach_runtime.workflow_setup import create
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for a real coach model turn")
 class CoachTests(unittest.IsolatedAsyncioTestCase):
+    async def test_natural_language_timer_without_payload_flags_and_design_only_denial(self):
+        base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
+        with tempfile.TemporaryDirectory(prefix="pw-coach-timer-") as directory:
+            root = Path(directory)
+            path = root / "config.toml"
+            initialize(path, str(root / "state"), str(root / "workflows"))
+            config = load_config(path)
+            config = replace(config, server=replace(config.server, poll_interval_seconds=0.05),
+                agent=replace(base.agent, tools_enabled=True, extensions_enabled=False, skills_enabled=False,
+                    rules_enabled=False, startup_timeout_seconds=30, turn_timeout_seconds=120,
+                    settle_timeout_seconds=15, graceful_stop_seconds=1))
+            path.write_text(config_text(config))
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            create(config, "coach", workspace)
+            async def api(command, arguments=None):
+                return await asyncio.to_thread(request, config.server.socket_path, command, arguments)
+            with (root / "daemon.log").open("w") as log:
+                daemon = await asyncio.create_subprocess_exec(sys.executable, "-m", "oicoach_runtime", "serve",
+                    "--config", str(path), stdout=log, stderr=log)
+                try:
+                    async with asyncio.timeout(10):
+                        while True:
+                            self.assertIsNone(daemon.returncode)
+                            try:
+                                if (await api("status"))["daemon"] == "running":
+                                    break
+                            except RuntimeContractError:
+                                pass
+                            await asyncio.sleep(.05)
+                    cli = await asyncio.create_subprocess_exec(sys.executable, "-m", "oicoach_runtime", "ask",
+                        "--config", str(path), "--workflow", "coach", "--task", "timer", "--mode", "plan",
+                        "--message", "定時任務測試：請你設計一個 10min 的定時任務", "--dedupe-key", "natural-timer", "--json",
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    stdout, stderr = await asyncio.wait_for(cli.communicate(), 10)
+                    self.assertEqual(cli.returncode, 0, stderr.decode())
+                    event = json.loads(stdout)["result"]
+                    async with asyncio.timeout(150):
+                        while True:
+                            parent = await api("events.show", {"event_id": event["event_id"]})
+                            if parent["status"] in ("succeeded", "failed", "blocked", "uncertain", "dead_letter"):
+                                break
+                            await asyncio.sleep(.1)
+                    self.assertEqual(parent["status"], "succeeded", parent)
+                    self.assertNotIn("auto_followup", parent["payload"])
+                    rows = await api("events.list")
+                    self.assertEqual(len(rows), 2, (await api("runs.output", {"run_id": parent["run_id"]})))
+                    child = await api("events.show", {"event_id": next(r["event_id"] for r in rows if r["event_id"] != parent["event_id"])})
+                    self.assertEqual(child["schedule_mode"], "after_turn")
+                    self.assertEqual(child["anchor_run_id"], parent["run_id"])
+                    self.assertEqual(child["relative_seconds"], 600)
+                    self.assertEqual(child["status"], "queued")
+                    self.assertEqual(child["attempt"], 0)
+                    self.assertFalse(child["payload"]["auto_followup"])
+                    delay = (datetime.fromisoformat(child["not_before_utc"]) - datetime.fromisoformat(parent["completed_at"])).total_seconds()
+                    self.assertAlmostEqual(delay, 600, places=3)
+                    # A contradictory opt-in flag cannot override an explicit design-only request.
+                    denied = await api("schedule", {"workflow_id": "coach", "task_id": "design-only", "at": datetime.now(timezone.utc).isoformat(),
+                        "reason": "design only", "dedupe_key": "design-only",
+                        "payload": {"message": "仅设计一个 10 分钟后的提醒方案，不要实际执行，不要排程，不要调用任何工具。",
+                                    "mode": "plan", "auto_followup": True, "next_check_seconds": 600}})
+                    async with asyncio.timeout(150):
+                        while True:
+                            denied = await api("events.show", {"event_id": denied["event_id"]})
+                            if denied["status"] in ("succeeded", "failed", "blocked", "uncertain", "dead_letter"):
+                                break
+                            await asyncio.sleep(.1)
+                    self.assertEqual(denied["status"], "succeeded", denied)
+                    self.assertEqual(len(await api("events.list")), 3)
+                finally:
+                    if daemon.returncode is None:
+                        daemon.terminate()
+                    try:
+                        await asyncio.wait_for(daemon.wait(), 10)
+                    except TimeoutError:
+                        daemon.kill()
+                        await daemon.wait()
+
     async def test_installed_coach_ask_and_saved_reply_without_tijian(self):
         base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
         with tempfile.TemporaryDirectory(prefix="pw-coach-") as directory:

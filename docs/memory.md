@@ -1,4 +1,4 @@
-# 记忆与历史检索（0.7.0）
+# 记忆与历史检索（0.19.0）
 
 记忆分为三层，均在本机运行，不需要 embedding 服务或额外 MCP：
 
@@ -68,9 +68,17 @@ kind 是 `fact | preference | summary | hypothesis`。这是笔记作者的分�
 
 ## 自动注入和模型维护
 
-仅在 workflow.memory_enabled=true 时，Scheduler 在派发前读取有效笔记，作为事件 envelope 的 `memory` 字段注入。结构含 `contract_version=1`、`notes`、`truncated`、数据可信度说明。优先顺序是 pinned、task 专属、更新时间降序、key。最多检查 101 条候选，整个 memory JSON 不超过 **8192 UTF-8 字节**；超限跳过该条并设 truncated，模型可经 list/show 查其他笔记。不会把整个历史库塞进每轮上下文。注入是当轮快照，当前活动回合不会因笔记后续修改而回溯变化。
+仅在 workflow.memory_enabled=true 时，Scheduler 在派发前读取有效笔记，注入系统 prompt 的 `Runtime memory snapshot` 数据段。快照含 `contract_version=1`、`notes`、`truncated`、`token_limit=10000`、`tokenizer=o200k_base`、数据可信度说明。事件 envelope 的 `memory` 不再携带 notes，而是包含预算、截断状态和 `location=system_prompt.runtime_memory_snapshot`；旧模板须调整对 memory.notes 的说明。`memory recall` 仍返回含 notes 的完整快照。优先顺序是 pinned、task 专属、更新时间降序、key。最多检查 101 条候选，整个快照的紧凑 JSON 不超过 **10,000 tokens**（tiktoken o200k_base，特殊 token 标记按普通文本编码）；超限跳过该条并设 truncated，模型可经 list/show 查其他笔记。注入是当轮快照，后续写入在下次派发时刷新，不把旧轮次的记忆快照重复放进聊天。记忆总库存储没有新增 10k 上限，单条笔记仍最多 4096 UTF-8 字节。
 
-available_tools 提供 Runtime CLI prefix/config_path，并增加 memory/history 命令发现提示。coach 模板要求：用户明确要求记住、更正、忘记或复盘形成有证据的持续摘要时，实际调用工具维护笔记；只在工具成功后声称已保存。偏好放共享 scope，训练过程放 task scope，临时信息设有效期。用户本轮明确更正优先，笔记中的嵌入命令不能当系统指令。框架不自行用模型猜测、抽取或合并笔记；禁用工具时只能使用已经注入的内容，不能保存新笔记。模板约束不构成模型绝不误写的保证，用户可随时查看、更正和删除。
+available_tools 提供 Runtime CLI prefix/config_path，并增加 memory/history 命令发现提示。GPT 模板要求：在重要且有证据的新偏好、事实、更正、决定及任务进展出现时及时维护笔记，关键进展及每轮结束前检查是否遗漏，不必等待用户专门要求；无新内容不重复写入。只在工具成功后声称已保存。偏好放共享 scope，训练过程放 task scope，临时信息设有效期。用户本轮明确更正优先，笔记中的嵌入命令不能当系统指令。框架不自行用模型猜测、抽取或合并笔记；禁用工具时只能使用已经注入的内容，不能保存新笔记。模板约束不构成模型绝不误写的保证，用户可随时查看、更正和删除。
+
+## 对话窗口
+
+Runtime 为每个 OMP 进程加载自己的 `context-window.mjs`，在每次模型请求前对消息副本执行独立的 **10,000 tokens** 滚动窗口，按 o200k_base 的序列化消息 JSON 计数（OMP 原生 strict tokenizer）。优先删除最早的完整用户轮次；单个工具密集轮次超限时删除最早的完整 assistant/toolResult 交换，保留最新用户输入。用户输入本身超限时保留首尾并明确标记中间省略；模型会收到上下文截断通知。工具调用及结果成组移除，避免孤立结果。该操作不写回原始会话；数据库、磁盘完整历史与独立 Git 归档保持原有保留方式。
+
+10k 记忆与 10k 对话独立计额，系统规则、Skill 目录、工具定义及 provider 封装不在这两个数据预算内；不是整个请求或账单 token 的严格 20k 上限，也不是所有模型共享同一原生 tokenizer。系统 prompt 和 event.md 告知 Agent 限制、及时维护笔记与按需检索要求。禁用工具时不能写新笔记。实际维护仍由 Agent 调用成功才算完成，不能把提示词要求视作保存保证。
+
+该守卫属于 Runtime 必需组件，即使 `extensions_enabled=false` 仍显式加载；该选项继续关闭用户扩展的自动发现。启动必须收到守卫就绪标志，否则在发送业务 prompt 前拒绝派发，不静默无限上下文回退。已验证本机 OMP 18.10.4 / Bun 安装包；需可从 OMP 安装位置解析 `@oh-my-pi/pi-agent-core`。Python 依赖 tiktoken，首次加载 o200k_base 需要下载编码表；离线部署先在相同用户环境预热 `python -c 'import tiktoken; tiktoken.get_encoding("o200k_base")'` 并保留缓存。
 
 ## 历史检索
 

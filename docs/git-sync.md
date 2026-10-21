@@ -1,6 +1,6 @@
 # 多设备 Git 用户数据同步（0.11.1）
 
-`/sync` 管理一个独立的用户数据 Git 仓库。daemon 首次启动时自动建立 `state_dir/user-data-git`，默认每 60 秒归档；同一 Runtime 的全部 workflow/task 与教练对话共用这个仓库，配置仍按 workflow 区分。没有 remote 时只维护本地 Git，不执行 fetch/push。已有仓库、设备身份、remote 和暂停状态在重启后保留。daemon 运行时会定期保存本地提交，并在设有 remote 时自动 fetch、merge、push；UI 退出后继续工作。不会采用本项目源码仓库的 origin，也不会自动创建远端仓库。
+`/sync` 管理一个独立的用户数据 Git 仓库。daemon 首次启动时自动建立 `state_dir/user-data-git`，默认每 60 秒归档；同一 Runtime 的全部 workflow/task 与GPT对话共用这个仓库，配置仍按 workflow 区分。没有 remote 时只维护本地 Git，不执行 fetch/push。已有仓库、设备身份、remote 和暂停状态在重启后保留。daemon 运行时会定期保存本地提交，并在设有 remote 时自动 fetch、merge、push；UI 退出后继续工作。不会采用本项目源码仓库的 origin，也不会自动创建远端仓库。
 
 ## 同步范围
 
@@ -12,7 +12,8 @@
 | toolResult、工具调用参数、thinking、图片/二进制 | 不进入同步文字档案 |
 | API key、service.env、OMP 登录/profile 认证文件 | 不复制 |
 | 活跃 SQLite、执行队列、lease、socket、进程状态 | 不同步、不导入、不在另一设备重播 |
-| 本机 config.toml 的路径、模型/工具权限、systemd 配置 | 每设备独立管理，不用远端路径覆盖本机 |
+| workflow 的模型选择与思考等级（0.16.0） | 随自定义设置同步；provider/凭证仍由各设备配置 |
+| 本机 config.toml 的路径、默认模型/工具权限、systemd 配置 | 每设备独立管理，不用远端路径覆盖本机 |
 | coach/workflow 模板代码、Tijian 题库、L2 记忆笔记 | 不属于此用户配置/历史同步，仍由各自存储与备份管理 |
 
 此处“用户配置”指 [UI 自定义设置](customization.md)，不包括整份机器配置。文字历史可能保留用户原文中的文件路径或敏感文本；它们仅作为历史资料，不当作另一设备的可执行配置。同步不提供加密，建议使用你控制的私有仓库。删除当前提示词/Skill 不会清除 Git 历史或已有备份。

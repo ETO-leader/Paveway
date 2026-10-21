@@ -1,7 +1,7 @@
 ---
 name: oi-framework-engineer
 description: >-
-  實作、重構、測試與維護獨立的 OI 教練 Agent 運行框架。適用於開發
+  實作、重構、測試與維護獨立的 OI GPT Agent 運行框架。適用於開發
   OMP (oh-my-pi) RPC/CLI 適配器、持久化定時喚醒、Agent 子進程監督與自動重啟、
   佇列互斥、故障恢復、工作流接口、會話持久化、CLI、Linux systemd 部署及相關測試。
   本 Skill 僅指導「框架工程」，不制定 OI 訓練或對話 workflow。
@@ -11,7 +11,7 @@ description: >-
 
 ## 0. 角色與最重要的邊界
 
-你是**負責把運行框架寫成真實、可測試、可部署程式的工程 Agent**，不是 OI 學習教練。當使用者要求實作、修改、審查或除錯本框架時，應直接檢查倉庫、修改程式、執行測試並提供結果；**不要只給架構建議或偽代碼**，除非使用者明確只要設計。現有程式優先，不得在未檢查倉庫的情況下假定語言、目錄、工具或功能已存在。
+你是**負責把運行框架寫成真實、可測試、可部署程式的工程 Agent**，不是 OI 學習GPT。當使用者要求實作、修改、審查或除錯本框架時，應直接檢查倉庫、修改程式、執行測試並提供結果；**不要只給架構建議或偽代碼**，除非使用者明確只要設計。現有程式優先，不得在未檢查倉庫的情況下假定語言、目錄、工具或功能已存在。
 
 本框架的工作：
 
@@ -179,7 +179,7 @@ oicoach-runtime recover retry EVENT_ID --confirm-duplicate-risk
 
 可縮減首版命令，但**不能省略**：排程、取消／修改、查狀態、啟動守護服務、故障恢復與 doctor。支援程式易解析 JSON 輸出、非零錯誤碼、錯誤語義；禁止 Agent 直接修改 SQLite 或任意刪 `.lock`。CLI 與 daemon 使用 Unix domain socket（Linux 預設）或同等安全本地 IPC；`serve` 是**常駐程序**，不是輸入一條 prompt 就退出的程序。具體 IPC schema 應版本化。
 
-將 CLI 使用契約寫到公開文件，供獨立 workflow Skill 引用。**不可要求教練 Skill 掌握 daemon 內部表結構或 OMP RPC 細節**。
+將 CLI 使用契約寫到公開文件，供獨立 workflow Skill 引用。**不可要求GPT Skill 掌握 daemon 內部表結構或 OMP RPC 細節**。
 
 ## 4. 持久化喚醒佇列與調度語義
 
@@ -272,14 +272,14 @@ last_error_code / last_error_message
 
 ## 6. Workflow 是獨立組件：Runtime 只提供契約
 
-不得在框架內編寫「早晨如何安排題目」「做不出來何時提示」等教練決策。Runtime 只需要：
+不得在框架內編寫「早晨如何安排題目」「做不出來何時提示」等GPT決策。Runtime 只需要：
 
 - 接受 `workflow_id`，由 `WorkflowProvider` 定位**外部** workflow 定義與 prompt 模板。
 - 對外提供 `start`、`wake`、`recovery` 等事件型別和穩定上下文 envelope；workflow 決定如何回覆及下一個 wake。
 - Prompt 輸入至少包含：`event_id`、`run_id`、`workflow_id`、`task_id`、`scheduled_at`、`actual_started_at`、`reason`、`payload`、`missed_by_seconds`、`runtime_cli_contract_version` 和已知可用工具描述；不得混用不可信 `payload` 與高優先級系統命令。
 - `WorkflowProvider` 只把模板檔案當作資料來讀取，**不應執行任意模板內代碼**；替換只允許明確列出的變數，禁止任意 Python/JS `eval`。
 - workflow 版本、模板 path、session policy、可用工具和權限限制可配置；啟動時預先驗證未知 workflow、路徑、缺檔，執行時回 `blocked`，不要無聲 fallback 到另一個 workflow。
-- 可以加一個**純測試用** no-op/echo workflow fixture 證明引擎能運行；交付不要把此測試模板冒充正式 OI 教練。
+- 可以加一個**純測試用** no-op/echo workflow fixture 證明引擎能運行；交付不要把此測試模板冒充正式 OI GPT。
 - 使用者的外部 MCP 由 OMP 的設定和 workflow 連接；框架只負責啟動選定 profile/config。**沒有 Tijian MCP 時，Runtime 仍能 schedule、dispatch、watchdog、report 狀態**。
 
 ### 6.1 建議的獨立 workflow manifest（示意，不是訓練內容）
@@ -488,6 +488,6 @@ packaging/systemd/oicoach-runtime.service
 2. **如何運行**：安裝、`init`、`doctor`、`serve`、建立一條測試事件、查狀態，以及按需部署 systemd 的指令。
 3. **測試結果**：哪些單元／整合／故障注入／真實 OMP 測試真的通過；哪些環境因素阻止了驗證。
 4. **安全和恢復語義**：特別說明任何 `uncertain` 如何核對及重試。
-5. **未完成／下一步**：如真實 MCP 配置、外部教練 workflow 或跨 Agent 適配等，不能冒稱已完成。
+5. **未完成／下一步**：如真實 MCP 配置、外部GPT workflow 或跨 Agent 適配等，不能冒稱已完成。
 
-**最後的成敗標準**：關掉當前 CLI 或當前聊天視窗後，已啟動的 Runtime 仍能獨立運作；在預定時間重新連接正確的 OMP 會話；若發生崩潰，系統可重啟並對每個事件給出可審核的可靠狀態，而且不需要修改任何 OI 教練策略才能完成這些基礎設施工作。
+**最後的成敗標準**：關掉當前 CLI 或當前聊天視窗後，已啟動的 Runtime 仍能獨立運作；在預定時間重新連接正確的 OMP 會話；若發生崩潰，系統可重啟並對每個事件給出可審核的可靠狀態，而且不需要修改任何 OI GPT策略才能完成這些基礎設施工作。

@@ -26,7 +26,7 @@ oicoach-runtime service install --replace --capture-env OPENAI_API_KEY --config 
 oicoach-runtime service restart --config /absolute/config.toml
 ```
 
-`--capture-env NAME` 可重複，僅接受當前 shell 中存在的變量名；值不經 argv，也不寫入 unit 或回傳 JSON。以原子替換建立配置旁 `config.service.env`、權限 0600，生成的 EnvironmentFile 在重啟／下次登入時讀取，不依賴臨時 manager import。已保存變量合併保留，普通 install 不覆寫，更新憑證後需重新捕獲並 restart。拒絕 symlink、不私密或非本工具管理的既有檔案，以及含控制字元的值；請勿提交或分享此檔案。uninstall 保留環境檔，刪除憑證需另行移除。未指定捕獲時不自動複製任何憑證，也不修改 OMP 全域認證。服務使用相同 config 時共用其環境檔。
+`--capture-env NAME` 可重複，僅接受當前 shell 中存在的變量名；值不經 argv，也不寫入 unit 或回傳 JSON。以原子替換建立配置旁 `config.service.env`、權限 0600，生成的 EnvironmentFile 在重啟／下次登入時讀取，不依賴臨時 manager import。已保存變量合併保留，普通 install 不覆寫，更新憑證後需重新捕獲並 restart。拒絕 symlink、不私密或非本工具管理的既有檔案，以及含控制字元的值；請勿提交或分享此檔案。uninstall 保留環境檔，刪除憑證需另行移除。未指定捕獲時不自動複製模型 API 憑證，也不修改 OMP 全域認證。服務使用相同 config 時共用其環境檔。
 
 ```bash
 oicoach-runtime service stop --config /absolute/config.toml
@@ -50,3 +50,16 @@ OICOACH_TEST_SYSTEMD=1 .venv/bin/python -m unittest discover -s tests -p test_sy
 ```
 
 包含 transient --collect unit 的兩次 SIGKILL／uncertain 不重播，以及真正安裝 UUID unit 的特殊路徑、enable/start、SIGKILL 後 queue 恢復、restart、journal、disable/uninstall、DB 保留。finally 清理 unit、enable symlink 與程序，不啟用預設服務／linger。CI 預設跳過實機 service 測試；單元測試仍驗證安裝順序、失敗不發佈、拒絕覆寫與輸入校驗。
+
+## 啟動代理同步（0.17.0）
+
+UI 啟動、service install/start/restart/enable --now 及 serve 啟動會同步當前終端代理。支援 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY 與小寫別名、PI_PROXY 及 PI_PROXY_PROVIDER。大小寫同時存在時，以大寫為準，將同組兩個變數保存成一致值；未提供的項目保留已存設定，顯式空字串清除該項。無代理是允許的直接連線模式，不強制指定代理。
+
+設定合併進 config 旁的私密 config.service.env，目錄／檔案沿用本機權限規則，檔案 0600；加鎖、原子替換以保留先前捕獲的 API key。代理網址可能含認證資訊，不寫入 unit、公開日誌、UI 報告或 Git。啟動檢查只顯示變數名、直接／代理模式及代理 TCP 端口是否可達，不呼叫模型。代理端口不可達會提示，不靜默切換直連。OMP 自有 provider 代理設定與 NO_PROXY 仍影響實際路由。
+
+```bash
+oicoach-runtime proxy sync --config /absolute/config.toml --json
+oicoach-runtime proxy status --config /absolute/config.toml --json
+```
+
+UI 用 /proxy 手動同步及重查，doctor 也報告代理狀態。後續每次啟動 OMP（及 UI 的模型目錄查詢）都讀取保存的最新代理，避免常駐 daemon 沿用過期環境；不用再為每次代理變更重啟 daemon。已在執行的 OMP 無法修改其進程環境，若需立即套用，必須結束該回合再啟動新程序；中斷的 uncertain 回合仍需人工核對，不自動重播。

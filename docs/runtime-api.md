@@ -16,6 +16,7 @@ oicoach-runtime status [--config PATH] [--json]
 oicoach-runtime schedule --workflow ID --task ID --at RFC3339 --reason TEXT --dedupe-key KEY [--payload-file PATH]
 oicoach-runtime schedule --workflow ID --task ID --after-turn SECONDS --run-id RUN_ID --reason TEXT --dedupe-key KEY
 oicoach-runtime events list [--status STATUS] [--offset N]
+oicoach-runtime events upcoming --workflow ID [--task ID]
 oicoach-runtime events show EVENT_ID
 oicoach-runtime events cancel EVENT_ID --expected-version N
 oicoach-runtime events reschedule EVENT_ID --expected-version N --at RFC3339
@@ -32,6 +33,10 @@ oicoach-runtime agent show RESTART_ID
 `verify-omp` 也不依賴既有 daemon，輸出頂層 `api_version/milestone/ok/checks`，退出碼 0 表示選定範圍通過、1 表示失敗。預設僅 transport 檢查，model_roundtrip 明確 SKIP；`--with-model` 發送三個小型模型回合，檢查同 task 續聊與另一 task 隔離。使用暫存私密 workspace、runtime、queue、session 及自有 daemon，最後清理；沿用已選 executable/model/profile 和認證，不修改原配置或既有會話。
 
 `[agent]` 新增可選 `model = ""` 和 `tools_enabled/extensions_enabled/skills_enabled/rules_enabled`（預設皆 true）；轉換成已知 argv，禁止原始 shell flags。verify-omp 始終將四種能力設為 false，模型 selector 可在 TOML 指定。舊配置可省略新欄位，schema_version 仍為 1。
+
+0.16.0 新增本地 CLI `workflow models ID`，查詢所選 OMP executable/profile 的模型目錄與當前 workflow 的 inference 設定，不呼叫模型。`workflow customize inference ID --expected-revision N [--model SELECTOR] [--thinking LEVEL]` 至少提供一項，以原子寫入/CAS 保存；空串恢復繼承。show 的頂層 inference 回傳套用本機預設後的 selector/level，settings.inference 為可選的原始 workflow 覆蓋；缺欄位的舊設定仍按原文讀取。`[agent].thinking` 可選，預設空串，支援 off/minimal/low/medium/high/xhigh/max/auto；非空 workflow 覆蓋優先，下一次 spawn 轉為 --model/--thinking，執行中的回合不變。這些入口不新增 daemon mutation API 或資料庫遷移，UI 入口為 /select-model 和 /select-thinking-hardness，詳見 [自訂設定](customization.md)。
+
+0.17.0 新增本地 `proxy sync/status`（支援 --config/--json），sync 合併目前終端的代理變數到私密服務環境檔，status 只讀取與檢查。報告只含 mode、變數名、代理 TCP 可達性、NO_PROXY=* 標記及生效範圍，不含網址或憑證；不新增 daemon API 或 Git 同步欄位。UI 啟動及 /proxy 執行 sync，serve 與服務啟動亦同步檢查，每次新建 OMP/查模型目錄讀取最新保存值。缺少的變數保留保存值，顯式空串清除此項，已運行 OMP 不變。詳見 [部署代理說明](deployment.md)。
 
 配置優先順序為 `--config`、`OICOACH_CONFIG`、XDG 預設。Runtime 向自有子進程注入 `OICOACH_CONFIG`、`OICOACH_RUN_ID`；後者可作 `--after-turn` 的 run ID 預設，daemon 仍驗證 scope 和 running 狀態。TOML 路徑必須絕對，不做 shell 展開。
 
@@ -52,6 +57,8 @@ oicoach-runtime agent show RESTART_ID
 `cancel/reschedule` 必須提供正整數 expected_version，僅接受 queued/waiting_anchor；reschedule 明確轉成 at 模式。`after_turn` 綁定同 scope 的 running run，在成功 settled 後起算，失敗則 blocked。
 
 events/runs list 每頁最多 100 筆、可用 offset（0–1000000）翻頁；events list 不含 payload，show 才含詳細資料。recover list 每種狀態最多 100 筆，offset 分別套用於各狀態。頁面以建立時間及 ID 排序；並行寫入時不是快照，精確查詢請使用 ID。
+
+0.14.0 新增只讀 `events.upcoming`（CLI `events upcoming`），必填 workflow_id、可選 task_id。返回 queued/waiting_anchor/leased/running 的最多 100 筆摘要，按觸發 UTC、建立時間、ID 排序，未錨定事件排後；包含 event_id/workflow_id/task_id/status/not_before_utc/schedule_mode/relative_seconds/anchor_run_id/created_at/reason/run_id，不含 payload。UI 使用它恢復倒數，不修改排程、資料庫版本或既有 list 語義。
 
 recover list 包含 failed/blocked/uncertain/dead_letter。retry 保留舊 run，只恢復有到期時間且 attempt 尚未達 max_attempts 的事件；uncertain 事件或會話必須顯式 `--confirm-duplicate-risk`。沒有成功 anchor 的相對事件不能偷改成立即執行，請人工核對後另建 at 事件。
 
@@ -95,7 +102,7 @@ Unix domain socket，控制資料夾 0700、socket 0600，透過 SO_PEERCRED 檢
 
 回應保留 `api_version/id`，成功使用 `result`，失敗使用 `error.code/message`。拒絕未知版本、未知欄位及不符參數。無法解析的 frame 可能回 `id:null`。ID 使用 ASCII `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`。
 
-IPC command 為 `status/schedule/events.list/events.show/events.cancel/events.reschedule/runs.list/runs.show/runs.output/recover.list/recover.retry/agent.restart/agent.show`；arguments 使用 snake_case。agent.restart 接受 task_id、可選 workflow_id/reason/reset_circuit；agent.show 接受 restart_id。ask/wait 是 CLI 的組合操作，不新增另一個 mutation path。CLI 保留 server 的 conflict 等結構化錯誤碼，不把業務錯誤重新包成 daemon_unavailable。
+IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.cancel/events.reschedule/runs.list/runs.show/runs.output/recover.list/recover.retry/agent.restart/agent.show`；arguments 使用 snake_case。agent.restart 接受 task_id、可選 workflow_id/reason/reset_circuit；agent.show 接受 restart_id。ask/wait 是 CLI 的組合操作，不新增另一個 mutation path。CLI 保留 server 的 conflict 等結構化錯誤碼，不把業務錯誤重新包成 daemon_unavailable。
 
 模型回合失敗會在既有 event.last_error_code/last_error_message 與 run.error_code/error_message 保存安全分類摘要（例如 agent_auth_failed／HTTP 401），不儲存供應商原始請求、金鑰或錯誤回應。認證、權限、模型不存在、限流、超時、5xx 及中止有各自分類，其他保留 agent_turn_failed。原有 schema/API 版本不變，仍不自動重播已派送請求。
 

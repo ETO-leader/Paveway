@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 
 from oicoach_runtime import customization as custom
+from oicoach_runtime.context_budget import CONTEXT_PROMPT
+
+RUNTIME_PROMPT = custom.IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import load_config
 from oicoach_runtime.errors import ConflictError, WorkflowError
@@ -87,8 +90,8 @@ class CustomizationTests(unittest.TestCase):
         argv = custom.snapshot(settings, session, "run1", True)
         self.assertIn("--append-system-prompt", argv)
         old_prompt = Path(argv[1]).read_text()
-        self.assertTrue(old_prompt.startswith("旧系统提示\n"))
-        self.assertIn("原生正文", old_prompt)
+        self.assertEqual(old_prompt, "旧系统提示\n\n" + RUNTIME_PROMPT)
+        self.assertNotIn("原生正文", old_prompt)
         overlay = json.loads(Path(argv[3]).read_text())
         skill = Path(overlay["skills"]["customDirectories"][0]) / "native-skill/SKILL.md"
         self.assertIn("原生正文", skill.read_text())
@@ -101,7 +104,21 @@ class CustomizationTests(unittest.TestCase):
         self.assertNotIn("--config", disabled)
         self.assertEqual(len(latest["skills"]), 1)
 
-    def test_three_categories_are_loaded_together_in_append_and_replace_modes(self):
+    def test_default_identity_does_not_modify_settings_or_event_template(self):
+        settings = custom.show(self.config, "coach")["settings"]
+        self.assertEqual(settings["revision"], 0)
+        before = json.dumps(settings)
+        event = self.directory / "event.md"
+        original = event.read_bytes()
+        session = self.root / "identity-session"
+        session.mkdir(mode=0o700)
+        argv = custom.snapshot(settings, session, "identity", False)
+        self.assertEqual(argv[0], "--append-system-prompt")
+        self.assertEqual(Path(argv[1]).read_text(), RUNTIME_PROMPT)
+        self.assertEqual(event.read_bytes(), original)
+        self.assertEqual(json.dumps(settings), before)
+
+    def test_three_categories_offer_native_files_without_inlining_bodies(self):
         for index, category in enumerate(reversed(custom.SKILL_CATEGORIES)):
             self.update("skill-put", name="skill-" + str(index), category=category,
                         description="category description", content="BODY_" + category + " ${literal}")
@@ -114,17 +131,22 @@ class CustomizationTests(unittest.TestCase):
             argv = custom.snapshot(settings, session, mode, True)
             self.assertEqual(argv[0], "--system-prompt" if mode == "replace" else "--append-system-prompt")
             prompt = Path(argv[1]).read_text()
-            self.assertTrue(prompt.startswith("CUSTOM_SYSTEM\n"))
-            for category, label in custom.SKILL_CATEGORIES.items():
-                self.assertIn("## " + label, prompt)
-                self.assertIn("BODY_" + category + " ${literal}", prompt)
-            self.assertLess(prompt.index("## OI Introduce"), prompt.index("## user information"))
-            self.assertLess(prompt.index("## user information"), prompt.index("## personal skill"))
+            self.assertEqual(prompt, "CUSTOM_SYSTEM\n\n" + RUNTIME_PROMPT)
+            for category in custom.SKILL_CATEGORIES:
+                self.assertNotIn("BODY_" + category, prompt)
             self.assertNotIn("DO_NOT_LOAD", prompt)
             native = Path(json.loads(Path(argv[3]).read_text())["skills"]["customDirectories"][0])
             self.assertEqual(len(list(native.glob("*/SKILL.md"))), 3)
+            for item in settings["skills"]:
+                path = native / item["name"] / "SKILL.md"
+                if item["enabled"]:
+                    body = path.read_text()
+                    self.assertIn("[" + custom.SKILL_CATEGORIES[item["category"]] + "] category description", body)
+                    self.assertTrue(body.endswith(item["content"]))
+                else:
+                    self.assertFalse(path.exists())
         disabled = custom.snapshot(settings, session, "globally-disabled", False)
-        self.assertEqual(Path(disabled[1]).read_text(), "CUSTOM_SYSTEM")
+        self.assertEqual(Path(disabled[1]).read_text(), "CUSTOM_SYSTEM\n\n" + RUNTIME_PROMPT)
 
     def test_legacy_category_reading_preserves_records_and_edits_preserve_category(self):
         settings = self.update("skill-put", name="old-skill", description="old", content="legacy body")
@@ -139,7 +161,10 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "legacy-session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(loaded, session, "legacy", True)
-        self.assertIn("## personal skill", Path(argv[1]).read_text())
+        self.assertIn("--append-system-prompt", argv)
+        native = Path(json.loads(Path(argv[3]).read_text())["skills"]["customDirectories"][0])
+        self.assertIn("[personal skill] old", (native / "old-skill/SKILL.md").read_text())
+        self.assertEqual((session / "customizations/legacy/system.md").read_text(), RUNTIME_PROMPT)
         self.assertEqual(path.read_text(), before)
         self.update("skill-disable", name="old-skill")
         settings = self.update("skill-put", name="old-skill", category="user-information", description="profile", content="new")

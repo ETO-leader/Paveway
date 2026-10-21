@@ -121,6 +121,7 @@ class GitSyncTests(unittest.TestCase):
     def test_two_devices_pull_portable_settings_and_history_without_queues_or_credentials(self):
         self.edit(self.a, "中文系统提示 ${literal}")
         customization.update(self.a, "coach", 1, "skill-put", name="review-skill", category="oi-introduce", description="复盘", content="检查复杂度")
+        customization.update(self.a, "coach", 2, "inference", model="fake/coach", thinking="high")
         run = self.finished_run(self.a)
         (self.a.state_dir / "private.service.env").write_text("PRIVATE_SECRET=never-sync")
         self.cycle(self.a)
@@ -128,6 +129,7 @@ class GitSyncTests(unittest.TestCase):
         self.assertEqual(self.prompt(self.b), "中文系统提示 ${literal}")
         self.assertEqual(customization.show(self.b, "coach")["settings"]["skills"][0]["name"], "review-skill")
         self.assertEqual(customization.show(self.b, "coach")["settings"]["skills"][0]["category"], "oi-introduce")
+        self.assertEqual(customization.show(self.b, "coach")["settings"]["inference"], {"model": "fake/coach", "thinking": "high"})
         page = git_sync.history(self.b, query="saved reply")
         self.assertEqual(page["records"][0]["run_id"], run)
         item = git_sync.history_show(self.b, page["records"][0]["device_id"], run)["record"]

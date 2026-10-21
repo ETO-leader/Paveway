@@ -52,7 +52,7 @@ git diff --check
 
 本輪 `.runtime/config.toml` 的 doctor 回 `ok=true`，資料庫、權限與 OMP CLI 檢查通過，但有「沒有安裝 workflow」「daemon 離線」WARN。這是既有配置的實際部署狀態；本輪運行驗證使用臨時配置啟動獨立 daemon，不將測試通過說成現有配置已常駐部署。doctor 的 CLI 能力探測本身也不代表模型已驗證，真實模型結果另由 verify-omp 提供。
 
-Tijian 使用上游原樣 CLI／application crates 的驗證入口；完整 Desktop UI、運行中 Desktop projection routing、外部 OJ 抓取及需 Desktop executor 的向量計算仍未驗收。沒有另行安裝的正式 Tijian 發行版時，其獨立 opt-in 測試會跳過，原碼 CLI 的讀寫／MCP／模型測試仍會實際執行。正式 OI 教練 workflow 及 M4 長期服務部署尚未實作，不屬於本輪已通過的功能。
+Tijian 使用上游原樣 CLI／application crates 的驗證入口；完整 Desktop UI、運行中 Desktop projection routing、外部 OJ 抓取及需 Desktop executor 的向量計算仍未驗收。沒有另行安裝的正式 Tijian 發行版時，其獨立 opt-in 測試會跳過，原碼 CLI 的讀寫／MCP／模型測試仍會實際執行。正式 OI GPT workflow 及 M4 長期服務部署尚未實作，不屬於本輪已通過的功能。
 
 ## 0.6.0 後續驗證：M4 與 coach
 
@@ -153,7 +153,7 @@ PYTHONPATH=tests .venv/bin/python -m unittest \
 
 ## 0.11.1：默认本地 Git 与 remote 配置
 
-新增默认归档、多教练共用仓库、无 fetch/push、幂等保留已有设置、修改/清空 remote 保留身份/提交/暂停等真实 Git 验证；扩展 PTY 验证 `/sync remote` 清空远端。两 daemon 自动同步和故障隔离仍通过。
+新增默认归档、多GPT共用仓库、无 fetch/push、幂等保留已有设置、修改/清空 remote 保留身份/提交/暂停等真实 Git 验证；扩展 PTY 验证 `/sync remote` 清空远端。两 daemon 自动同步和故障隔离仍通过。
 
 
 完整安装包回归 **178 项、195.150 秒：162 通过、16 跳过、无失败**（`/tmp/paveway-default-git-regression.log`），命令 `.venv/bin/python -m unittest discover -s tests -v`。跳过项仍为真实模型/Tijian/systemd 的 opt-in；本次双设备远端以实际本地 bare Git 仓库验证，未连接未配置的互联网远端。依赖检查、编译、文档本地链接和 `git diff --check` 通过。
@@ -198,3 +198,136 @@ UI 测试 **24 项、31.959 秒通过**（`/tmp/paveway-refresh-tests.log`），
 本机 test01 已启用，doctor --with-data 全 PASS，官方 MCP SDK 实际发现 26 项工具并查询正常 profile 的 total=0。进一步检查 OMP 默认内置工具模式下 Tijian 出现在系统上下文和 xd:// 挂载设备；仅查看顶层 dumpTools 不能判断 MCP 不可用，禁用内置工具的对照则直接显示 26 项 MCP 工具。原始顶层工具等待探针因此超时，随后根据安装版本源码明确其为原生呈现方式，而非 MCP 断连。
 
 确认无 active_runs 后将本机服务更新至 0.13.0，服务 active、daemon running，Tijian enabled；原 prompt/User Skill/Git 设置保持不变。现在是上游源码 CLI 接入，不代表安装或验收完整 Desktop；远程提交/提交同步等 GUI-only 功能仍没有新增 CLI 入口。README、接口与 Tijian 文档已更新。私密 Runtime 配置、模型凭证、题库、.mcp.json、Rust 工具链与二进制均不进入源码提交。
+
+
+## 2026-10-21（Asia/Singapore）— 0.13.1 自然语言单次定时授权
+
+用户反馈普通 UI 请求“定時任務測試：請你設計一個 10min 的定時任務”仅得到方案并要求手填 payload。实际事件只有 message/mode，旧 coach 模板将 auto_followup=true 与 next_check_seconds 写成所有后续排程的必要条件，导致明确请求也被拒；该事件确实没有创建子任务。
+
+修正外部 coach 策略：明确的一次性定时/提醒或给定时长的定时测试即授权该次排程，不要求 JSON 字段；示例 10min 为 600 秒。明确仅设计/不要执行时禁止排程且优先于结构化 opt-in；没有明确单次请求时的主动跟进仍须 opt-in。继续使用 after_turn、本回合 run 锚点、稳定 dedupe-key 和下轮 auto_followup=false；不在 Scheduler/CLI 加自然语言猜测或自动重放旧请求。
+
+基础安装/after_turn 断言 10 项、6.923 秒通过（`/tmp/paveway-timer-focused.log`）。新增实际模型验收 1 项、68.444 秒通过（`/tmp/paveway-timer-natural-language.log`）：以普通 ask 和用户原句、无额外 payload 标志，验证恰好一个 600 秒 after_turn 子任务，等待父回合 settled 后为 queued/attempt=0，due-parent completed 精确为 600 秒；另一次明确“仅设计、不排程”即使带 auto_followup=true 仍不创建任务。此验收不等待 10 分钟触发，结束后销毁隔离队列，不给用户正式对话补建提醒。
+
+本机 test01 的相同旧规则已原子替换，私密旧版备份保存在 .runtime/backups；保留 workflow 身份以继续已有会话，原 prompt/User Skill 不变，下一次派发读取新规则，无需重启 daemon。README 与 coach 操作说明已更新，安装包 0.13.1。依赖检查与 git diff --check 通过。
+
+## 2026-10-21 — 0.14.0 系统时区与倒计时
+
+基础定向测试 **20 项全部通过，26.695 秒**（`/tmp/paveway-countdown-targeted.log`）：
+
+```bash
+.venv/bin/python -m unittest tests.test_store tests.test_tui.TimerDisplayTests tests.test_runtime.RuntimeTests.test_upcoming_cli_reports_due_time_and_filters_scope -v
+```
+
+覆盖 scoped upcoming 查询、100 项边界/最近触发排序、不返回 payload、终态排除、after-turn 待锚定/锚定后 UTC、CLI 到 daemon 的过滤，以及系统 TZ 下冬夏不同偏移、倒数递减/过期等待、错误恢复及作用域切换。随后增加历史消息时间恢复、刷新期间发送恰好一次和表单确认避让测试。
+
+首次 UI 回归发现取消确认和后台 timer 读取竞争，导致确认未送出；单独重现后修复为表单/选择器打开时暂缓后台队列查询。最终安装 **0.14.0** 后，完整 UI 加 after-turn 集成测试 **32 项全部通过，54.223 秒**（`/tmp/paveway-countdown-ui-final.log`）：
+
+```bash
+.venv/bin/python -m unittest tests.test_tui tests.test_runtime.RuntimeTests.test_after_turn_anchor_checked_and_armed_after_settled -v
+```
+
+实际 PTY 验证秒级倒数变化、到时自动执行、执行中状态、完成后移除、输入草稿保留、仅一个 run 及终端恢复；原有自定义 prompt/Skill、Git 同步、笔记增改、排程取消、缩放及退出重进恢复均通过。测试使用隔离 fake OMP/临时 daemon，不创建真实用户定时任务，不调用模型。本轮定向套件合计覆盖 **49 个不同测试**，未将历史完整主回归或模型验收算作本轮重跑。
+
+本机确认 active_runs 为空后重启用户服务，公开 events.upcoming 实查 test01/training 返回空队列，daemon running。系统时区实查为 +08；UTC 2026-10-21T00:00:00Z 在 UI 格式化为 2026-10-21 08:00:00 +08。保留现有配置、会话、Tijian 与本地 Git 设置，旧 UI 需退出重开以加载新界面。pip check、compileall 与 git diff --check 通过。
+
+## 2026-10-21 — 0.15.0 Skill 按需读取
+
+安装 0.15.0 后，自定义设置与完整 UI 定向 **38 项通过，58.498 秒**（`/tmp/paveway-lazy-skills-targeted.log`）：
+
+```bash
+.venv/bin/python -m unittest tests.test_customization tests.test_tui -v
+```
+
+核对 append/replace 的 system.md 只保留自定义系统正文，三类原生 Skill 文件完整可读、分类描述可发现、停用项不生成、旧分类兼容、空自定义系统提示无需另造索引提示、原始描述不改写、快照及 CAS 保持不变。真实 PTY 验证分类管理、正文修改和原生文件快照，既有倒计时、笔记、Git 与会话恢复流程均通过。
+
+实际 OMP 18.10.4 无模型验收 **2 项通过，7.117 秒**（`/tmp/paveway-lazy-skills-native-final.log`）：
+
+```bash
+OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" .venv/bin/python -m unittest \
+  tests.test_customization_omp.RealCustomizationTests.test_native_system_prompt_append_replace_and_skill_discovery_without_model \
+  tests.test_customization_omp.RealCustomizationTests.test_disabled_tools_or_skills_do_not_inject_a_fallback_body -v
+```
+
+通过 RPC get_state.systemPrompt 确认 append/replace 的三类名称与分类描述存在、正文随机标识不在提示中、停用项不发现；另确认工具或 Skill 被停用时不注入替代正文。该验收不调用模型。
+
+模型读取端到端用例已增加：正文随机 token 不在系统提示或用户请求中，必须出现在实际 toolResult 与最终答复，无关 Skill token 不可出现在工具结果，再恢复同一会话确认新系统提示生效。本次尝试失败：OMP 在第一轮返回 error（安全分类 agent_turn_failed）；隔离诊断重试仍失败，当前默认模型为 oi-relay/gpt-6.1-sol。日志为 `/tmp/paveway-lazy-skills-native.log`、`/tmp/paveway-lazy-skills-model-diagnostic.log`，未记录凭证或供应商原始错误。故本轮未完成模型实际读取正文与续聊的验收，不能将原生目录验证冒充该项成功。
+
+在无活动回合时重启本机用户服务，核对 installed_version=0.15.0、daemon running、active_runs=0，配置和各 workflow customization.json 哈希前后一致。不改用户 Skill 内容、提示词、会话身份或全局 OMP 配置；无需数据库迁移。旧历史保留，旧 UI 需退出重开。pip check、compileall、git diff --check 通过。
+
+## 2026-10-21 — 0.16.0 模型与思考等级
+
+安装最终 wheel 后，定向回归 **86 项全部通过，104.652 秒**（`/tmp/paveway-model-selection-regression.log`）：
+
+```bash
+.venv/bin/python -m unittest tests.test_model_selection.ModelSelectionTests tests.test_foundation \
+  tests.test_customization tests.test_git_sync tests.test_tui \
+  tests.test_runtime.RuntimeTests.test_model_settings_apply_next_dispatch_and_resume_the_existing_session \
+  tests.test_runtime.RuntimeTests.test_customization_applies_next_dispatch_without_rebinding_existing_task -v
+```
+
+覆盖旧设置默认继承、模型/等级独立保存、无效选择拒绝/CAS、不改原提示词/Skill、配置 thinking 校验、OMP 目录失败与超时不改设置/不暴露原输出、双设备模型设置同步、原记录兼容。模型目录兼容实机非推理模型的 thinking=null。实际 PTY 输入 /select-model，方向键选择 fake/coach，筛选 high、发送请求核对 fake OMP 的 argv，再恢复默认；原有全部 UI 流程均通过。另在一个运行中的 hold 回合修改模型与等级，核对该回合参数不变、下一回合使用新参数且恢复同一 session/binding。
+
+实际 OMP 18.10.4 参数验收 **1 项通过，5.379 秒**（`/tmp/paveway-model-selection-native-final.log`）：
+
+```bash
+OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" \
+  .venv/bin/python -m unittest tests.test_model_selection.NativeModelSelectionTests -v
+```
+
+使用隔离临时 workflow/workspace/session，读取实际模型目录，选 oi-relay/gpt-6.1-sol，经公开配置生成 --model 和 --thinking，分别启动 high/low，RPC get_state 核对实际 provider/id 与 thinkingLevel。只验证本机 OMP 接受参数，不调用模型服务；未将它称为模型供应商可用性或生成回复验收。
+
+本机在 active_runs 为空时重启用户服务，已安装 0.16.0、daemon running。UI 所用公开 CLI 对 test01 读取模型目录成功，共 70 个模型；现有配置与所有 customization.json 的哈希保持一致，未预设模型/思考等级或修改凭证。旧 UI 需退出重开；以后更换设置从下一次派发开始生效，不必反复重启 daemon。无需 DB 或 manifest 迁移；pip check、compileall 和 git diff --check 通过。
+
+## 2026-10-21 — 0.17.0 启动代理同步与检查
+
+实际诊断确认 20:24 启动的 OMP 未取得终端代理，20:38/20:52 记录 ECONNREFUSED 后继续请求。新增自动代理同步与启动 TCP 检查，使用原有私密 config.service.env，保留已捕获 API key，环境文件锁定/原子合并；每次 OMP spawn 与模型目录查询读取最新代理，不自动重播任何历史请求。
+
+初步服务/模型设置 14 项通过（7.065 秒，`/tmp/paveway-proxy-initial.log`）。最终代理、服务、配置、完整 UI 和 daemon 不重启的代理热加载定向 **77 项全部通过，81.752 秒**（`/tmp/paveway-proxy-regression.log`）：
+
+```bash
+.venv/bin/python -m unittest tests.test_proxy tests.test_setup tests.test_foundation tests.test_tui \
+  tests.test_runtime.RuntimeTests.test_proxy_updates_apply_to_next_omp_without_daemon_restart -v
+```
+
+覆盖大小写归一、PI_PROXY_PROVIDER、缺省保留/空值清除、API key 保留、并发 24 次环境更新不丢项、0600/不安全文件拒绝、代理 URL/认证信息不进报告、端口可达/不可达与 DNS 总等待边界。实际 PTY 启动后核对代理已保存、API key 未变、报告无 URL/密码，发送请求核对 fake OMP 取得代理，再执行 /proxy；另在同一 daemon 的两次派发之间更新代理，核对第二次 spawn 使用新值、恢复同一 session，daemon PID 未变。
+
+本机 `proxy sync` 报告代理 TCP 可达、bypass_all=false。隔离临时 workspace/session 的真实 OMP 调用 **openai-codex/gpt-6-luna、low**，禁用工具/扩展/Skill/规则，仅请求一次固定文字，得到 completed 和准确回复 **PROXY_OK**（`/tmp/paveway-proxy-native-model.log`）。这项确实调用了模型，不把单纯 TCP 探测称作模型连线成功；未触发原GPT请求、Tijian 写入或新增定时任务。
+
+安装最终 0.17.0 后，为替换保留旧环境的卡住进程，重启受管用户服务。核对 daemon running、主 PID 改变、HTTP_PROXY/HTTPS_PROXY/NO_PROXY 及小写别名均已存在；API key 与旧 daemon 值相同，config.toml 和各 customization.json 哈希不变。原 run d7e8a4c3-2ba8-4124-8a1f-35083a16c3ca 已保存为 uncertain，active_runs=0，没有自动重新发送。旧 task 的 uncertain binding 仍需人工核对恢复；用户可 /new 后重新发送，不应声称原 task 可直接盲重试。无需 DB/manifest 迁移，pip check、compileall、git diff --check 通过。
+
+## 2026-10-21 — 0.18.0 GPT 命名与 Git 稽核
+
+界面、文档与工程说明统一 GPT，既有 event.md 保持原字节。默认 revision=0、append/replace、工具/Skill 停用均附加系统命名约定；Skill 正文仍按需读取。
+
+安装包回归 **57 项：56 通过、1 条件略过，78.777 秒**（/tmp/paveway-gpt-regression.log）：
+
+```bash
+.venv/bin/python -m unittest tests.test_customization tests.test_tui tests.test_omp_verification tests.test_setup tests.test_runtime.RuntimeTests.test_customization_applies_next_dispatch_without_rebinding_existing_task -v
+```
+
+最终定向 **12 项全通过，18.814 秒**（/tmp/paveway-gpt-final-targeted.log）：
+
+```bash
+OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" .venv/bin/python -m unittest tests.test_customization tests.test_customization_omp.RealCustomizationTests.test_native_system_prompt_append_replace_and_skill_discovery_without_model tests.test_customization_omp.RealCustomizationTests.test_disabled_tools_or_skills_do_not_inject_a_fallback_body tests.test_tui.TerminalIntegrationTests.test_pty_slash_completion_arrow_selector_and_reply_keep_next_draft tests.test_runtime.RuntimeTests.test_customization_applies_next_dispatch_without_rebinding_existing_task -v
+```
+
+覆盖默认命名指令、原设置/event.md 不变、快照不可变、原生系统规则与 Skill 按需加载、原 session 下一轮生效，以及实际 PTY 的 GPT 回复标题和草稿保留。原生 systemPrompt 支持分块列表，按渲染内容检查规则。
+
+另在隔离 workspace/session 真实调用 openai-codex/gpt-6-luna：未传入个人 Skill 或自定义提示，以原 event.md 首行角色描述要求自述，最终以 GPT 自称且无被禁止职称（/tmp/paveway-gpt-identity-model-final.log）。该最终行为验证通过，不将仅有命名指令的存在检查称为模型行为验收。
+
+源代码远端 fetch/refs 核对后，187 个可达历史 blob 与工作区的已知私密数据/凭证检查无命中。工程 Skill/默认模板/规划文件已在源码远端，个人 Skill/对话已在独立本机资料 Git，目前没有 remote，见 privacy-audit.md。未 commit/push。两份既有 event.md 哈希未变；本机无活动回合时升级至 0.18.0，daemon running，用户设置和 event.md 哈希仍一致。旧 UI 需重开，pip check、compileall、git diff --check 通过。
+
+
+## 0.19.0 记忆与对话预算验收
+
+共 69 个不同用例通过：记忆/迁移 7、定制 8、Runtime 42、OMP 验证 6、原生定制 2、真实记忆 1、上下文窗口 3。Runtime 首轮 41 项中只有旧系统提示精确断言不含新增预算说明，更新断言后该项通过，另增缺失守卫不派发用例通过。
+
+- `/tmp/paveway-context-memory.log`：7 通过（6.426 秒）；新增“大于旧 8 KiB 但不超过 10k tokens”断言亦在 final-checks 中重验。
+- `/tmp/paveway-context-customization.log`：8 通过（3.977 秒）。
+- `/tmp/paveway-context-runtime.log`：40 通过、1 旧断言失败；`/tmp/paveway-context-runtime-final.log` 修正后 1 通过（2.333 秒）；`/tmp/paveway-context-guard.log` 新增 1 通过（2.250 秒）。守卫缺失时 dispatch_intent 始终为空，不发送业务 prompt。
+- `/tmp/paveway-context-native.log`：原生 append/replace 及按需 Skill 目录 1 通过（4.939 秒）。
+- `/tmp/paveway-context-final-checks.log`：8 通过（10.174 秒），包括 6 OMP 验证、原生工具/Skill 停用权限、记忆边界。
+- `/tmp/paveway-context-memory-real.log`：真实模型写入、daemon 重启、全新 task 无工具读回 1 通过（26.737 秒）。
+- `/tmp/paveway-context-model-window.log`：3 通过（5.499 秒）。原生 tokenizer 测试 7 类消息，覆盖完整旧轮次、大型工具结果/参数、中文/emoji 超大输入、工具配对和输入不变；真实模型只看到裁剪后的超大输入，回复 MISSING，而随机识别码仍在完整会话文件中。
+
+真实模型验收均使用隔离 workspace/state/session 和当前 workflow 的模型选择，不使用默认余额不足的 relay，不写本机训练记录。模型预算按 o200k_base JSON 计数，不声称不同 provider 的最终计费相同。原文历史保留，不将 prompt 要求等同于模型每次必然写入成功。

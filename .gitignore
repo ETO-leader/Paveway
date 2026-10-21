@@ -10,3 +10,11 @@ dist/
 .runtime-tijian/
 *.service.env
 /.mcp.json
+.mcp.json
+customization.json
+customizations/
+user-data-git/
+*.service.env.lock
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

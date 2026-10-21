@@ -21,6 +21,7 @@ class AgentConfig:
     executable: str = "omp"
     profile: str = ""
     model: str = ""
+    thinking: str = ""
     tools_enabled: bool = True
     extensions_enabled: bool = True
     skills_enabled: bool = True
@@ -155,6 +156,8 @@ def load_config(path: Path) -> Config:
         raise ConfigError("agent.executable cannot be a relative path")
     if any(value.startswith("-") or len(value) > 256 for value in (agent.model, agent.profile)):
         raise ConfigError("agent.model/profile must be bounded selectors, not CLI flags")
+    if agent.thinking not in ("", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"):
+        raise ConfigError("agent.thinking must be a supported OMP thinking level or empty")
     restart = _section(RestartConfig, raw.get("restart", {}))
     if restart.backoff_initial_seconds > restart.backoff_max_seconds:
         raise ConfigError("Initial backoff exceeds maximum backoff")

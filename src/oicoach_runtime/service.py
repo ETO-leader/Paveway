@@ -1,8 +1,10 @@
 """Owned systemd user units. Installing never enables or starts a service."""
 
 import json
+import fcntl
 import os
 import re
+import stat
 import shutil
 import subprocess
 import sys
@@ -20,8 +22,8 @@ def environment_path(config_path):
     return Path(config_path).absolute().with_suffix(".service.env")
 
 
-def capture_environment(config_path, names):
-    """Persist only explicitly selected variables, never values in argv/unit/output."""
+def read_environment(config_path):
+    """Read only our private managed environment; never expose values in reports."""
     path = environment_path(config_path)
     marker = MARKER + json.dumps(str(Path(config_path).absolute()))
     values = {}
@@ -29,35 +31,64 @@ def capture_environment(config_path, names):
         info = path.lstat()
         if path.is_symlink() or not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 65536:
             raise ConflictError("Service environment file must be private, owned and not a symlink")
-        lines = path.read_text().splitlines()
-        if not lines or lines[0] != marker:
-            raise ConflictError("Refusing to overwrite an unmanaged service environment file")
         try:
+            lines = path.read_text().splitlines()
+            if not lines or lines[0] != marker:
+                raise ConflictError("Refusing to read an unmanaged service environment file")
             for line in lines[1:]:
                 key, value = line.split("=", 1)
                 values[key] = json.loads(value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, UnicodeError):
             raise ConflictError("Invalid managed service environment file") from None
-    for key in names:
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key not in os.environ:
-            raise RuntimeContractError("Captured environment names must exist in the invoking shell")
-        values[key] = os.environ[key]
+    _validate_environment(values)
+    return values
+
+
+def _validate_environment(values):
     for key, value in values.items():
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise RuntimeContractError("Service environment values must be single-line strings without controls")
-    text = marker + "\n" + "".join(key + "=" + json.dumps(value, ensure_ascii=False) + "\n" for key, value in sorted(values.items()))
-    if len(text.encode()) > 65536:
-        raise RuntimeContractError("Service environment file exceeds 64 KiB")
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+
+
+def update_environment(config_path, updates):
+    """Merge under a private lock so proxy sync cannot drop captured API keys."""
+    _validate_environment(updates)
+    path = environment_path(config_path)
+    lock = path.with_name(path.name + ".lock")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ConflictError("Service environment lock must be private and owned")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        values = read_environment(config_path)
+        merged = {**values, **updates}
+        if merged == values:
+            return path
+        marker = MARKER + json.dumps(str(Path(config_path).absolute()))
+        text = marker + "\n" + "".join(key + "=" + json.dumps(value, ensure_ascii=False) + "\n" for key, value in sorted(merged.items()))
+        if len(text.encode()) > 65536:
+            raise RuntimeContractError("Service environment file exceeds 64 KiB")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
     return path
+
+
+def capture_environment(config_path, names):
+    """Persist explicitly selected variables, never values in argv/unit/output."""
+    for key in names:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key not in os.environ:
+            raise RuntimeContractError("Captured environment names must exist in the invoking shell")
+    return update_environment(config_path, {key: os.environ[key] for key in names})
 
 
 def unit_name(name):
@@ -144,6 +175,8 @@ def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=F
             stream.flush()
             os.fsync(stream.fileno())
             _run(["systemd-analyze", "--user", "verify", str(temporary)])
+            from .proxy import synchronize
+            synchronize(config_path, check=False)
             if capture_env:
                 capture_environment(config_path, capture_env)
             if exists:
@@ -175,6 +208,10 @@ def control(config_path, action, *, name=DEFAULT_NAME, now=False):
     if now and action not in ("enable", "disable"):
         raise RuntimeContractError("--now is only valid for enable/disable")
     path = require_owned(config_path, name)
+    proxy = None
+    if action in ("start", "restart") or (action == "enable" and now):
+        from .proxy import synchronize
+        proxy = synchronize(config_path)
     argv = ["systemctl", "--user", "disable", "--now", name] if action == "uninstall" else (
         ["systemctl", "--user", action] + (["--now"] if now else []) + [name])
     _run(argv)
@@ -182,7 +219,7 @@ def control(config_path, action, *, name=DEFAULT_NAME, now=False):
         # Recheck ownership after waiting on the manager, before deleting anything.
         require_owned(config_path, name).unlink()
         _run(["systemctl", "--user", "daemon-reload"])
-    return {"api_version": 1, "unit": name, "action": action, "completed": True,
+    return {"api_version": 1, "unit": name, "action": action, "completed": True, "proxy": proxy,
             "runtime_state_preserved": True, "unit_path": str(path)}
 
 

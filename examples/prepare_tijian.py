@@ -39,7 +39,7 @@ def main():
         'schema_version = 1\nid = "tijian"\nversion = "1"\nsession_policy = "per_task"\n'
         f'workspace = {json.dumps(str(workspace))}\nstart_prompt = "event.md"\nwake_prompt = "event.md"\nrecovery_prompt = "event.md"\n')
     (workflow / "event.md").write_text(
-        "這是 Tijian 接口驗證，不是教練策略。請讀取事件 payload.problem 指定的題目；未指定則使用 P1001。\n"
+        "這是 Tijian 接口驗證，不是GPT策略。請讀取事件 payload.problem 指定的題目；未指定則使用 P1001。\n"
         "只呼叫 Tijian 的 problem_get MCP 工具，簡要回報題目名稱及當前狀態。\n"
         "若 MCP 無法使用，可依 available_tools 用 Runtime tijian call problem_get。\n"
         "不可修改狀態、補抓題目或用其他網路來源代替；讀取失敗時清楚說明。\n"

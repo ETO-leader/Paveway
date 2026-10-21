@@ -14,7 +14,7 @@ M0 已交付可安裝 Python 套件、init/doctor、配置驗證、SQLite v1 mig
 
 下一步 M1：先完成 flock 與 SQLite queue 交易 API，再加入有界 Unix IPC、scheduler、fake OMP RPC 和獨立 daemon 測試。M1 驗收應含結束 CLI 後事件仍執行、重啟保留未到期事件、20 個同時到期事件串行，以及 dispatch 邊界崩潰後不重播 uncertain。
 
-仍待 M2–M4：真實 OMP 會話接續、完整故障注入／backoff／熔斷、人工恢復、systemd 部署。正式 OI 教練 workflow 和 Tijian MCP 接口另行接入。
+仍待 M2–M4：真實 OMP 會話接續、完整故障注入／backoff／熔斷、人工恢復、systemd 部署。正式 OI GPT workflow 和 Tijian MCP 接口另行接入。
 
 ## 2026-10-17（Asia/Singapore）— M1
 
@@ -125,7 +125,7 @@ OICOACH_TEST_TIJIAN_SOURCE_SEED=/tmp/paveway-tijian-build/debug/tijian-source-se
   .venv/bin/python -m unittest discover -s tests -v
 ```
 
-完整重現命令及依賴見 `docs/tijian.md`。目前不驗證完整 Desktop UI／運行中 Desktop projection routing、真實 OJ 連線、需 Desktop 執行器的向量重算；這些依賴由上游提供，適配器在不可用時保留真實錯誤。正式 OI 教練策略、L2/L3 記憶與 M4 仍未實作。
+完整重現命令及依賴見 `docs/tijian.md`。目前不驗證完整 Desktop UI／運行中 Desktop projection routing、真實 OJ 連線、需 Desktop 執行器的向量重算；這些依賴由上游提供，適配器在不可用時保留真實錯誤。正式 OI GPT策略、L2/L3 記憶與 M4 仍未實作。
 
 ## 2026-10-18（Asia/Singapore）— 整個專案運行回歸
 
@@ -135,7 +135,7 @@ OICOACH_TEST_TIJIAN_SOURCE_SEED=/tmp/paveway-tijian-build/debug/tijian-source-se
 
 既有 `.runtime/config.toml` 的 doctor 回 ok=true，但沒有安裝 workflow、daemon 離線；本輪是在隔離配置中實際啟動服務驗證，不代表這份既有配置已完成部署。未變更 Runtime 業務程式或記憶功能。完整範圍、重現命令、產物位置與環境限制見 [運行測試報告](runtime-testing.md)。
 
-## 2026-10-18（Asia/Singapore）— M4 與初版教練入口，0.6.0
+## 2026-10-18（Asia/Singapore）— M4 與初版GPT入口，0.6.0
 
 完成 `service.py` 的 user unit render/install/status/logs/start/stop/restart/enable/disable/uninstall。以絕對 venv Python／config、PATH 快照生成 unit，先 systemd-analyze verify 再發佈；安裝不啟動或啟用。限制操作當前 config 的托管 unit，不覆寫其他服務。含 control-group 清理、停止預算、啟動限制及重啟策略，不自動改 linger。實機測試修正 WorkingDirectory 不使用 ExecStart 引號語法的問題後，特殊路徑與完整生命週期通過。
 
@@ -143,7 +143,7 @@ OICOACH_TEST_TIJIAN_SOURCE_SEED=/tmp/paveway-tijian-build/debug/tijian-source-se
 
 新增 `ask [--wait]`、`events wait` 和 `runs output`。立即請求 at=now 使用穩定 fingerprint，重送相同 scope/key 幂等；等待超時不取消。回合完全 settled 後只查本輪最終 assistant 文字，最多 16 KiB UTF-8，與正常退出後的成功狀態原子保存，不記錄正文日誌。local-only 不借用舊文字；讀取時收到持久化/協議錯誤仍 uncertain。修正 IPC 將 RuntimeContractError 作 ValueError 重新包裝的問題，conflict 等業務碼得以保留。
 
-README 已完整重寫，包含環境、初次設定、教練請求與回覆、systemd 部署/停用、workflow、Tijian、全部配置、排程/查詢/恢復、備份升級、測試及限制。另提供三份 coach JSON 輸入示例，更新 deployment/API/architecture/operations 等文檔。記憶依使用者要求暫緩；未將完整 Tijian GUI/OJ/向量 executor 的環境驗收說成完成。
+README 已完整重寫，包含環境、初次設定、GPT請求與回覆、systemd 部署/停用、workflow、Tijian、全部配置、排程/查詢/恢復、備份升級、測試及限制。另提供三份 coach JSON 輸入示例，更新 deployment/API/architecture/operations 等文檔。記憶依使用者要求暫緩；未將完整 Tijian GUI/OJ/向量 executor 的環境驗收說成完成。
 
 最終從新安裝的 wheel 跑 **118 項測試，325.843 秒：117 通過、1 跳過，無失敗**；skip 為獨立正式 Tijian 發行版，真實原碼、模型與兩種 systemd 測試均已執行。獨立真實三回合 verify-omp 四項 PASS。README CLI walkthrough、pip check、git diff --check 通過；測試 unit 和程序已回收，未啟用預設服務或 linger。更細驗收範圍見 [運行報告](runtime-testing.md#060-後續驗證m4-與-coach)。
 
@@ -165,7 +165,7 @@ workflow manifest 可選 memory_enabled，舊設定省略為 false，新 coach �
 
 ## 2026-10-18（Asia/Singapore）— 0.8.0 終端 UI
 
-新增標準庫 curses `tui.py` 與 `ui --config PATH [--workflow ID] [--task ID]`。八頁提供概覽/診斷、教練對話、事件安排與取消、記憶增改刪查、歷史/原文分頁、workflow 選擇/建立、服務安裝啟停/日誌及恢復查詢。所有操作由背景執行緒呼叫公開 CLI 子進程，不直接開 DB 或發模型 prompt，不更改既有 API/config/DB/workflow 版本。
+新增標準庫 curses `tui.py` 與 `ui --config PATH [--workflow ID] [--task ID]`。八頁提供概覽/診斷、GPT對話、事件安排與取消、記憶增改刪查、歷史/原文分頁、workflow 選擇/建立、服務安裝啟停/日誌及恢復查詢。所有操作由背景執行緒呼叫公開 CLI 子進程，不直接開 DB 或發模型 prompt，不更改既有 API/config/DB/workflow 版本。
 
 正文以 0600 私密臨時檔傳入、清理後回收；argv 不用 shell，連字符開頭值以明確 option=value 傳遞。模型/工具輸出過濾終端控制符，中文依顯示寬度折行，支援多行及縮放。工作執行中介面可操作或退出；q/Ctrl+C 恢復終端，只清理界面自有 CLI 子進程，不停止獨立 daemon。提交逾時保留原 scope/payload/key，以 v 冪等核對，未確認前不產生新 key；版本衝突不盲目覆蓋。服務停止與刪除/取消需明確確認，恢復頁不直接重播 uncertain。
 
@@ -220,9 +220,9 @@ OMP 適配器按已安裝 18.10.4 的 prompt_result.error/httpStatus 分類失�
 
 ## 2026-10-20（Asia/Singapore）— 0.11.1 默认本地 Git 与 UI remote 入口
 
-按用户补充要求，daemon 初次启动自动建立 `state_dir/user-data-git`，同一 Runtime 内所有教练、workflow/task 共用一个独立仓库；无需先填写 remote。无 remote 时只产生本地提交，不 fetch/push，也不采用源码仓库 origin。已有配置、设备身份、提交与暂停开关不被初始化覆盖，初始化失败独立记录并退避。
+按用户补充要求，daemon 初次启动自动建立 `state_dir/user-data-git`，同一 Runtime 内所有GPT、workflow/task 共用一个独立仓库；无需先填写 remote。无 remote 时只产生本地提交，不 fetch/push，也不采用源码仓库 origin。已有配置、设备身份、提交与暂停开关不被初始化覆盖，初始化失败独立记录并退避。
 
-新增 `/sync remote` 单字段 UI 表单和 `sync remote --remote URL` CLI。可添加、修改或清空远端；清空后保留本地历史继续归档。修改 remote 保留仓库、分支、设备身份、间隔和暂停状态。`/sync` 菜单显示仅本地/远端模式，并明确所有教练对话共用仓库。README、同步说明、UI、接口、架构和运维文档同步更新。
+新增 `/sync remote` 单字段 UI 表单和 `sync remote --remote URL` CLI。可添加、修改或清空远端；清空后保留本地历史继续归档。修改 remote 保留仓库、分支、设备身份、间隔和暂停状态。`/sync` 菜单显示仅本地/远端模式，并明确所有GPT对话共用仓库。README、同步说明、UI、接口、架构和运维文档同步更新。
 
 新增实际本地 Git 默认初始化、多个 workflow 共用归档、无网络操作、初始化幂等、远端修改/移除保留身份/提交/暂停，以及无 daemon 配置入口测试；扩展真实 PTY 测试，验证清空 remote 后没有 origin 且保留暂停状态。故障隔离测试在 daemon 启动前配置无效 remote，避免把首次初始化持锁的时序混入网络失败注入。
 
@@ -273,3 +273,57 @@ UI 测试 **24 项、31.959 秒通过**（`/tmp/paveway-refresh-tests.log`），
 本机 test01 已启用，doctor --with-data 全 PASS，官方 MCP SDK 实际发现 26 项工具并查询正常 profile 的 total=0。进一步检查 OMP 默认内置工具模式下 Tijian 出现在系统上下文和 xd:// 挂载设备；仅查看顶层 dumpTools 不能判断 MCP 不可用，禁用内置工具的对照则直接显示 26 项 MCP 工具。原始顶层工具等待探针因此超时，随后根据安装版本源码明确其为原生呈现方式，而非 MCP 断连。
 
 确认无 active_runs 后将本机服务更新至 0.13.0，服务 active、daemon running，Tijian enabled；原 prompt/User Skill/Git 设置保持不变。现在是上游源码 CLI 接入，不代表安装或验收完整 Desktop；远程提交/提交同步等 GUI-only 功能仍没有新增 CLI 入口。README、接口与 Tijian 文档已更新。私密 Runtime 配置、模型凭证、题库、.mcp.json、Rust 工具链与二进制均不进入源码提交。
+
+
+## 2026-10-21（Asia/Singapore）— 0.13.1 自然语言单次定时授权
+
+用户反馈普通 UI 请求“定時任務測試：請你設計一個 10min 的定時任務”仅得到方案并要求手填 payload。实际事件只有 message/mode，旧 coach 模板将 auto_followup=true 与 next_check_seconds 写成所有后续排程的必要条件，导致明确请求也被拒；该事件确实没有创建子任务。
+
+修正外部 coach 策略：明确的一次性定时/提醒或给定时长的定时测试即授权该次排程，不要求 JSON 字段；示例 10min 为 600 秒。明确仅设计/不要执行时禁止排程且优先于结构化 opt-in；没有明确单次请求时的主动跟进仍须 opt-in。继续使用 after_turn、本回合 run 锚点、稳定 dedupe-key 和下轮 auto_followup=false；不在 Scheduler/CLI 加自然语言猜测或自动重放旧请求。
+
+基础安装/after_turn 断言 10 项、6.923 秒通过（`/tmp/paveway-timer-focused.log`）。新增实际模型验收 1 项、68.444 秒通过（`/tmp/paveway-timer-natural-language.log`）：以普通 ask 和用户原句、无额外 payload 标志，验证恰好一个 600 秒 after_turn 子任务，等待父回合 settled 后为 queued/attempt=0，due-parent completed 精确为 600 秒；另一次明确“仅设计、不排程”即使带 auto_followup=true 仍不创建任务。此验收不等待 10 分钟触发，结束后销毁隔离队列，不给用户正式对话补建提醒。
+
+本机 test01 的相同旧规则已原子替换，私密旧版备份保存在 .runtime/backups；保留 workflow 身份以继续已有会话，原 prompt/User Skill 不变，下一次派发读取新规则，无需重启 daemon。README 与 coach 操作说明已更新，安装包 0.13.1。依赖检查与 git diff --check 通过。
+
+## 2026-10-21 — 0.14.0 系统时区时间戳与倒计时
+
+终端顶栏增加当前时间，消息和历史详情显示原始创建/完成时间，直接转换为系统时区并保留日期对应的夏令时，不增加时区配置。存储时间仍为 UTC。
+
+新增只读 events.upcoming / events upcoming --workflow ID [--task ID]，返回最多 100 项当前作用域待执行/执行中的摘要，不含 payload。UI 每五秒读取，面板展示前三项并随重绘更新剩余时间；/timers 打开详情选择器。未锚定 after-turn 显示待起算，到时未领取显示等待派发，启动/执行状态依据 daemon，完成/取消后移除。读取失败与过期快照明确标记，不把零倒计时作为执行成功。
+
+修复刷新与输入的竞争：普通消息在队列读取期间提交会等待该读取完成再发送一次；表单/选择器期间暂停后台队列读取，避免阻塞保存或取消确认，倒计时继续更新。升级无需数据库迁移，不创建额外用户定时任务。验证结果见 runtime-testing.md。
+
+## 2026-10-21 — 0.15.0 Skill 按需读取
+
+移除每回合将已启用 Skill 全文拼进 system.md 的逻辑，三类正文仍保存为本轮私密 SKILL.md，经 OMP 原生目录发现；原生索引只展示名称、带分类标签的描述与 skill:// 读取指引，由 Agent 选择适用项再读正文。自定义 append/replace 系统提示保持原文；原始用户设置和 Git 同步格式不变，无迁移。停用 Skill 不注册，工具停用时不把正文作为替代注入。UI 操作说明与 README 已同步更新。
+
+自定义设置/UI 38 项通过，实际 OMP 原生发现与工具/Skill 停用验收 2 项通过。模型端到端验收因当前模型服务返回回合错误未通过，未声称模型已读取正文。本机已安装 0.15.0，在无 active run 时重启 daemon；配置与用户自定义文件哈希核对不变。已有会话历史不清除，需要全新上下文可使用 /new。详细验证与限制见 runtime-testing.md。
+
+## 2026-10-21 — 0.16.0 模型与思考等级选择
+
+新增 /select-model 和 /select-thinking-hardness：原生 OMP 模型目录、筛选/方向键选择、直接输入、当前值标记及 default 恢复继承。切换明确模型将等级设为 auto，再按模型支持的元数据选择等级。设置按 workflow 保存，所有 task 下一次派发读取；运行中回合保持原参数，同一会话续聊时传递新选择。
+
+新增可选 inference 用户配置、CAS 写入与 Git 归档/导入，旧记录读取不补写字段或改动内容哈希；运行时 agent.thinking 可选，未设时保持 OMP 原行为。模型目录经公开 CLI 查询，保留 executable/profile/workspace，不修改 OMP 全局配置或认证文件。目录中非推理模型的 thinking=null 按无显式等级处理；命令失败不覆盖设置。文档与测试范围见 runtime-testing.md。
+
+最终安装包定向回归 86 项通过（104.652 秒），实际 OMP 模型/high/low 参数验收 1 项通过（5.379 秒），不调用模型服务。本机空闲重启至 0.16.0，公开目录查询成功、70 个模型，配置及自定义文件哈希不变。重开 UI 即可选择；测试命令和实测边界见 runtime-testing.md。
+
+## 2026-10-21 — 0.17.0 启动代理同步与检查
+
+确认原卡住回合的 systemd/OMP 进程未继承终端代理，官方 Codex 连线 ECONNREFUSED 后 OMP 持续重试。新增 UI/serve/服务启动代理同步与 TCP 检查、公开 proxy sync/status 和 /proxy；保存标准大小写代理及 PI_PROXY_PROVIDER 到私密服务环境文件，锁定合并以保留 API key。每次启动 OMP 或查询模型目录读取最新代理，后续同步无需重启 daemon，已运行进程保持原环境。代理内容不进入公开报告或 Git。
+
+代理/服务/配置/完整 UI 与下一回合热加载回归 77 项通过（81.752 秒）；隔离真实模型调用 openai-codex/gpt-6-luna、low 返回 PROXY_OK。已升级本机服务至 0.17.0，核对进程取得六个标准代理变量、API key 未变，原卡住回合保存为 uncertain，未自动重放。用户配置和 Skill 哈希保持不变；可 /new 后重新发送，或人工核对后恢复原 uncertain 事件。细节见 runtime-testing.md。
+
+## 2026-10-21 — 0.18.0 GPT 称谓与 Git 资料稽核
+
+界面和项目文字统一 GPT，event.md、个人 Skill、自定义设置及历史原文保留。每轮系统提示添加 GPT 命名约定，在默认设置、append/replace 及工具/Skill 停用时生效；不修改 manifest/session 身份。新增 AGENTS.md 和私密数据忽略规则。
+
+回归 57 项中 56 通过、1 条件略过（78.777 秒），最终定向 12 项通过（18.814 秒），真实 Luna 在保留旧 event.md 首行角色描述的测试中以 GPT 自述，无被禁止职称。本机空闲升级至 0.18.0，event.md 与用户设置哈希不变。
+
+Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密路径、已知正文、凭证扫描无命中。但工程 Skill、默认模板及规划文件确实已在源码远端；个人 Skill 与对话也确实已进入独立本机资料 Git，目前无 remote。未 commit/push 或清理历史，详见 privacy-audit.md。
+
+
+## 0.19.0 — 记忆维护与独立 10k 上下文预算
+
+用户授权更新 event.md：默认模板及本机 test01 均加入重要信息及时维护、关键进展和每轮结束前检查的要求，已有提示已私密备份。本机 workflow revision 保持原绑定，个人自定义 prompt/Skill 不变。记忆快照从事件移至系统 prompt，以 o200k_base 将完整 JSON 限于 10,000 tokens；事件只携带预算及位置。独立 OMP context hook 将每次请求的对话副本限制为 10,000 tokens，按完整轮次/工具交换裁剪，极大单次输入保留首尾并告知模型；磁盘历史及记忆总库不删。必需守卫未就绪时在派发前拒绝，不静默失效。
+
+验证：69 个不同用例通过，包括记忆/迁移 7、定制 8、Runtime 42（旧 prompt 精确断言修正后定向通过）、OMP 验证 6、原生定制 2、真实模型记忆 1、上下文窗口 3。真实模型在超大输入中看不到被裁掉的随机识别码，但完整识别码仍保留于原生 session。原生 OMP 18.10.4；Python 新增 tiktoken，离线先预热编码表。不是整个模型 API 请求的 20k 总预算，系统/工具定义与 provider 封装另计。

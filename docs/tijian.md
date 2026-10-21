@@ -100,7 +100,7 @@ read_only = false
 .venv/bin/oicoach-runtime status --config "$PWD/.runtime-tijian/config.toml" --json
 ```
 
-此範例預設 read_only，僅為接口驗證模板，沒有正式教練策略；查無題目時不自動補抓。模型回合完成不代表 Tijian 查詢成功，應核對工具結果。啟用 Tijian 時，Runtime envelope 會附 CLI prefix/config 及 `availability=configured_not_verified`，Agent 可由 `tools/doctor/call` 使用同一接口；沒有依賴 PATH 恰好包含 venv。僅配置並不表示服務或題庫已可用。
+此範例預設 read_only，僅為接口驗證模板，沒有正式GPT策略；查無題目時不自動補抓。模型回合完成不代表 Tijian 查詢成功，應核對工具結果。啟用 Tijian 時，Runtime envelope 會附 CLI prefix/config 及 `availability=configured_not_verified`，Agent 可由 `tools/doctor/call` 使用同一接口；沒有依賴 PATH 恰好包含 venv。僅配置並不表示服務或題庫已可用。
 
 ## 結果、故障與恢復
 
@@ -171,3 +171,12 @@ CARGO_TARGET_DIR="$PWD/.runtime/tijian-build" \
 新安装首次 setup 会先执行上游本地 search，以 canonical 路径初始化数据库/schema，再验证纯读取；这是因为上游 stats/plan/article 直接以只读方式打开，数据库不存在时会失败。不会执行 seeder，不添加问题、计划或训练记录。普通 doctor --with-data 仍只作读取验证，不自动初始化数据库。
 
 本机 test01 已启用 CLI 与 workspace MCP，重启空闲 daemon 后生效。真实正常 profile 的 MCP 返回 26 项工具，题库统计 total=0；已有题库需另行导入或选择正确的数据环境。源数据测试的 P1001/P1002 只存在于临时 harness profile，不属于用户题库。默认启用 OMP 内置工具时，MCP 可挂载为 xd:// 设备，不一定作为顶层 dumpTools 项显示；已核对实际系统上下文包含 Tijian，并使用官方 MCP SDK 成功查询正式空库。
+
+
+## 2026-10-21 离线题面核查
+
+重新 fetch 上游后，origin/main 仍为 `b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f`。已核对完整远端 Git tree 的 493 个文件，而不只检查 sparse checkout 的可见目录：没有随仓库提供的题库 DB、题面 ZIP/PDF 或 `网页示例/` 目录。唯一受版本控制的 HTML 是 UI 的 article_toc_sync 测试页，不是离线题库。
+
+源码确实引用作者本机保存的题面，例如 `tijian-core/src/infra/fetchers/qoj.rs` 的 QOJ 11106 / Add One 3，以及 AtCoder 的 Sum of Average；这些 include_str! 位于可选 fixtures 测试。`tijian-core/Cargo.toml` 第 34–37 行明确说明第三方网页保存在故意 git-ignore 的根目录 `网页示例/`，干净 checkout 不带这些文件。上游 .gitignore 同时排除该目录、`*_files/`、普通 HTML 及 DB 文件。因此“源码引用离线样本”不能解释为“git clone 自带可查询题面库”。
+
+Tijian 的已收录题面会持久化在用户数据目录的 tijian.db（problems.statement_md），译文也可缓存；Desktop import executor 另有单次执行过程的内存抓取去重缓存。这些数据不随源码拉取。当前 Paveway 所接本机题库，经既有 problem_stats 实测 total=0，problem_list(has_statement=true) 返回空；适配器没有漏读已存在的题面。要读取实际离线题目，需要已有题库/正式备份，或另行取得作者未提交的网页样本再解析；不能将测试 seeder 的占位题面当成真实 OJ 题库。本次未导入、抓取或修改用户题库。

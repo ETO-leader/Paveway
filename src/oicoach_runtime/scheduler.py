@@ -90,6 +90,9 @@ class Runtime:
                 raise RuntimeContractError("Unknown history operation")
             arguments(raw, *contracts[operation])
             return getattr(History(self.store), operation)(**raw)
+        elif command == "events.upcoming":
+            arguments(raw, ("workflow_id", "task_id"), ("workflow_id",))
+            return self.store.upcoming(**raw)
         elif command == "events.list":
             arguments(raw, ("status", "offset"))
             # Lists are summaries so large private payloads cannot overflow IPC.
@@ -197,7 +200,9 @@ class Runtime:
                                      "commands": ["schedule", "events", "runs", "status"]}],
             }
             if workflow.memory_enabled:
-                envelope["memory"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
+                binding["memory_context"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
+                envelope["memory"] = {key: value for key, value in binding["memory_context"].items() if key != "notes"}
+                envelope["memory"]["location"] = "system_prompt.runtime_memory_snapshot"
                 envelope["available_tools"][0]["commands"].extend(["memory", "history"])
             if self.config.tijian.enabled:
                 envelope["available_tools"].append({

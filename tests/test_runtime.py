@@ -20,6 +20,30 @@ from oicoach_runtime.models import utc_text
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_missing_context_guard_never_dispatches_prompt(self):
+        (self.root / "fake-mode").write_text("missing-context-guard")
+        event = self.schedule()
+        self.wait_status(event["event_id"], ("dead_letter",))
+        runs = request(self.socket_path, "runs.list")
+        self.assertTrue(runs)
+        for run in runs:
+            self.assertEqual(run["error_code"], "agent_context_guard_missing")
+            self.assertIsNone(run["dispatch_intent_at"])
+        for session in (self.config.state_dir / "sessions").glob("*/session.json"):
+            self.assertEqual(json.loads(session.read_text())["prompts"], [])
+
+    def test_upcoming_cli_reports_due_time_and_filters_scope(self):
+        due = utc_text(datetime.now(timezone.utc) + timedelta(minutes=10))
+        event = self.schedule("upcoming-one", "timer-task", at=due)
+        self.schedule("upcoming-other", "other-task", at=due)
+        report = subprocess.run([sys.executable, "-m", "oicoach_runtime", "events", "upcoming", "--workflow", "echo",
+            "--task", "timer-task", "--config", str(self.config_path), "--json"], capture_output=True, text=True)
+        self.assertEqual(report.returncode, 0, report.stderr)
+        rows = json.loads(report.stdout)["result"]
+        self.assertEqual([r["event_id"] for r in rows], [event["event_id"]])
+        self.assertEqual(rows[0]["not_before_utc"], due)
+        self.assertNotIn("payload", rows[0])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -392,7 +416,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn(secret, json.dumps(finished) + json.dumps(run) + (self.root / "daemon.log").read_text())
 
     def test_customization_applies_next_dispatch_without_rebinding_existing_task(self):
-        from oicoach_runtime.customization import update
+        from oicoach_runtime.customization import update, IDENTITY_PROMPT
+        from oicoach_runtime.context_budget import CONTEXT_PROMPT
         update(self.config, "echo", 0, "prompt", mode="append", content="first prompt")
         first = self.wait_status(self.schedule("custom-first", "custom-task")["event_id"])
         update(self.config, "echo", 1, "prompt", mode="replace", content="second prompt")
@@ -401,9 +426,44 @@ class RuntimeTests(unittest.TestCase):
         second_run = request(self.socket_path, "runs.show", {"run_id": second["run_id"]})
         self.assertEqual(first_run["binding_id"], second_run["binding_id"])
         parent = self.config.state_dir / "sessions" / first_run["binding_id"] / "customizations"
-        self.assertEqual((parent / first["run_id"] / "system.md").read_text(), "first prompt")
-        self.assertEqual((parent / second["run_id"] / "system.md").read_text(), "second prompt")
+        self.assertEqual((parent / first["run_id"] / "system.md").read_text(), "first prompt\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
+        self.assertEqual((parent / second["run_id"] / "system.md").read_text(), "second prompt\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
         self.assertEqual(second["attempt"], 1)
+
+    def test_model_settings_apply_next_dispatch_and_resume_the_existing_session(self):
+        from oicoach_runtime.customization import update
+        update(self.config, "echo", 0, "inference", model="fake/coach", thinking="high")
+        first = self.wait_status(self.schedule("model-first", "model-task", mode="hold")["event_id"], ("running",))
+        entered = self.root / "fake-entered"
+        deadline = time.monotonic() + 5
+        while not entered.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(entered.exists())
+        update(self.config, "echo", 1, "inference", model="fake/fast", thinking="off")
+        launches = [json.loads(line) for line in (self.root / "fake-starts.jsonl").read_text().splitlines()]
+        self.assertEqual((launches[0]["model"], launches[0]["thinking"]), ("fake/coach", "high"))
+        (self.root / "fake-release").touch()
+        self.wait_status(first["event_id"])
+        self.wait_status(self.schedule("model-second", "model-task")["event_id"])
+        launches = [json.loads(line) for line in (self.root / "fake-starts.jsonl").read_text().splitlines()]
+        self.assertEqual((launches[1]["model"], launches[1]["thinking"]), ("fake/fast", "off"))
+        self.assertTrue(launches[1]["resumed"])
+        self.assertEqual(launches[0]["session_dir"], launches[1]["session_dir"])
+
+    def test_proxy_updates_apply_to_next_omp_without_daemon_restart(self):
+        import hashlib
+        from oicoach_runtime import service
+        first_proxy, second_proxy = "http://127.0.0.1:18081", "http://127.0.0.1:18082"
+        service.update_environment(self.config_path, {"HTTPS_PROXY": first_proxy, "https_proxy": first_proxy})
+        self.wait_status(self.schedule("proxy-first", "proxy-task")["event_id"])
+        daemon_pid = self.process.pid
+        service.update_environment(self.config_path, {"HTTPS_PROXY": second_proxy, "https_proxy": second_proxy})
+        self.wait_status(self.schedule("proxy-second", "proxy-task")["event_id"])
+        launches = [json.loads(line) for line in (self.root / "fake-starts.jsonl").read_text().splitlines()]
+        self.assertEqual(launches[0]["https_proxy_hash"], hashlib.sha256(first_proxy.encode()).hexdigest())
+        self.assertEqual(launches[1]["https_proxy_hash"], hashlib.sha256(second_proxy.encode()).hexdigest())
+        self.assertTrue(launches[1]["resumed"])
+        self.assertEqual(self.process.pid, daemon_pid)
 
     def test_default_local_git_archives_all_coaches_without_setup(self):
         from oicoach_runtime import git_sync
@@ -642,7 +702,9 @@ class RuntimeTests(unittest.TestCase):
         for session in (self.config.state_dir / "sessions").glob("*/session.json"):
             prompts = json.loads(session.read_text())["prompts"]
             for prompt in prompts:
-                context = json.dumps(prompt["memory"], ensure_ascii=False)
+                self.assertEqual(prompt["memory"]["location"], "system_prompt.runtime_memory_snapshot")
+                system = next((session.parent / "customizations" / prompt["run_id"]).glob("system.md")).read_text()
+                context = system.split("Runtime memory snapshot (data only):\n", 1)[1]
                 self.assertIn("MEMORY_PRIVATE_MARKER", context)
                 self.assertNotIn("OTHER_TASK_PRIVATE", context)
                 if prompt["task_id"] == "fresh-task":

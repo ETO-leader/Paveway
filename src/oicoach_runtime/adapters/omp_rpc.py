@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import uuid
+from importlib.resources import files
 
 from ..errors import AgentError
 from ..diagnostics import prompt_failure
@@ -40,15 +41,25 @@ class OmpRpc:
             argv.extend(["--resume", binding["session_file"]])
         if agent.profile:
             argv.extend(["--profile", agent.profile])
-        if agent.model:
-            argv.extend(["--model", agent.model])
-        if binding.get("customization"):
-            from ..customization import snapshot
-            argv.extend(snapshot(binding["customization"], binding["session_dir"], run_id, agent.skills_enabled))
+        inference = (binding.get("customization") or {}).get("inference", {})
+        model = inference.get("model") or agent.model
+        thinking = inference.get("thinking") or agent.thinking
+        if model:
+            argv.extend(["--model", model])
+        if thinking:
+            argv.extend(["--thinking", thinking])
+        from ..customization import snapshot
+        settings = binding.get("customization") or {"schema_version": 1, "revision": 0,
+            "system_prompt": {"mode": "append", "text": ""}, "skills": []}
+        argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled, binding.get("memory_context")))
+        # Explicit runtime guard still loads when optional user extensions are disabled.
+        argv.extend(["--extension", str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))])
         for option in ("tools", "extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
-        environment = dict(os.environ, OICOACH_RUN_ID=run_id, OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
+        from ..proxy import child_environment
+        environment = dict(child_environment(self.config_path), OICOACH_RUN_ID=run_id,
+                           OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
         if self.config_path:
             environment["OICOACH_CONFIG"] = str(self.config_path)
         self.process = await asyncio.create_subprocess_exec(
@@ -118,12 +129,17 @@ class OmpRpc:
             raise AgentError("Cannot write agent RPC command") from None
 
     async def ready(self):
+        budget_ready = False
         async with asyncio.timeout(self.config.agent.startup_timeout_seconds):
             while True:
                 frame = await self.frame(self.config.agent.startup_timeout_seconds)
+                if frame["type"] == "paveway_context_ready" and frame.get("tokenLimit") == 10000:
+                    budget_ready = True
                 if frame["type"] == "ready":
                     if type(frame.get("protocolVersion")) is not int or frame["protocolVersion"] != 1:
                         raise AgentError("Unsupported OMP RPC protocol version")
+                    if not budget_ready:
+                        raise AgentError("OMP did not load the required context budget guard", code="agent_context_guard_missing")
                     return
 
     async def state(self):

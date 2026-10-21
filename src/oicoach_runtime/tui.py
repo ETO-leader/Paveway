@@ -3,6 +3,7 @@
 import asyncio
 import json
 import locale
+import math
 import os
 import queue
 import shlex
@@ -28,9 +29,9 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea, Frame
 
 from . import __version__
-from .customization import SKILL_CATEGORIES, skill_category
+from .customization import SKILL_CATEGORIES, THINKING_LEVELS, skill_category
 from .errors import RuntimeContractError
-from .models import validate_id
+from .models import parse_timestamp, validate_id
 from .ui_client import CliClient, CliFailure
 
 TERMINAL = {"succeeded", "failed", "blocked", "uncertain", "dead_letter", "cancelled"}
@@ -40,6 +41,10 @@ COMMANDS = {
     "/schedule": "安排定时请求", "/memory": "查看 / 编辑长期笔记", "/history": "历史与会话原文",
     "/prompt": "自定义当前 workflow 系统提示词", "/skills": "管理当前 workflow 用户 Skill",
     "/sync": "多设备 Git 配置与历史同步",
+    "/timers": "查看当前任务的触发时间与倒计时",
+    "/select-model": "选择当前GPT使用的模型",
+    "/select-thinking-hardness": "选择模型思考等级",
+    "/proxy": "同步代理并检查代理端口",
     "/status": "运行状态", "/service": "服务安装 / 启停 / 日志", "/recover": "查看待核对事件",
     "/doctor": "运行诊断", "/init": "初始化配置", "/refresh": "刷新当前视图",
     "/next": "下一页", "/prev": "上一页", "/retry-send": "用原标识核对上次提交",
@@ -60,6 +65,10 @@ PageUp/PageDown 滚动记录，Ctrl+L 重绘；草稿保留在本次界面内存
 /sync [remote|setup|now|status|pause|resume|conflicts|history]  多设备 Git 同步
 /events · /events cancel ID     查看事件 / 确认后取消
 /schedule                      输入执行时间及请求
+/timers                        当前任务定时队列（系统时区）
+/select-model [provider/model]  选择模型；切换时思考等级恢复 auto
+/select-thinking-hardness [LEVEL]  选择思考等级；default 恢复继承
+/proxy                         同步终端代理并检查端口
 /memory [shared|task]           共享 / 当前 task 笔记
 /memory add [KEY]               创建笔记
 /memory edit KEY · forget KEY   修改 / 确认后删除
@@ -82,6 +91,25 @@ def visible(value):
 
 def pretty(value):
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def timestamp_text(value):
+    try:
+        return parse_timestamp(value).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    except RuntimeContractError:
+        return "时间未知"
+
+
+def duration_text(seconds):
+    seconds = max(0, math.ceil(seconds))
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return (f"{days}天 " if days else "") + f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def message_heading(role, stamp):
+    return role + " · " + timestamp_text(stamp)
 
 
 def reply_text(event, output):
@@ -129,6 +157,7 @@ class TerminalUI:
         self.pending, self.last_submission = None, None
         self.last_poll, self.last_interrupt = 0, 0
         self.last_restore, self.pending_since = 0, None
+        self.timers, self.timer_error, self.last_timer_poll, self.timers_observed = None, None, 0, None
         self.results, self.worker = queue.Queue(), None
         self.picker, self.wizard, self.view = None, None, None
         self.deferred = None
@@ -165,12 +194,12 @@ class TerminalUI:
         if not self.system or self.system[-1] != entry:
             self.system.append(entry)
             self.system = self.system[-60:]
-            self.chat.setdefault(self.scope, []).append("系统\n" + entry)
+            self.chat.setdefault(self.scope, []).append(message_heading("系统", datetime.now(timezone.utc).isoformat()) + "\n" + entry)
         self.notice = title
         self.draw()
 
     def draw(self):
-        welcome = "Paveway · OI 训练教练\n直接输入开始对话；/workflow 选择环境，/help 查看命令。"
+        welcome = "Paveway · GPT\n直接输入开始对话；/workflow 选择环境，/help 查看命令。"
         records = self.chat.get(self.scope, [])
         content = welcome + "\n\n" + "\n\n".join(records)
         position = len(content) if self.follow_tail else min(self.transcript.buffer.cursor_position, len(content))
@@ -255,6 +284,8 @@ class TerminalUI:
 
     def bootstrap(self):
         def loaded(report):
+            from .proxy import summary
+            self.info("代理启动检查", summary(report.pop("proxy")))
             workflows = report["workflows"]
             if self.workflow:
                 if self.workflow not in {row["id"] for row in workflows}:
@@ -267,7 +298,10 @@ class TerminalUI:
                 self.workflow_picker(workflows)
             else:
                 self.info("欢迎使用 Paveway", "尚无 workflow。输入 /workflow create 创建 coach；配置不存在时先 /init。\n对话需要独立 daemon：另开终端运行 serve，或 /service start 启动已安装服务。")
-        self.submit("读取训练环境", lambda: self.client.call("workflow", "list"), loaded)
+        def read():
+            proxy = self.client.call("proxy", "sync")
+            return {**self.client.call("workflow", "list"), "proxy": proxy}
+        self.submit("读取训练环境", read, loaded)
 
     def choose_scope(self, workflow, task):
         validate_id(workflow)
@@ -278,6 +312,7 @@ class TerminalUI:
         self.view = None
         self.follow_tail = True
         self.restore_pending = True
+        self.timers, self.timer_error, self.last_timer_poll, self.timers_observed = None, None, 0, None
         self.notice = f"当前任务：{workflow}/{task}"
         self.draw()
 
@@ -312,11 +347,11 @@ class TerminalUI:
                     continue
                 if event["event_id"] not in self.announced:
                     self.announced.add(event["event_id"])
-                    messages.append("你\n" + event["payload"].get("message", event["reason"]))
+                    messages.append(message_heading("你", event.get("created_at")) + "\n" + event["payload"].get("message", event["reason"]))
                     changed = True
                 if event["status"] in TERMINAL:
                     self.seen.add(run["run_id"])
-                    messages.append(f"教练 · {run['status']}\n" + reply_text(event, output))
+                    messages.append(message_heading("GPT · " + run["status"], run.get("completed_at") or event.get("completed_at")) + "\n" + reply_text(event, output))
                     if output.get("truncated"):
                         messages.append("[回复截断，可用 /history messages 查询原文]")
                     changed = True
@@ -351,7 +386,7 @@ class TerminalUI:
             return False
         self.last_submission = {"args": args, "scope": self.scope, "mode": self.mode, "message": message,
                                 "key": "ui-" + uuid.uuid4().hex, "confirmed": False}
-        self.chat.setdefault(self.scope, []).append("你\n" + message)
+        self.chat.setdefault(self.scope, []).append(message_heading("你", datetime.now(timezone.utc).isoformat()) + "\n" + message)
         self.follow_tail = True
         return self.resubmit()
 
@@ -365,7 +400,7 @@ class TerminalUI:
             self.track_pending(event)
             self.announced.add(event["event_id"])
             self.last_submission["confirmed"] = True
-            self.notice = "请求已保存，等待教练回复 · " + event["event_id"][:8]
+            self.notice = "请求已保存，等待GPT回复 · " + event["event_id"][:8]
             self.last_poll = 0
         return self.submit("提交请求", lambda: self.client.call("ask", *submission["args"], "--mode", submission["mode"],
             "--dedupe-key", submission["key"], text_files={"--message-file": submission["message"]}), queued)
@@ -386,15 +421,74 @@ class TerminalUI:
                 scope = event["workflow_id"], event["task_id"]
                 if event["run_id"]:
                     self.seen.add(event["run_id"])
-                message = f"教练 · {event['status']}\n" + reply_text(event, output)
+                message = message_heading("GPT · " + event["status"], event.get("completed_at")) + "\n" + reply_text(event, output)
                 if output and output.get("truncated"):
                     message += "\n[回复截断，可查询历史原文]"
                 self.chat.setdefault(scope, []).append(message)
                 self.pending = None
                 self.pending_since = None
+                self.last_timer_poll = 0
                 self.notice = f"请求完成 · {event['status']} · {scope[0]}/{scope[1]}"
                 self.follow_tail = True
         self.submit("检查回复", read, loaded)
+
+    def timer_line(self, event, now=None):
+        now = now or datetime.now(timezone.utc)
+        label = event["event_id"][:8]
+        reason = visible(event.get("reason", "定时任务")[:30]).replace("\n", " ")
+        if event["status"] == "waiting_anchor":
+            return label + " · 待起算 " + duration_text(event.get("relative_seconds") or 0) + "（本回合结束后） · " + reason
+        due = event.get("not_before_utc")
+        if event["status"] in ("leased", "running"):
+            phase = "启动中" if event["status"] == "leased" else "执行中"
+        else:
+            try:
+                remaining = (parse_timestamp(due) - now).total_seconds()
+                phase = "剩余 " + duration_text(remaining) if remaining > 0 else "已到时 · 等待派发"
+            except RuntimeContractError:
+                phase = "触发时间未知"
+        return label + " · " + phase + " · " + timestamp_text(due) + " · " + reason
+
+    def timer_text(self):
+        if self.timer_error:
+            return "定时任务 · 状态读取失败，自动重试；旧倒计时不作为执行结果"
+        if self.timers is None:
+            return "定时任务 · 正在读取" if self.workflow else "定时任务 · 请先选择 workflow"
+        stale = self.timers_observed is not None and time.monotonic() - self.timers_observed > 15
+        if not self.timers:
+            return "定时任务 · 当前 task 无待执行任务" + (" · 状态待刷新" if stale else "")
+        title = "定时任务 · 系统时区 · /timers 查看（最多100项）" + (" · 状态待刷新" if stale else "")
+        return title + "\n" + "\n".join(self.timer_line(event) for event in self.timers[:3])
+
+    def poll_timers(self, *, force=False):
+        if not self.workflow or self.busy or (not force and time.monotonic() - self.last_timer_poll < 5):
+            return False
+        if not force and (self.wizard or self.picker):
+            return False
+        scope, generation, args = self.scope, self.generation, self.scope_args()
+        def read():
+            try:
+                return self.client.call("events", "upcoming", *args), None
+            except (RuntimeContractError, OSError) as error:
+                return None, str(error)
+        def loaded(result):
+            if self.scope != scope or self.generation != generation:
+                return
+            rows, self.timer_error = result
+            if rows is not None:
+                self.timers, self.timers_observed = rows, time.monotonic()
+            if force:
+                if self.timer_error:
+                    self.info("定时任务状态不可用", self.timer_error)
+                elif rows:
+                    self.open_picker("定时任务 · 系统时区 · ↑↓ Enter 查看详情", [
+                        (self.timer_line(event), lambda event=event: self.show_event(event["event_id"])) for event in rows])
+                else:
+                    self.info("暂无待执行定时任务", "当前 workflow/task 没有等待或正在执行的事件。")
+        if self.submit("读取定时任务", read, loaded):
+            self.last_timer_poll = time.monotonic()
+            return True
+        return False
 
     def open_picker(self, title, items):
         self.picker = {"title": title, "items": items, "selected": 0, "draft": self.editor.text}
@@ -463,18 +557,62 @@ class TerminalUI:
         self.invalidate()
 
     def saved(self, value):
+        if isinstance(value, dict) and "event_id" in value:
+            self.last_timer_poll = 0
         self.info("操作已保存", pretty(value))
 
     def custom_saved(self, value):
         settings = value["settings"]
-        skill_notice = "三类中所有已启用 Skill 的正文会同时加入每轮系统上下文。"
+        skill_notice = "三类已启用 Skill 提供名称与用途索引，正文由 Agent 按需读取。"
         if not value["skills_enabled"]:
             skill_notice = "注意：agent.skills_enabled=false；用户 Skill 已保存，但不会加载。"
         elif not value.get("tools_enabled", True):
-            skill_notice += " 当前工具已停用；正文仍加载，但无法调用工具。"
+            skill_notice += " 当前工具已停用；无法按需读取 Skill 正文，请先启用读取工具。"
         self.info("自定义设置已保存 · v" + str(settings["revision"]),
             "当前 workflow 的所有 task 下次派发请求时生效，无需重启 daemon；已开始的回合和旧历史不变。\n"
             + skill_notice)
+
+    def select_inference(self, kind, args):
+        self.scope_args()
+        if len(args) > 1:
+            raise RuntimeContractError("用法：/select-model [provider/model|default] 或 /select-thinking-hardness [LEVEL|default]")
+        if kind == "thinking" and args and args[0] not in (*THINKING_LEVELS, "default"):
+            raise RuntimeContractError("思考等级：default / " + " / ".join(THINKING_LEVELS))
+        workflow, scope, generation = self.workflow, self.scope, self.generation
+        def loaded(report):
+            if self.scope != scope or self.generation != generation:
+                return
+            current = report["settings"].get("inference", {})
+            effective = report["inference"]
+            def save(value):
+                if self.scope != scope or self.generation != generation:
+                    return
+                options = ["--" + kind, value]
+                if kind == "model":
+                    options += ["--thinking", "auto" if value else ""]
+                def saved(value):
+                    inference = value["inference"]
+                    self.info("模型设置已保存 · v" + str(value["settings"]["revision"]),
+                        "模型：" + (inference["model"] or "OMP 默认") + "\n思考等级：" + (inference["thinking"] or "OMP 默认")
+                        + "\n当前 workflow 的所有 task 下次派发生效；正在执行的回合保持原设置。")
+                return self.submit("保存模型设置", lambda: self.client.call("workflow", "customize", "inference", workflow,
+                    "--expected-revision", str(report["settings"]["revision"]), *options), saved)
+            if args:
+                return save("" if args[0] == "default" else args[0])
+            if kind == "model":
+                choices = [("", "继承 Runtime / OMP 默认")]
+                choices += [(model["selector"], model["selector"] + " · " + visible(model["name"])) for model in report["models"]]
+                title = "选择模型 · 输入筛选 · ↑↓ Enter · 切换后 thinking=auto"
+            else:
+                model = next((model for model in report["models"] if model["selector"] == effective["model"]), None)
+                levels = model["thinking"] if model is not None else list(THINKING_LEVELS)
+                choices = [("", "继承 Runtime / OMP 默认"), ("auto", "auto · 由 OMP 自动决定")]
+                choices += [(level, level) for level in THINKING_LEVELS if level in levels and level != "auto"]
+                title = "选择思考等级 · " + (effective["model"] or "OMP 默认模型") + " · ↑↓ Enter"
+            self.open_picker(title, [(("✓ " if value == current.get(kind, "") else "") + label,
+                                      lambda value=value: save(value)) for value, label in choices])
+        command = ("workflow", "customize", "show", workflow) if args else ("workflow", "models", workflow)
+        return self.submit("读取模型设置", lambda: self.client.call(*command), loaded)
 
     def custom_command(self, kind, args):
         self.scope_args()
@@ -490,7 +628,7 @@ class TerminalUI:
                     text_files={"--content-file": content} if content is not None else None), self.custom_saved)
             def prompt_edit():
                 current = settings["system_prompt"]
-                self.info("编辑系统提示词", "append 追加到 OMP 原生系统提示；replace 替换原生系统提示。两种模式都同时加载三类已启用 Skill；coach 模板仍作为回合请求发送。\nCtrl+J 换行；内容按原文保存，不展开 $ 或执行命令。")
+                self.info("编辑系统提示词", "append 追加到 OMP 原生系统提示；replace 替换原生系统提示。两种模式都提供三类已启用 Skill 的索引，正文按需读取；coach 模板仍作为回合请求发送。\nCtrl+J 换行；内容按原文保存，不展开 $ 或执行命令。")
                 def done(values):
                     if values["mode"] not in ("append", "replace"):
                         raise RuntimeContractError("模式只能是 append 或 replace；Shift+Tab 可返回修改")
@@ -499,7 +637,7 @@ class TerminalUI:
                     ("content", "系统提示词正文 · Ctrl+J 换行", current["text"], 65536)], done)
             def prompt_show():
                 self.info("自定义系统提示词 · " + settings["system_prompt"]["mode"] + " · v" + str(revision),
-                          settings["system_prompt"]["text"] or "使用 OMP 默认系统提示词，并同时加载三类中已启用的 Skill 正文；尚未追加自定义系统提示词。")
+                          settings["system_prompt"]["text"] or "使用 OMP 默认系统提示词，三类已启用 Skill 的正文按需读取；尚未追加自定义系统提示词。")
             def prompt_reset():
                 self.confirm("恢复默认系统提示词（不删除 Skill）", lambda: save("prompt", "--mode", "append", content=""))
             def skill_edit(skill=None, category=None):
@@ -507,11 +645,11 @@ class TerminalUI:
                     if skill:
                         category = skill_category(skill)
                     else:
-                        self.open_picker("选择 Skill 分类 · 三类同时加载", [
+                        self.open_picker("选择 Skill 分类 · 正文按需读取", [
                             (label, lambda category=category: skill_edit(category=category)) for category, label in SKILL_CATEGORIES.items()])
                         return
                 steps = [] if skill else [("name", "Skill 名称 · 小写字母/数字/短横线", "", 64)]
-                steps += [("description", "用途描述 · 最多 64 KiB · 此 Skill 会随其他分类同时加载", skill["description"] if skill else "", 65536),
+                steps += [("description", "用途描述 · 最多 64 KiB · 说明何时需要读取此 Skill", skill["description"] if skill else "", 65536),
                           ("content", "Skill Markdown 正文 · Ctrl+J 换行", skill["content"] if skill else "", 32768)]
                 def done(values):
                     return save("skill-put", "--name", skill["name"] if skill else values["name"],
@@ -552,9 +690,9 @@ class TerminalUI:
                 else:
                     raise RuntimeContractError("用法：/prompt [show|edit|reset]")
             elif not args:
-                self.info("用户 Skill · 当前 workflow", "OI Introduce、user information、personal skill 三类已启用正文每轮同时加载。\n"
+                self.info("用户 Skill · 当前 workflow", "OI Introduce、user information、personal skill 三类共同提供索引，正文按需读取。\n"
                     + ("下次请求生效。" if report["skills_enabled"] else "当前 agent.skills_enabled=false，不会加载。"))
-                self.open_picker("用户 Skill 分类 · 三类同时加载 · ↑↓ Enter", [
+                self.open_picker("用户 Skill 分类 · 按需读取 · ↑↓ Enter", [
                     (label + " · " + str(sum(skill_category(s) == category and s["enabled"] for s in settings["skills"])) + " 项启用",
                      lambda category=category: category_menu(category)) for category, label in SKILL_CATEGORIES.items()])
             elif len(args) == 1 and args[0] in SKILL_CATEGORIES:
@@ -589,7 +727,7 @@ class TerminalUI:
                     def details(report):
                         item = report["record"]
                         self.info("同步历史 · " + item["device_id"][:8] + " · " + item["status"],
-                            "你\n" + str(item.get("user_message", "")) + "\n\n教练\n" + (item.get("reply") or item.get("error_message") or item.get("error_code") or "没有最终回复")
+                            "你\n" + str(item.get("user_message", "")) + "\n\nGPT\n" + (item.get("reply") or item.get("error_message") or item.get("error_code") or "没有最终回复")
                             + ("\n\n文本原文：/sync messages " + item["device_id"] + " " + item["binding_id"] if item.get("binding_id") else ""))
                     self.submit("读取同步历史", lambda: self.client.call("sync", "show", "--device", row["device_id"], "--run", row["run_id"]), details)
                 if page["records"]:
@@ -643,7 +781,7 @@ class TerminalUI:
             if action == "status":
                 self.info("Git 同步状态", pretty(report))
             elif action == "remote":
-                self.info("配置用户数据 remote", "全部教练对话共用一个独立 Git 仓库。remote 留空只维护本地 Git；填写后按同步开关自动 pull/push。")
+                self.info("配置用户数据 remote", "全部GPT对话共用一个独立 Git 仓库。remote 留空只维护本地 Git；填写后按同步开关自动 pull/push。")
                 def save_remote(values):
                     from .git_sync import validate_remote
                     validate_remote(values["remote"])
@@ -655,7 +793,7 @@ class TerminalUI:
                            ("跨设备历史", "history"), ("配置冲突 / 新设备绑定", "conflicts"),
                            ("暂停自动同步", "pause"), ("恢复自动同步", "resume")]
                 mode = "远端同步" if (report["settings"] or {}).get("remote") else "仅本地 Git"
-                self.open_picker("全部教练对话共用 · " + mode + " · ↑↓ Enter", [(label, lambda cmd=cmd: self.sync_command([cmd])) for label, cmd in choices])
+                self.open_picker("全部GPT对话共用 · " + mode + " · ↑↓ Enter", [(label, lambda cmd=cmd: self.sync_command([cmd])) for label, cmd in choices])
             else:
                 values = report["settings"] or {}
                 self.info("设置 Git 用户数据仓库", "仅同步自定义 prompt/Skill 和可查询历史；不上传 API key 文件或执行队列。remote 留空时仅本地 Git 保存。")
@@ -774,7 +912,8 @@ class TerminalUI:
         def loaded(value):
             event, output = value["event"], value["output"]
             self.info(f"历史 · {event['workflow_id']}/{event['task_id']} · {value['run']['status']}",
-                "你\n" + event["payload"].get("message", event["reason"]) + "\n\n教练\n" + reply_text(event, output)
+                message_heading("你", event.get("created_at")) + "\n" + event["payload"].get("message", event["reason"])
+                + "\n\n" + message_heading("GPT", value["run"].get("completed_at") or event.get("completed_at")) + "\n" + reply_text(event, output)
                 + f"\n\n原文：/history messages {event['task_id']}\nrun_id={run_id}")
         return self.submit("读取历史", lambda: self.client.call("history", "show", run_id), loaded)
 
@@ -792,7 +931,7 @@ class TerminalUI:
         except ValueError:
             raise RuntimeContractError("命令引号未闭合；草稿已保留") from None
         name, args = parts[0], parts[1:]
-        if name in ("/quit", "/help", "/status", "/doctor", "/init", "/refresh", "/next", "/prev", "/retry-send", "/discard-send", "/schedule", "/recover") and args:
+        if name in ("/quit", "/help", "/status", "/doctor", "/init", "/refresh", "/next", "/prev", "/retry-send", "/discard-send", "/schedule", "/recover", "/timers", "/proxy") and args:
             raise RuntimeContractError("此命令不接受参数：" + name)
         if name == "/quit":
             if self.app:
@@ -806,6 +945,12 @@ class TerminalUI:
             return False
         if name in ("/prompt", "/skills"):
             return self.custom_command(name[1:], args)
+        if name in ("/select-model", "/select-thinking-hardness"):
+            return self.select_inference("model" if name == "/select-model" else "thinking", args)
+        if name == "/proxy":
+            from .proxy import summary
+            return self.submit("同步代理", lambda: self.client.call("proxy", "sync"),
+                               lambda report: self.info("代理检查", summary(report)))
         if name == "/sync":
             return self.sync_command(args)
         if name == "/workflow":
@@ -885,6 +1030,8 @@ class TerminalUI:
             if self.view:
                 return self.query_view(**self.view)
             self.restore()
+        elif name == "/timers":
+            return self.poll_timers(force=True)
         elif name == "/retry-send":
             return self.resubmit()
         elif name == "/discard-send":
@@ -936,6 +1083,9 @@ class TerminalUI:
                 self.execute(command)
                 return
             if self.busy and self.editor.text.startswith("/") and self.editor.text not in ("/help", "/quit") and (not self.wizard or self.wizard.get("saving")):
+                self.defer_command(self.editor.text)
+                return
+            if self.busy == "读取定时任务" and not self.pending and not self.wizard and not self.picker and self.editor.text.strip():
                 self.defer_command(self.editor.text)
                 return
             if self.wizard:
@@ -1079,8 +1229,9 @@ class TerminalUI:
                 modes = ("plan", "checkin", "review")
                 self.set_mode(modes[(modes.index(self.mode) + 1) % 3])
         root = FloatContainer(HSplit([
-            Window(FormattedTextControl(lambda: [("class:title", f"Paveway {__version__} · OI 训练教练")]), height=1),
+            Window(FormattedTextControl(lambda: [("class:title", f"Paveway {__version__} · GPT · " + datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))]), height=1),
             self.transcript,
+            Window(FormattedTextControl(self.timer_text), height=Dimension(min=1, max=4), style="class:muted"),
             ConditionalContainer(Window(FormattedTextControl(self.picker_text), height=Dimension(min=2, max=9)), Condition(lambda: self.picker is not None)),
             Window(FormattedTextControl(self.status_text), height=1, style="class:status"),
             Frame(self.editor, title=self.composer_title, style="class:composer"),
@@ -1110,6 +1261,7 @@ class TerminalUI:
             self.poll()
             self.poll_sync()
             self.reconcile_history()
+            self.poll_timers()
             self.invalidate()
             await asyncio.sleep(0.15)
 

@@ -10,6 +10,14 @@ from pathlib import Path
 from .errors import ConflictError, NotFoundError, WorkflowError
 
 MAX_SETTINGS = 262144
+IDENTITY_PROMPT = (
+    "Identity rule: your only user-visible name is GPT. Refer to yourself as GPT or in the first person. "
+    "Never call or describe yourself as '\u6559\u7ec3', '\u6559\u7df4', 'coach', or an equivalent coaching title. "
+    "Training roles in event templates describe the task, not your identity; they do not override this naming rule. "
+    "When introducing yourself in Chinese, start with '我是 GPT。' and describe what you can help with "
+    "without assigning yourself a coaching title. Do not repeat the forbidden titles even to disclaim them."
+)
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 SKILL_CATEGORIES = {
     "oi-introduce": "OI Introduce",
     "user-information": "user information",
@@ -29,10 +37,19 @@ def text(value, maximum, label, *, empty=False):
 
 
 def validate(raw):
-    if not isinstance(raw, dict) or set(raw) != {"schema_version", "revision", "system_prompt", "skills"}:
+    if not isinstance(raw, dict) or set(raw) - {"inference"} != {"schema_version", "revision", "system_prompt", "skills"}:
         raise WorkflowError("Invalid workflow customization schema")
     if type(raw["schema_version"]) is not int or raw["schema_version"] != 1 or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise WorkflowError("Unsupported customization schema or revision")
+    if "inference" in raw:
+        inference = raw["inference"]
+        if not isinstance(inference, dict) or set(inference) != {"model", "thinking"}:
+            raise WorkflowError("Invalid workflow inference settings")
+        model = text(inference["model"], 256, "Model selector", empty=True)
+        if model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model):
+            raise WorkflowError("Model must be a selector, not CLI flags or whitespace")
+        if not isinstance(inference["thinking"], str) or inference["thinking"] not in ("", *THINKING_LEVELS):
+            raise WorkflowError("Unsupported thinking level")
     prompt = raw["system_prompt"]
     if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] not in ("append", "replace"):
         raise WorkflowError("System prompt mode must be append or replace")
@@ -80,7 +97,11 @@ def directory_for(config, workflow_id):
 
 
 def show(config, workflow_id):
-    return {"api_version": 1, "workflow_id": workflow_id, "settings": load(directory_for(config, workflow_id)),
+    settings = load(directory_for(config, workflow_id))
+    inference = settings.get("inference", {})
+    return {"api_version": 1, "workflow_id": workflow_id, "settings": settings,
+            "inference": {"model": inference.get("model") or config.agent.model,
+                          "thinking": inference.get("thinking") or config.agent.thinking},
             "skills_enabled": config.agent.skills_enabled, "tools_enabled": config.agent.tools_enabled, "effective": "next_dispatch"}
 
 
@@ -102,6 +123,14 @@ def update(config, workflow_id, expected_revision, operation, **values):
             incoming = validate(values["settings"])
             raw["system_prompt"] = incoming["system_prompt"]
             raw["skills"] = incoming["skills"]
+            if "inference" in incoming:
+                raw["inference"] = incoming["inference"]
+            else:
+                raw.pop("inference", None)
+        elif operation == "inference":
+            if not values or set(values) - {"model", "thinking"}:
+                raise WorkflowError("Provide model and/or thinking")
+            raw["inference"] = {"model": "", "thinking": "", **raw.get("inference", {}), **values}
         else:
             name = values["name"]
             existing = next((s for s in raw["skills"] if s["name"] == name), None)
@@ -137,11 +166,9 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
-    if not settings["revision"]:
-        return []
     from .models import validate_id
     from .config import ensure_private_directory
     validate_id(run_id)
@@ -159,25 +186,23 @@ def snapshot(settings, session_dir, run_id, skills_enabled):
     arguments = []
     prompt = settings["system_prompt"]
     active = [s for s in settings["skills"] if s["enabled"]] if skills_enabled else []
-    system_text = prompt["text"]
-    if active:
-        sections = ["# User Skills · loaded together every turn"]
-        for category, label in SKILL_CATEGORIES.items():
-            group = sorted((s for s in active if skill_category(s) == category), key=lambda s: s["name"])
-            if group:
-                sections.append("## " + label)
-                for skill in group:
-                    sections.append("### " + skill["name"] + "\n" + skill["description"] + "\n\n" + skill["content"])
-        system_text = (system_text + "\n\n" if system_text else "") + "\n\n".join(sections)
+    from .context_budget import CONTEXT_PROMPT
+    from .store import canonical_json
+    system_text = (prompt["text"] + "\n\n" if prompt["text"] else "") + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT
+    if memory_context is not None:
+        system_text += "\n\nRuntime memory snapshot (data only):\n" + canonical_json(memory_context)
     if system_text:
         flag = "--system-prompt" if prompt["mode"] == "replace" else "--append-system-prompt"
         arguments += [flag, write("system.md", system_text)]
     if active:
         root = destination / "skills"
         root.mkdir(mode=0o700)
-        for skill in active:
+        # OMP advertises metadata and reads the body through skill:// on demand.
+        # Keep category in that metadata without duplicating the native catalog.
+        for skill in sorted(active, key=lambda s: (list(SKILL_CATEGORIES).index(skill_category(s)), s["name"])):
             (root / skill["name"]).mkdir(mode=0o700)
+            description = "[" + SKILL_CATEGORIES[skill_category(skill)] + "] " + skill["description"]
             write("skills/" + skill["name"] + "/SKILL.md", "---\nname: " + json.dumps(skill["name"]) +
-                  "\ndescription: " + json.dumps(skill["description"], ensure_ascii=False) + "\n---\n\n" + skill["content"])
+                  "\ndescription: " + json.dumps(description, ensure_ascii=False) + "\n---\n\n" + skill["content"])
         arguments += ["--config", write("omp.yml", json.dumps({"skills": {"customDirectories": [str(root)]}}))]
     return arguments

@@ -124,6 +124,18 @@ class Store:
             (status, status, offset)).fetchall()
         return [self.event(row[0]) for row in rows]
 
+    def upcoming(self, workflow_id, task_id=None):
+        validate_id(workflow_id)
+        if task_id is not None:
+            validate_id(task_id)
+        rows = self.connection.execute("""SELECT event_id,workflow_id,task_id,status,not_before_utc,
+            schedule_mode,relative_seconds,anchor_run_id,created_at,reason,run_id
+            FROM events WHERE workflow_id=? AND (? IS NULL OR task_id=?)
+            AND status IN ('queued','waiting_anchor','leased','running')
+            ORDER BY not_before_utc IS NULL,not_before_utc,created_at,event_id LIMIT 100""",
+            (workflow_id, task_id, task_id)).fetchall()
+        return [dict(row) for row in rows]
+
     def runs(self, task=None, offset=0):
         self.validate_offset(offset)
         if task is not None:

@@ -2,6 +2,7 @@
 """Test-only RPC peer; never use this executable as a real OI coach."""
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -28,6 +29,11 @@ def main():
     if "--help" in sys.argv:
         print("--cwd --session-dir --resume --mode --no-ui --profile")
         return
+    if "models" in sys.argv:
+        print(json.dumps({"models": [{"selector": "fake/coach", "name": "Fake Coach", "reasoning": True,
+                                      "thinking": ["low", "medium", "high"]},
+                                     {"selector": "fake/fast", "name": "Fake Fast", "reasoning": False, "thinking": None}]}))
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", type=Path, required=True)
     parser.add_argument("--session-dir", type=Path, required=True)
@@ -36,14 +42,18 @@ def main():
     parser.add_argument("--no-ui", action="store_true")
     parser.add_argument("--profile")
     parser.add_argument("--model")
+    parser.add_argument("--thinking")
     parser.add_argument("--system-prompt", type=Path)
     parser.add_argument("--append-system-prompt", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--extension", type=Path)
     for option in ("tools", "extensions", "skills", "rules"):
         parser.add_argument("--no-" + option, action="store_true")
     args = parser.parse_args()
     with (args.cwd / "fake-starts.jsonl").open("a") as launches:
-        launches.write(json.dumps({"pid": os.getpid(), "session_dir": str(args.session_dir), "resumed": bool(args.resume)}) + "\n")
+        launches.write(json.dumps({"pid": os.getpid(), "session_dir": str(args.session_dir), "resumed": bool(args.resume),
+                                  "model": args.model, "thinking": args.thinking,
+                                  "https_proxy_hash": hashlib.sha256(os.environ.get("HTTPS_PROXY", "").encode()).hexdigest()}) + "\n")
     mode_file = args.cwd / "fake-mode"
     startup_mode = mode_file.read_text().strip() if mode_file.exists() else "normal"
     if startup_mode == "crash-before-ready":
@@ -59,6 +69,8 @@ def main():
         session_file.write_text(json.dumps(session))
     settled = True
     exit_code = 0
+    if startup_mode != "missing-context-guard":
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
     emit({"type": "ready", "protocolVersion": 1}, split=True)
     for line in sys.stdin:
         request = json.loads(line)

@@ -52,6 +52,38 @@ class StoreTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_upcoming_is_scoped_ordered_and_excludes_payloads_and_terminal_events(self):
+        parent, run = self.active()
+        late = self.enqueue(dedupe_key="late", at=utc_text(self.now + timedelta(hours=1)), payload={"secret": "PRIVATE_PAYLOAD"})
+        near = self.enqueue(dedupe_key="near", at=utc_text(self.now + timedelta(minutes=1)))
+        self.enqueue(workflow_id="other", dedupe_key="other-workflow", at=utc_text(self.now + timedelta(seconds=1)))
+        self.enqueue(task_id="other-task", dedupe_key="other-task", at=utc_text(self.now + timedelta(seconds=1)))
+        cancelled = self.enqueue(dedupe_key="cancelled", at=utc_text(self.now + timedelta(seconds=2)))
+        self.store.modify(cancelled["event_id"], cancelled["version"], cancel=True)
+        child = self.enqueue(dedupe_key="after-turn", at=None, after_turn=600, run_id=run)
+        rows = self.store.upcoming("echo", "task")
+        self.assertEqual([r["event_id"] for r in rows], [parent["event_id"], near["event_id"], late["event_id"], child["event_id"]])
+        self.assertEqual(rows[-1]["status"], "waiting_anchor")
+        self.assertIsNone(rows[-1]["not_before_utc"])
+        self.assertEqual(rows[-1]["relative_seconds"], 600)
+        self.assertNotIn("PRIVATE_PAYLOAD", json.dumps(rows))
+        self.assertTrue(all("payload" not in row and "payload_json" not in row for row in rows))
+        self.store.evidence(run, acknowledged=True)
+        self.store.evidence(run, result="completed")
+        self.store.finish(run, "succeeded", result="completed", settled=True)
+        rows = self.store.upcoming("echo", "task")
+        self.assertEqual([r["event_id"] for r in rows], [near["event_id"], child["event_id"], late["event_id"]])
+        self.assertEqual(rows[1]["not_before_utc"], utc_text(self.now + timedelta(seconds=600)))
+
+    def test_upcoming_bounds_results_by_nearest_due_time(self):
+        for index in reversed(range(103)):
+            self.enqueue(dedupe_key=f"future-{index}", at=utc_text(self.now + timedelta(seconds=index)))
+        rows = self.store.upcoming("echo", "task")
+        self.assertEqual(len(rows), 100)
+        self.assertEqual(rows[-1]["not_before_utc"], utc_text(self.now + timedelta(seconds=99)))
+        with self.assertRaises(RuntimeContractError):
+            self.store.upcoming("../invalid", "task")
+
     def test_transaction_rolls_back_event_if_audit_fails(self):
         with patch.object(self.store, "audit", side_effect=RuntimeError("crash-before-commit")):
             with self.assertRaises(RuntimeError):

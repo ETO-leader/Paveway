@@ -13,8 +13,9 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import load_config
 from oicoach_runtime.db import initialize_database, inspect_database
 from oicoach_runtime.errors import ConflictError, RuntimeContractError, StorageError
-from oicoach_runtime.memory import Memory, History, CONTEXT_BYTES
+from oicoach_runtime.memory import Memory, History, CONTEXT_TOKENS
 from oicoach_runtime.models import utc_text
+from oicoach_runtime.context_budget import count_tokens
 from oicoach_runtime.store import Store, canonical_json
 from oicoach_runtime.workflows import Workflow
 
@@ -84,12 +85,18 @@ class MemoryTests(unittest.TestCase):
         self.put("temporary", expires_at=utc_text(self.now + timedelta(seconds=1)))
         self.now += timedelta(seconds=2)
         self.assertNotIn("temporary", [n["key"] for n in self.memory.context("coach", "training")["notes"]])
-        for index in range(8):
+        for index in range(15):
             self.memory.put("coach", f"large-{index}", "数据", "汉" * 1300, task_id="training")
         bounded = self.memory.context("coach", "training")
-        self.assertLessEqual(len(canonical_json(bounded).encode()), CONTEXT_BYTES)
+        self.assertLessEqual(count_tokens(canonical_json(bounded)), CONTEXT_TOKENS)
         self.assertTrue(bounded["truncated"])
         self.assertIn("shared", [n["key"] for n in bounded["notes"]])
+        self.assertEqual(bounded["token_limit"], 10000)
+        self.assertEqual(bounded["tokenizer"], "o200k_base")
+        # A token limit permits substantially more than the previous 8 KiB,
+        # while omitted notes remain queryable in the durable store.
+        self.assertGreater(len(canonical_json(bounded).encode()), 8192)
+        self.assertIsNotNone(self.memory.show("coach", "large-14", task_id="training"))
 
     def test_validation_and_metadata_only_audit(self):
         for changes in ({"content": "x" * 4097}, {"content": "汉" * 1366}, {"content": "\ud800"},

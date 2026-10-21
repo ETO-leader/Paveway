@@ -2,6 +2,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -14,6 +15,7 @@ import time
 import unittest
 import uuid
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +31,7 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
-from oicoach_runtime.tui import CliClient, CliFailure, TerminalUI, SlashCompleter, visible, run
+from oicoach_runtime.tui import CliClient, CliFailure, TerminalUI, SlashCompleter, visible, run, timestamp_text, duration_text
 from oicoach_runtime.workflow_setup import create
 
 
@@ -47,6 +49,115 @@ def collect(ui):
 
 def make_ui(client, workflow="echo", task="task"):
     return TerminalUI(client, workflow, task, input=DummyInput(), output=DummyOutput())
+
+
+class TimerDisplayTests(unittest.TestCase):
+    def test_timestamps_use_system_timezone_including_historical_dst(self):
+        try:
+            with patch.dict(os.environ, {"TZ": "EST5EDT,M3.2.0/2,M11.1.0/2"}):
+                time.tzset()
+                self.assertEqual(timestamp_text("2026-01-01T12:00:00Z"), "2026-01-01 07:00:00 EST")
+                self.assertEqual(timestamp_text("2026-07-01T12:00:00Z"), "2026-07-01 08:00:00 EDT")
+        finally:
+            time.tzset()
+        self.assertEqual(timestamp_text(None), "时间未知")
+
+    def test_countdown_distinguishes_anchor_due_and_execution(self):
+        ui = make_ui(None)
+        now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+        event = {"event_id": "timer-12345", "reason": "check", "status": "queued",
+                 "not_before_utc": (now + timedelta(seconds=600)).isoformat()}
+        self.assertIn("剩余 00:10:00", ui.timer_line(event, now))
+        self.assertIn("剩余 00:09:59", ui.timer_line(event, now + timedelta(seconds=1)))
+        self.assertIn("已到时 · 等待派发", ui.timer_line(event, now + timedelta(seconds=601)))
+        event.update(status="waiting_anchor", not_before_utc=None, relative_seconds=600)
+        self.assertIn("待起算 00:10:00（本回合结束后）", ui.timer_line(event, now))
+        self.assertNotIn("时间未知", ui.timer_line(event, now))
+        event.update(status="running", not_before_utc=now.isoformat())
+        self.assertIn("执行中", ui.timer_line(event, now))
+        self.assertEqual(duration_text(86401), "1天 00:00:01")
+
+    def test_poll_preserves_draft_recovers_errors_and_ignores_old_scope(self):
+        class Client:
+            failed = True
+            def call(self, *args):
+                self.args = args
+                if self.failed:
+                    raise RuntimeContractError("offline")
+                return [{"event_id": "timer", "reason": "check", "status": "queued",
+                         "not_before_utc": "2026-10-21T12:00:00Z"}]
+        client = Client()
+        ui = make_ui(client)
+        ui.editor.text = "NEXT_DRAFT"
+        ui.poll_timers(force=True)
+        collect(ui)
+        self.assertIn("状态读取失败", ui.timer_text())
+        self.assertEqual(ui.editor.text, "NEXT_DRAFT")
+        client.failed = False
+        ui.last_timer_poll = 0
+        ui.poll_timers()
+        collect(ui)
+        self.assertIsNone(ui.timer_error)
+        self.assertEqual(client.args, ("events", "upcoming", "--workflow", "echo", "--task", "task"))
+        self.assertEqual(ui.editor.text, "NEXT_DRAFT")
+        ui.last_timer_poll = 0
+        ui.poll_timers()
+        ui.task = "another-task"
+        ui.timers = None
+        collect(ui)
+        self.assertIsNone(ui.timers)
+
+    def test_message_submitted_during_timer_poll_runs_once(self):
+        entered, release = threading.Event(), threading.Event()
+        class Client:
+            messages = []
+            def call(self, *args, **kwargs):
+                if args[:2] == ("events", "upcoming"):
+                    entered.set()
+                    release.wait(3)
+                    return []
+                if args[0] == "ask":
+                    self.messages.append(kwargs["text_files"]["--message-file"])
+                    return {"event_id": "sent", "status": "queued"}
+                raise AssertionError(args)
+        client = Client()
+        ui = make_ui(client)
+        ui.poll_timers()
+        self.assertTrue(entered.wait(1))
+        ui.editor.text = "send while refreshing"
+        ui.accept()
+        self.assertIsNotNone(ui.deferred)
+        ui.editor.text = "NEXT_DRAFT"
+        release.set()
+        collect(ui)
+        self.assertEqual(client.messages, ["send while refreshing"])
+        self.assertEqual(ui.editor.text, "NEXT_DRAFT")
+
+    def test_history_restores_saved_message_times(self):
+        created, completed = "2026-01-01T12:00:00Z", "2026-01-01T12:01:23Z"
+        class Client:
+            def call(self, *args):
+                if args[:2] == ("history", "search"):
+                    return [{"run_id": "old"}]
+                return {"run": {"run_id": "old", "status": "succeeded", "completed_at": completed},
+                        "event": {"event_id": "old-event", "status": "succeeded", "reason": "hello",
+                                  "created_at": created, "payload": {"message": "hello"}},
+                        "output": {"text": "reply"}}
+        ui = make_ui(Client())
+        ui.restore()
+        collect(ui)
+        self.assertIn("你 · " + timestamp_text(created), ui.transcript.text)
+        self.assertIn("GPT · succeeded · " + timestamp_text(completed), ui.transcript.text)
+
+    def test_background_timer_read_does_not_block_form_confirmation(self):
+        ui = make_ui(None)
+        ui.confirm("confirm", lambda: True)
+        self.assertFalse(ui.poll_timers())
+        self.assertFalse(ui.busy)
+        ui.escape()
+        ui.open_picker("pick", [("one", lambda: None)])
+        self.assertFalse(ui.poll_timers())
+        self.assertFalse(ui.busy)
 
 
 class ConversationTests(unittest.TestCase):
@@ -301,7 +412,7 @@ class ConversationTests(unittest.TestCase):
     def test_reports_and_replies_render_in_chronological_order(self):
         ui = make_ui(None)
         ui.info("操作说明", "long help")
-        ui.chat.setdefault(ui.scope, []).append("教练\nnewest reply")
+        ui.chat.setdefault(ui.scope, []).append("GPT\nnewest reply")
         ui.draw()
         self.assertLess(ui.transcript.text.index("long help"), ui.transcript.text.index("newest reply"))
 
@@ -464,6 +575,84 @@ class TerminalIntegrationTests(unittest.TestCase):
         return master, slave, process, screen, stream, read_until, before
 
     @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
+    def test_pty_startup_syncs_proxy_and_keeps_api_credentials_private(self):
+        from oicoach_runtime import service
+        import hashlib
+        service.update_environment(self.path, {"PRIVATE_MODEL_KEY": "DO_NOT_DISPLAY_MODEL_KEY"})
+        with patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:18789"}):
+            master, slave, process, screen, stream, read_until, before = self.open_terminal()
+        saved = service.read_environment(self.path)
+        self.assertEqual(saved["HTTPS_PROXY"], "http://127.0.0.1:18789")
+        self.assertEqual(saved["https_proxy"], saved["HTTPS_PROXY"])
+        self.assertEqual(saved["PRIVATE_MODEL_KEY"], "DO_NOT_DISPLAY_MODEL_KEY")
+        rendered = read_until("代理启动检查")
+        self.assertNotIn("DO_NOT_DISPLAY_MODEL_KEY", rendered)
+        self.assertNotIn("18789", rendered)
+        os.write(master, b"proxy dispatch\r")
+        read_until("fake completion")
+        launch = json.loads((self.root / "fake-starts.jsonl").read_text().splitlines()[0])
+        self.assertEqual(launch["https_proxy_hash"], hashlib.sha256(saved["HTTPS_PROXY"].encode()).hexdigest())
+        os.write(master, b"/proxy\r")
+        read_until("代理检查")
+        os.write(master, b"/quit\r")
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+
+    @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
+    def test_pty_select_model_and_thinking_reach_cli_and_native_launch(self):
+        master, slave, process, screen, stream, read_until, before = self.open_terminal()
+        os.write(master, b"/select-model\r")
+        read_until("选择模型")
+        read_until("fake/coach")
+        os.write(master, b"\x1b[B\r")
+        read_until("模型设置已保存 · v1")
+        os.write(master, b"/select-thinking-hardness\r")
+        read_until("选择思考等级")
+        os.write(master, b"high\r")
+        read_until("模型设置已保存 · v2")
+        settings = self.client.call("workflow", "customize", "show", "echo")
+        self.assertEqual(settings["inference"], {"model": "fake/coach", "thinking": "high"})
+        os.write(master, b"verify chosen model\r")
+        read_until("fake completion")
+        launch = json.loads((self.root / "fake-starts.jsonl").read_text().splitlines()[0])
+        self.assertEqual((launch["model"], launch["thinking"]), ("fake/coach", "high"))
+        os.write(master, b"/select-model default\r")
+        read_until("模型设置已保存 · v3")
+        self.assertEqual(self.client.call("workflow", "customize", "show", "echo")["settings"]["inference"],
+                         {"model": "", "thinking": ""})
+        os.write(master, b"/quit\r")
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+
+    @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
+    def test_pty_live_countdown_dispatch_and_draft_survive_refresh(self):
+        event = self.client.call("schedule", "--workflow", "echo", "--task", "pty-task",
+            "--at", (datetime.now(timezone.utc) + timedelta(seconds=12)).isoformat(),
+            "--reason", "COUNTDOWN_TEST", "--dedupe-key", "countdown-test",
+            text_files={"--payload-file": json.dumps({"message": "TIMER_AUTOMATIC_REPLY", "fake_mode": "hold"})})
+        master, slave, process, screen, stream, read_until, before = self.open_terminal()
+        rendered = read_until("剩余")
+        match = re.search(r"剩余 (\d{2}):(\d{2}):(\d{2})", rendered)
+        self.assertIsNotNone(match, rendered)
+        hours, minutes, seconds = map(int, match.groups())
+        read_until("剩余 " + duration_text(hours * 3600 + minutes * 60 + seconds - 1), timeout=3)
+        os.write(master, b"NEXT_DRAFT")
+        self.until(lambda: (self.root / "fake-entered").exists(), timeout=20)
+        read_until("执行中")
+        self.assertIn("NEXT_DRAFT", "\n".join(screen.display))
+        (self.root / "fake-release").touch()
+        read_until("fake completion")
+        read_until("当前 task 无待执行任务")
+        self.assertIn("NEXT_DRAFT", "\n".join(screen.display))
+        actual = self.client.call("events", "show", event["event_id"])
+        self.assertEqual(actual["status"], "succeeded")
+        self.assertEqual(len(self.api("runs.list")), 1)
+        os.write(master, b"\x15/quit\r")
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(termios.tcgetattr(slave), before)
+
+    @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
     def test_pty_git_sync_setup_remote_push_history_and_pause(self):
         remote = self.root / "user-data.git"
         subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], capture_output=True, check=True)
@@ -551,15 +740,18 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertEqual(saved["system_prompt"]["text"], "先给提示\n不要直接给答案 ${literal}")
         self.assertEqual(saved["revision"], 3)
         system = snapshots[0].with_name("system.md").read_text()
-        self.assertIn("## user information", system)
-        self.assertIn("先检查边界情况\n再检查复杂度，保留原文", system)
+        from oicoach_runtime.customization import IDENTITY_PROMPT
+        self.assertEqual(system, "先给提示\n不要直接给答案 ${literal}\n\n" + IDENTITY_PROMPT)
+        native_skill = snapshots[0].parent / "skills/training-skill/SKILL.md"
+        self.assertIn("[user information]", native_skill.read_text())
+        self.assertIn("先检查边界情况\n再检查复杂度，保留原文", native_skill.read_text())
         os.write(master, b"/skills category training-skill\r")
         read_until("移动 Skill 分类")
         os.write(master, b"\x1b[B\x1b[B\r")
         self.until(lambda: settings()["revision"] == 4)
         read_until("自定义设置已保存 · v4")
         self.assertEqual(settings()["skills"][0]["category"], "personal-skill")
-        self.assertIn("## user information", snapshots[0].with_name("system.md").read_text())
+        self.assertIn("[user information]", native_skill.read_text())
         os.write(master, b"/skills disable training-skill\r")
         self.until(lambda: settings()["revision"] == 5)
         read_until("自定义设置已保存 · v5")
@@ -647,6 +839,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         rendered = read_until(draft)
         self.assertIn("输入请求或 / 命令", rendered)
         self.assertIn("fake completion", rendered)
+        self.assertIn("GPT · succeeded", rendered)
         self.assertEqual(len(self.api("runs.list")), 1)
         os.write(master, b"\x03/quit\r")
         process.wait(timeout=5)

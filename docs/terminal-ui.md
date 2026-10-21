@@ -1,4 +1,4 @@
-# 对话式终端 UI（0.12.2）
+# 对话式终端 UI（0.18.0）
 
 0.9.0 替换 0.8.0 的数字切页/全屏表单交互。现在以对话记录和底部常驻输入框为中心，使用 slash 命令、补全和方向键选择器。参照本机 OMP 18.10.4 实际 PTY 画面与其 pi-tui 编辑器键位（Enter 发送、Ctrl+J 换行、Tab 补全），不宣称兼容 OMP 的全部快捷键、模型/工具流或原生界面组件。
 
@@ -41,14 +41,18 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 | 命令 | 行为 |
 | --- | --- |
 | `/help` | 操作说明 |
+| `/proxy` | 同步当前终端代理，检查代理 TCP 端口；新 OMP 回合使用最新设置 |
 | `/workflow [ID]` | 选择/切换 workflow，验证其存在 |
 | `/workflow create [ID "PATH"]` | 在输入区创建 coach，PATH 为已存在的绝对目录，不覆盖已有文件 |
 | `/task ID`、`/new [ID]` | 接续指定 task，或创建新任务 ID |
 | `/mode [plan\|checkin\|review]` | 安排/反馈/复盘 |
+| `/select-model [provider/model\|default]` | 本机 OMP 模型目录，输入筛选并选择；明确模型恢复 thinking=auto |
+| `/select-thinking-hardness [LEVEL\|default]` | 选择思考等级；从下次派发生效，default 恢复继承 |
 | `/prompt [show\|edit\|reset]` | 当前 workflow 自定义系统提示词，append/replace，确认恢复默认 |
 | `/skills [add\|show NAME\|edit NAME\|enable NAME\|disable NAME\|delete NAME]` | 用户 Skill 管理，方向键选择及内联表单 |
 | `/events`、`/events cancel ID` | 所有任务事件列表、详情；取消前读取版本并确认 |
 | `/schedule` | 输入 RFC3339（带时区）或 now、请求正文后安排事件 |
+| `/timers` | 当前 workflow/task 待执行及执行中的任务，方向键选择查看详情，最多 100 项 |
 | `/memory [shared\|task]` | 当前 workflow 共享/当前 task 笔记，方向键选中读取 |
 | `/memory add [KEY]` | 输入 key、标题、正文、kind、pinned、有效期 |
 | `/memory edit KEY`、`/memory forget KEY` | 读取现版本，编辑或确认删除，不盲目覆盖冲突 |
@@ -65,6 +69,14 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 | `/quit` | 仅退出界面 |
 
 命令参数按 shell 风格引号拆分，但从不送入 shell 执行；例如有空格的路径需引号。API/数据库细节仍通过现有 CLI 验证，Runtime 的版本、作用域、CAS 和权限规则不改变。
+
+## 时间与倒计时
+
+顶栏为当前系统时间；用户消息使用事件创建时间，GPT回复使用保存的完成时间，重新进入时从历史恢复原时间。系统通知使用通知生成时间。全部日期直接转换为系统时区（尊重对应日期的夏令时）；没有固定时区或 UI 时区配置，存储仍为 UTC。旧记录缺少时间时显示“时间未知”。
+
+输入区上方显示当前 workflow/task 的最多三项任务，`/timers` 读取最多 100 项并打开详情选择器。UI 经公开 `events upcoming` CLI 每五秒刷新队列摘要，时钟和倒计时随界面刷新更新，不每秒请求后端。表单及选择器打开时暂缓队列读取，避免阻塞确认操作；倒计时继续显示，关闭后恢复刷新。切换作用域丢弃旧摘要，后台更新保留输入草稿。
+
+after-turn 尚未锚定时显示“待起算”和相对间隔；锚定后显示触发时间与剩余时长。到时仍在队列中显示“已到时、等待派发”，领取后显示“启动中”或“执行中”，完成或取消后从面板移除。超过十五秒未更新标记“状态待刷新”，读取失败显示错误并自动重试；倒计时归零本身不证明已执行。关闭 UI 不影响 daemon 调度。
 
 记忆编辑保留来源和已读取版本。保存失败时表单及各项答案保留，可 Shift+Tab 返回修改；conflict 需核对新版本，不能假定覆盖成功。取消编辑意味着放弃该表单；如果操作已提交，Esc 只关闭表单，操作仍可能落盘，应查看返回结果。忘记笔记不删除历史/备份，详见 [记忆接口](memory.md)。
 
@@ -101,6 +113,10 @@ OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" \
 
 0.11.0 新增 `/sync` 方向键菜单和设置向导。`/sync now` 在 daemon 后台执行并由 UI 轮询结果，模型请求不等待网络；`/sync history [QUERY]`、`/sync messages DEVICE SESSION [QUERY]` 可用 `/sync next`、`/sync prev` 翻页。冲突菜单确认选择本机/某个远端版本；新设备先 `/sync bind ID` 指定本机 workspace。数据范围和安全边界见 [Git 同步](git-sync.md)。
 
-0.11.1 起无需手动 setup 即可由 daemon 维护本地 Git，所有教练对话共用一个数据仓库。`/sync remote` 单字段表单用于添加/清空 remote，清空后仅本地保存；菜单显示当前为“仅本地 Git”或“远端同步”。修改 remote 不恢复已暂停的自动同步。
+0.11.1 起无需手动 setup 即可由 daemon 维护本地 Git，所有GPT对话共用一个数据仓库。`/sync remote` 单字段表单用于添加/清空 remote，清空后仅本地保存；菜单显示当前为“仅本地 Git”或“远端同步”。修改 remote 不恢复已暂停的自动同步。
 
-0.12.0 将用户 Skill 分为 OI Introduce、user information、personal skill。UI `/skills` 按三类管理，`/skills category NAME` 可移动分类；全部已启用正文每轮同时加入原生系统上下文，append/replace 都生效，停用项除外。旧记录默认 personal skill，按原文读取，保持 Git 内容寻址历史有效。
+0.12.0 将用户 Skill 分为 OI Introduce、user information、personal skill。UI `/skills` 按三类管理，`/skills category NAME` 可移动分类；0.15.0 起三类已启用项共同提供原生索引，正文由 Agent 通过 `skill://名称` 按需读取，append/replace 都生效，停用项不注册；停用工具时无法读取正文。旧记录默认 personal skill，按原文读取，保持 Git 内容寻址历史有效。
+
+0.17.0 启动时先执行公开 proxy sync，再读取 workflow/恢复对话；显示代理检查结果，不显示代理 URL、用户名、密码或其他凭证。无代理变量时保留已有保存值，显式空值清除该项；同步不自动中断正在执行的回合。详细行为见 [部署说明](deployment.md)。
+
+0.18.0 界面中的助手称谓统一为 GPT，包括当前对话、恢复对话、历史详情和跨设备历史；系统命名指示也要求 Agent 自称 GPT。event.md 和历史原文保留，不将名称替换写回个人 Skill 或既有对话记录。

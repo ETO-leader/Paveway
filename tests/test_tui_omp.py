@@ -62,7 +62,7 @@ class RealUITests(unittest.TestCase):
                         time.sleep(0.05)
                     self.assertIsNone(ui.pending, ui.notice)
                     text = "\n".join(ui.chat[ui.scope])
-                    self.assertIn("教练 · succeeded", text)
+                    self.assertIn("GPT · succeeded", text)
                     self.assertIn("终端对话可用", text)
                     event = client.call("events", "show", event_id)
                     output = client.call("runs", "output", event["run_id"])
