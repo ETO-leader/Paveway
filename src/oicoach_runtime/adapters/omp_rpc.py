@@ -51,7 +51,7 @@ class OmpRpc:
         from ..customization import snapshot
         settings = binding.get("customization") or {"schema_version": 1, "revision": 0,
             "system_prompt": {"mode": "append", "text": ""}, "skills": []}
-        argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled, binding.get("memory_context")))
+        argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled, binding.get("memory_context"), binding.get("workflow_instructions", "")))
         # Explicit runtime guard still loads when optional user extensions are disabled.
         argv.extend(["--extension", str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))])
         for option in ("tools", "extensions", "skills", "rules"):
@@ -160,7 +160,7 @@ class OmpRpc:
                         raise AgentError("Agent state request failed")
                     return frame["data"]
 
-    async def prompt(self, run_id, message, on_ack, on_result):
+    async def prompt(self, run_id, message, on_ack, on_result, on_progress=None):
         self.agent_invoked = None
         self.failure_code, self.failure_message = None, None
         await self.write({"id": run_id, "type": "prompt", "message": message})
@@ -177,6 +177,8 @@ class OmpRpc:
             if remaining <= 0:
                 raise AgentError("Agent ack, turn or settle timeout")
             frame = await self.frame(remaining)
+            if on_progress and frame["type"] in ("turn_start", "tool_execution_start", "tool_execution_end", "message_update"):
+                on_progress(frame["type"], frame.get("toolName"))
             if frame["type"] == "response" and frame.get("id") == run_id:
                 if frame.get("command") != "prompt" or frame.get("success") is not True:
                     raise AgentError("Agent rejected prompt; review completion state")

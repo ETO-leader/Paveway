@@ -115,3 +115,13 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 0.12.0 的 `workflow customize skill-put ID --category oi-introduce|user-information|personal-skill` 指定用户 Skill 分类；可省略，新建默认 personal-skill，编辑保留原分类。旧记录无 category 字段仍有效。分类通过既有 CAS 保存与 Git 同步，下次派发时所有启用类别的正文同时加入系统上下文。
 
 0.13.0 新增 `tijian setup --executable PATH [--read-only|--no-read-only]`，验证协议及数据读取后原子更新私密 Runtime 配置；诊断失败不保存，配置并发变化报 conflict。不重启 daemon、不触发业务写入；MCP 绑定仍通过 `workflow connect-tijian ID`。
+
+
+## 会话阻挡诊断（0.19.1）
+
+派发前的会话绑定检查分别返回 `session_uncertain`、`session_blocked`、`session_workflow_changed`、`session_file_missing`，继承原有 ConflictError 类。事件和 run 的既有 error_message 字段保存固定、无路径或正文的操作指引；不将任意异常原文写入公共结果。dedupe/CAS 等其他冲突仍为 conflict，无 schema 迁移。
+
+`session_uncertain` 表示该 task 有结果未确认的旧会话，不是新请求发生模型或 Tijian 错误。新请求在 dispatch_intent 之前 blocked，不自动派发或重播；普通重启 daemon/agent 不会清除该状态。UI 输入 `/new`（可附新 task ID）可在保留原会话、原 uncertain 事件和历史的情况下继续新对话。要恢复旧事件，应先 `/recover` 核对外部副作用，再由用户明确选择带重复风险确认的恢复操作。不得自动设置旧会话为 ready。
+
+
+活动事件的 `events.show` 可附可选 `progress` 对象：run_id、phase（starting/tool/model）、tool_calls、started_at、last_activity_at，以及已分类的 tool 名称。仅在当前进程管理的活动 run 上返回；不写入数据库、历史或 Git 归档，终态/重启后不保留。工具名只保留 read/write/bash/todo/glob/grep，其余归为 external-tool，不含参数、结果或原始动态工具名。缺省该字段时客户端保持兼容。

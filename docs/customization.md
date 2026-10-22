@@ -35,7 +35,7 @@ Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Shift+Tab 返回上一�
 
 `/prompt show` 显示用户自定义的部分，不冒充当前 OMP 原生系统提示词的完整展开。`/prompt reset` 确认后清空自定义部分，不删除 Skill，也不改动 OMP 原有项目/全局配置。
 
-coach 的 `event.md` 仍是外部 workflow 产生的每轮用户请求模板，其中包含训练规则、mode、用户输入和 Runtime envelope。此功能把自定义文本通过 OMP 的 `--append-system-prompt` 或 `--system-prompt` 放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。
+`event.md` 仍由外部 workflow 管理。旧 manifest 缺省 `instructions_in_system=false` 时，规则及 envelope 保持原来的用户消息通道；新建 coach 使用 true，将可信模板的静态前缀放入系统 prompt，仅将事件 JSON（mode、用户输入和 Runtime 数据）作为用户消息。模板必须恰有一个位于末尾的 `${event_json}`；在替换前拆分，payload 不会提升为系统指令。此功能把自定义文本通过 OMP 的 `--append-system-prompt` 或 `--system-prompt` 放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。
 
 0.18.0 起，每回合的原生系统提示都会附加命名约定：自称 GPT 或使用第一人称，不以 coaching title 自称。此约定在默认提示、append、replace 及 Skill/工具停用时都生效，保存在本轮 system.md 中；不会改写 event.md、用户保存的自定义正文、Skill 或旧历史。UI 的 `/prompt show` 仍只显示用户自定义部分。
 

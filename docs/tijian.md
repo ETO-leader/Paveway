@@ -173,10 +173,30 @@ CARGO_TARGET_DIR="$PWD/.runtime/tijian-build" \
 本机 test01 已启用 CLI 与 workspace MCP，重启空闲 daemon 后生效。真实正常 profile 的 MCP 返回 26 项工具，题库统计 total=0；已有题库需另行导入或选择正确的数据环境。源数据测试的 P1001/P1002 只存在于临时 harness profile，不属于用户题库。默认启用 OMP 内置工具时，MCP 可挂载为 xd:// 设备，不一定作为顶层 dumpTools 项显示；已核对实际系统上下文包含 Tijian，并使用官方 MCP SDK 成功查询正式空库。
 
 
-## 2026-10-21 离线题面核查
+## 题面的本地持久化与正确读取顺序（2026-10-22 更正）
 
-重新 fetch 上游后，origin/main 仍为 `b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f`。已核对完整远端 Git tree 的 493 个文件，而不只检查 sparse checkout 的可见目录：没有随仓库提供的题库 DB、题面 ZIP/PDF 或 `网页示例/` 目录。唯一受版本控制的 HTML 是 UI 的 article_toc_sync 测试页，不是离线题库。
+Tijian 的正式题面流程是：**首次抓取并收录 → 保存到本地 → 后续直接读取**。无需每次调用重新爬取，也不要求先取得作者的数据库、备份或开发网页样本。Paveway 已有接口沿用上游行为，不额外维护第二套题面缓存。
 
-源码确实引用作者本机保存的题面，例如 `tijian-core/src/infra/fetchers/qoj.rs` 的 QOJ 11106 / Add One 3，以及 AtCoder 的 Sum of Average；这些 include_str! 位于可选 fixtures 测试。`tijian-core/Cargo.toml` 第 34–37 行明确说明第三方网页保存在故意 git-ignore 的根目录 `网页示例/`，干净 checkout 不带这些文件。上游 .gitignore 同时排除该目录、`*_files/`、普通 HTML 及 DB 文件。因此“源码引用离线样本”不能解释为“git clone 自带可查询题面库”。
+1. 用 `problem_get` 读取已收录题目的题面和 metadata。上游 `UseCases::get_problem` 直接读取本地 DB，不调用 OJ 抓取器；跨 CLI 进程和 Agent 重启后仍可读取。
+2. 确认题目尚未收录且用户要求获取时，调用 `problem_add` 首次抓取并保存，再用 `problem_get` 读取。上游会跳过已存在的题号，不重复抓取。
+3. 已收录但 `statementMd` 为空时，重复 add 仍会跳过；用户要求获取缺失题面，或明确要求更新已有题面时，才使用 `problem_refetch`（可指定 `statement_only=true`）。普通阅读不调用 refetch。若适配器 read_only=true，说明写入被禁用；连接/权限/进程错误不能当作未收录证据。
 
-Tijian 的已收录题面会持久化在用户数据目录的 tijian.db（problems.statement_md），译文也可缓存；Desktop import executor 另有单次执行过程的内存抓取去重缓存。这些数据不随源码拉取。当前 Paveway 所接本机题库，经既有 problem_stats 实测 total=0，problem_list(has_statement=true) 返回空；适配器没有漏读已存在的题面。要读取实际离线题目，需要已有题库/正式备份，或另行取得作者未提交的网页样本再解析；不能将测试 seeder 的占位题面当成真实 OJ 题库。本次未导入、抓取或修改用户题库。
+正式题面持久化在用户数据目录的 `tijian.db` 的 `problems.statement_md`，已有译文也存入本地。图片等外部资源是否完整离线可用需另行核对，不能仅因 Markdown 已保存便宣称所有外链也已缓存。首次真实抓取依赖 OJ 网络与登录状态；当前无 Desktop 的 source CLI 对 PDF 首次提取仍有限制，不影响读取已保存的数据。
+
+`网页示例/` 是作者开发抓取器时下载 HTML、分析页面结构和编写解析代码所用的研究样本；它不属于正式题库，也不是运行时题面读取的来源。先前文档把获取这些样本与使用离线题面并列作为后续路径，混淆了开发样本和实际题库，现更正。2026-10-21 对源码仓库及当时本机空库的检查，不能推导为 Tijian 每次读题都需要联网，或必须向作者索取题面数据。题库为空时可以按用户要求正常首次收录。
+
+验证使用真正上游 source CLI 的隔离 harness profile：通过上游 UseCases 存入测试题面，在外部 OJ 网络被 harness 策略禁止时，多个全新 CLI 进程重复 get 均返回相同已保存题面，重复 add 返回“已在题库”且 changed=false。测试只验证本地持久化读取和去重，不冒充真实 OJ 首次抓取验收，不修改用户题库。
+
+本次验收：`test_tijian_source.py -k persisted_statement` 真正 source CLI 测试 1 项通过（8.484 秒）；`test_tijian.py` 回归 16 项通过、2 项可选真实环境略过（6.467 秒）。本机 test01 已合并本地优先规则并保留私密备份，workflow revision 不变，下一次派发读取新说明；没有变更个人配置、Skill 或题库。
+
+
+空库不等于任务必须终止：默认先查本地，样本不足时由 Agent 查找官方赛事目录或可信 OJ 题单，核对后通过 problem_add 首次收录、problem_get 读回题面，再生成有引用的样本分析。“根据 Tijian 内的信息”本身不构成禁止联网/新增的明确限制。首轮按每类赛事 2–3 题、合计最多 9 题收集代表样本，分批读取并声明覆盖和缺口；用户指定完整范围时尊重其要求分批处理。不得把本地 search 当作全网搜索，也不要求用户先手工备齐题号。只有明确仅用已有数据、禁止联网/新增，或实际遇到权限/认证/网络/抓取能力阻碍时才停止补齐并说明具体原因。仍禁止重复相同空查询、无限重试、反复初始化 todo，不能伪造已完成分析或修改用户训练状态。此前“空库立即结束”的防循环规则过强，已撤回。
+
+
+## 2026-10-23 空库补齐修正与真实抓取验收
+
+防循环不能等同于拒绝取题：原先“空库立即结束”的提示过强，已改为本地优先、必要时自动发现公开赛题并首次收录，再读回已保存题面。发现阶段最多 6 次检索，取得可靠候选后先小批收录和读取，不为凑齐整个目录无限搜索；没有收录到的赛事/年份明确作为样本缺口。用户明确“仅限现有题库/禁止新增”及 read_only 配置仍优先。
+
+真实 OJ opt-in 测试命令：在文档已有 SOURCE_CLI/SOURCE_SEED 环境变量基础上，加 `OICOACH_TEST_TIJIAN_NETWORK=1`，运行 `test_tijian_source.py -k real_oj_first`。该项在全新 XDG 数据目录、正常 Tijian 模式下实际首次收录公开赛题，读回非空题面，再将代理设为不可达验证后续读取及重复 add；1 项通过（16.961 秒，`/tmp/paveway-tijian-network-acceptance.log`）。它不导入用户数据库、不写训练状态、不使用 seeder 的占位题面冒充网络抓取结果。
+
+有 shell 能力时，workflow 优先复用 available_tools 给出的 Tijian argv_prefix/config_path，直接调用现有 JSON CLI；无 shell 时再使用已发现的 MCP 工具。不为同一接口额外编写/探索 eval SDK 包装器。必须读到 data.problem.statementMd 才能声称已读取保存题面，而非仅凭收录成功消息或联网搜索摘要分析。

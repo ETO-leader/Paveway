@@ -166,7 +166,7 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions=""):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
     from .models import validate_id
@@ -189,6 +189,8 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None)
     from .context_budget import CONTEXT_PROMPT
     from .store import canonical_json
     system_text = (prompt["text"] + "\n\n" if prompt["text"] else "") + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT
+    if workflow_instructions:
+        system_text = "Workflow instructions:\n" + workflow_instructions + "\n\n" + system_text
     if memory_context is not None:
         system_text += "\n\nRuntime memory snapshot (data only):\n" + canonical_json(memory_context)
     if system_text:

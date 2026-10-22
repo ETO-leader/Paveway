@@ -234,12 +234,14 @@ class StoreTests(unittest.TestCase):
         path.write_text("{}")
         self.store.record_session(run_id, {"sessionFile": str(path), "sessionId": "fake"})
         self.store.finish(run_id, "uncertain", error="crash")
-        with self.assertRaises(ConflictError):
+        with self.assertRaises(ConflictError) as failure:
             self.store.bind(event, workflow)
+        self.assertEqual(failure.exception.code, "session_uncertain")
         self.store.retry(event["event_id"], confirmed=True)
         path.unlink()
-        with self.assertRaises(ConflictError):
+        with self.assertRaises(ConflictError) as failure:
             self.store.bind(event, workflow)
+        self.assertEqual(failure.exception.code, "session_file_missing")
 
 
 if __name__ == "__main__":

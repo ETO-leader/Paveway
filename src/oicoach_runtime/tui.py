@@ -119,7 +119,12 @@ def reply_text(event, output):
         reason = event.get("last_error_message")
         detail = " · ".join(part for part in (code, reason) if part)
         text = (text + "\n" if text else "") + (detail or "请求未成功完成；/events 查看详情")
-        text += "\n未自动重发；修复原因后再提交新请求。"
+        if (code or "").startswith("session_"):
+            text += "\n未自动重发。"
+        elif code == "conflict" and event["status"] == "blocked":
+            text += "\n当前任务无法续接；输入 /new 开新任务继续，或 /recover 查看待核对事件。原请求未自动重发，旧历史保留。"
+        else:
+            text += "\n未自动重发；修复原因后再提交新请求。"
     return text or "没有已保存的最终回复；/events 查看执行状态"
 
 
@@ -417,6 +422,12 @@ class TerminalUI:
         def loaded(result):
             event, output = result
             self.pending = event
+            progress = event.get("progress")
+            if progress:
+                phase = {"starting": "启动中", "tool": "执行工具", "model": "等待模型"}.get(progress["phase"], "执行中")
+                elapsed = (datetime.now(timezone.utc) - parse_timestamp(progress["started_at"])).total_seconds()
+                idle = (datetime.now(timezone.utc) - parse_timestamp(progress["last_activity_at"])).total_seconds()
+                self.notice = f"{phase} · 工具 {progress['tool_calls']} 次 · 已运行 {duration_text(elapsed)} · 最近活动 {duration_text(idle)} 前"
             if event["status"] in TERMINAL:
                 scope = event["workflow_id"], event["task_id"]
                 if event["run_id"]:
@@ -1147,9 +1158,10 @@ class TerminalUI:
         state = self.busy or self.notice
         if self.pending:
             state += " · 请求 " + self.pending["status"]
-            elapsed = max(0, int(time.monotonic() - self.pending_since)) if self.pending_since is not None else 0
-            phase = "等待模型或工具完成" if self.pending["status"] == "running" else "等待任务完成"
-            state += f" · 已等待 {elapsed // 60}分{elapsed % 60:02d}秒 · {phase}，完成后显示回复"
+            if not self.pending.get("progress"):
+                elapsed = max(0, int(time.monotonic() - self.pending_since)) if self.pending_since is not None else 0
+                phase = "等待模型或工具完成" if self.pending["status"] == "running" else "等待任务完成"
+                state += f" · 已等待 {elapsed // 60}分{elapsed % 60:02d}秒 · {phase}，完成后显示回复"
         if self.deferred:
             state += " · " + self.deferred["text"].split()[0] + " 已排队"
         return visible(f"{self.workflow or '未选 workflow'} / {self.task}  ·  {self.mode}  ·  {state}").replace("\n", " ")

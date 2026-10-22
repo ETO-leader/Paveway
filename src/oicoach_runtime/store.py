@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .errors import ConflictError, NotFoundError, RuntimeContractError, StorageError
+from .errors import ConflictError, SessionConflictError, NotFoundError, RuntimeContractError, StorageError
 from .models import EventStatus, parse_timestamp, session_key, utc_text, validate_id
 from .supervisor import RestartPolicy
 
@@ -238,10 +238,14 @@ class Store:
         with self.transaction() as db:
             row = db.execute("SELECT * FROM session_bindings WHERE binding_id=?", (key,)).fetchone()
             if row:
-                if row["status"] in ("blocked", "uncertain") or row["workspace"] != str(workflow.workspace) or row["workflow_revision"] != workflow.revision:
-                    raise ConflictError("Session requires repair or its workspace/workflow revision changed")
+                if row["status"] == "uncertain":
+                    raise SessionConflictError("session_uncertain")
+                if row["status"] == "blocked":
+                    raise SessionConflictError("session_blocked")
+                if row["workspace"] != str(workflow.workspace) or row["workflow_revision"] != workflow.revision:
+                    raise SessionConflictError("session_workflow_changed")
                 if row["session_file"] and (not directory.is_dir() or not self._session_file(row["session_file"], directory).is_file()):
-                    raise ConflictError("Bound session file is missing")
+                    raise SessionConflictError("session_file_missing")
             else:
                 from .config import ensure_private_directory
                 ensure_private_directory(directory)

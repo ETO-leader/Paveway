@@ -71,6 +71,42 @@ class RealSourceTests(unittest.IsolatedAsyncioTestCase):
         listed = await self.client.call("problem_list", {"status": "solved", "has_statement": True})
         self.assertEqual([item["id"] for item in listed["data"]], ["P1001"])
 
+    async def test_persisted_statement_reads_and_duplicate_add_need_no_external_fetch(self):
+        # The real upstream harness denies external OJ requests. The seeder
+        # stores a test statement through UseCases, not an HTML research file.
+        # Every call below spawns a new real CLI, proving disk persistence.
+        first = await self.client.call("problem_get", {"problem": "P1001"})
+        self.assertTrue(first["data"]["problem"]["statementMd"])
+        for _ in range(2):
+            current = await self.client.call("problem_get", {"problem": "P1001"})
+            self.assertEqual(current["data"], first["data"])
+            self.assertFalse(current["changed"])
+        existing = await self.client.call("problem_add", {"problems": ["P1001"]})
+        self.assertFalse(existing["changed"])
+        self.assertIn("已在题库", json.dumps(existing, ensure_ascii=False))
+        self.assertEqual((await self.client.call("problem_get", {"problem": "P1001"}))["data"], first["data"])
+        self.assertEqual((await self.client.call("problem_stats", {}))["data"]["total"], 2)
+
+    @unittest.skipUnless(os.environ.get("OICOACH_TEST_TIJIAN_NETWORK"), "opt in to a real OJ request in isolated normal data")
+    async def test_real_oj_first_collection_persists_for_later_local_reads(self):
+        # A fresh XDG directory keeps the real network acceptance out of the
+        # user's library. Normal mode is necessary: harness blocks real OJs.
+        environment = {"XDG_DATA_HOME": str(self.root / "normal-data"), "TIJIAN_RUNTIME_MODE": "normal"}
+        with patch.dict(os.environ, environment):
+            client = TijianClient(replace(self.config, timeout_seconds=55))
+            added = await client.call("problem_add", {"problems": ["P9868"]})
+            self.assertTrue(added["changed"], added["message"])
+            problem = (await client.call("problem_get", {"problem": "P9868"}))["data"]["problem"]
+            self.assertTrue(problem["statementMd"])
+            self.assertEqual((await client.call("problem_stats", {}))["data"]["total"], 1)
+            with patch.dict(os.environ, {key: "http://127.0.0.1:1" for key in
+                                        ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}):
+                cached = await client.call("problem_get", {"problem": "P9868"})
+                self.assertEqual(cached["data"]["problem"]["statementMd"], problem["statementMd"])
+                repeated = await client.call("problem_add", {"problems": ["P9868"]})
+                self.assertFalse(repeated["changed"])
+                self.assertIn("已在题库", json.dumps(repeated, ensure_ascii=False))
+
     async def test_setup_initializes_empty_profile_without_fixture_problems(self):
         path = self.root / "fresh-runtime.toml"
         path.touch(mode=0o600)

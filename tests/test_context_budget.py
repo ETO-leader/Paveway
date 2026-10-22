@@ -27,7 +27,7 @@ class ContextBudgetTests(unittest.TestCase):
         host = str(Path(shutil.which("omp")).resolve())
         script = r'''
 const {Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1]));
-const {windowMessages} = await import(process.argv[2]);
+const {windowMessages,conversationJson} = await import(process.argv[2]);
 const tokenizer = new Tokenizer();
 const count = text => tokenizer.countTokens(text, "strict");
 const u = text => ({role:"user",content:text,timestamp:1});
@@ -37,11 +37,18 @@ for(let i=0;i<40;i++) old.push(u("OLD_"+i+" 漢字 ".repeat(300)),a("reply ".rep
 const call = {role:"assistant",content:[{type:"toolCall",id:"call-1",name:"bash",arguments:{command:"echo test"}}]};
 const result = {role:"toolResult",toolCallId:"call-1",toolName:"bash",content:[{type:"text",text:"OK"}]};
 const recent = [u("LATEST_USER"),call,result,a("LATEST_REPLY")];
+const bookkeeping = [u("LATEST_USER"),call,{...result,details:{localOnly:"metadata ".repeat(100000)}},a("LATEST_REPLY")];
+const longTurn = [u("LATEST_USER")];
+for(let i=0;i<12;i++) {
+    longTurn.push({role:"assistant",content:[...(i===0?[{type:"thinking",thinking:"PRIVATE_THOUGHTS"}]:[]),
+        {type:"toolCall",id:"long-"+i,name:"bash",arguments:{command:"query-"+i}}]},
+        {role:"toolResult",toolCallId:"long-"+i,toolName:"bash",content:[{type:"text",text:"FOUND_PUBLIC_CANDIDATE_"+i+" data ".repeat(5000)}]});
+}
 const fixtures = [[],[u("short")], [...old,...recent],
     [u("HUGE_HEAD"+"漢字🙂".repeat(20000)+"HUGE_TAIL")],
     [u("LATEST_USER"),call,{...result,content:[{type:"text",text:"tool data ".repeat(40000)}]}],
     [u("LATEST_USER"),{...call,content:[{type:"toolCall",id:"call-1",name:"bash",arguments:{command:"x".repeat(100000)}}]},result],
-    [{role:"toolResult",content:[{type:"text",text:"orphan ".repeat(20000)}]}]];
+    [{role:"toolResult",content:[{type:"text",text:"orphan ".repeat(20000)}]}],longTurn,bookkeeping];
 const checks = fixtures.map(messages=>{
     const before=JSON.stringify(messages);
     const out=windowMessages(messages,count);
@@ -51,8 +58,8 @@ const checks = fixtures.map(messages=>{
         if(message.role==="assistant") for(const block of message.content??[]) if(block.type==="toolCall") calls.add(block.id);
         if(message.role==="toolResult"&&!calls.has(message.toolCallId)) valid=false;
     }
-    return {tokens:count(JSON.stringify(out)), originalUnchanged:before===JSON.stringify(messages),valid,
-            text:JSON.stringify(out)};
+    return {tokens:count(conversationJson(out)), originalUnchanged:before===JSON.stringify(messages),valid,
+            text:conversationJson(out), preserved:out===messages};
 });
 console.log(JSON.stringify(checks));
 '''
@@ -72,6 +79,12 @@ console.log(JSON.stringify(checks));
         self.assertIn("omitted", checks[3]["text"])
         for check in checks[4:6]:
             self.assertIn("LATEST_USER", check["text"])
+        self.assertTrue(checks[-1]["preserved"])
+        self.assertIn("LATEST_REPLY", checks[-1]["text"])
+        self.assertIn("OK", checks[-1]["text"])
+        self.assertIn("earlier tool activity", checks[-2]["text"])
+        self.assertIn("FOUND_PUBLIC_CANDIDATE_10", checks[-2]["text"])
+        self.assertNotIn("PRIVATE_THOUGHTS", checks[-2]["text"])
 
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for model acceptance")

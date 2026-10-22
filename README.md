@@ -4,7 +4,7 @@
 
 Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用户请求与定时检查，按顺序唤醒正确的会话，连接 Tijian 题库与训练数据，保存可查询的执行结果与恢复记录。
 
-当前版本 **0.19.0**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
+当前版本 **0.19.1**：运行框架 M0–M4、Tijian JSON CLI/MCP 适配、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
 ## 能做什么
 
@@ -220,6 +220,8 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
 ## Tijian 题库与 MCP
 
 Tijian 日计划不是 Runtime 唤醒队列。适配器调用 Tijian 自己的 JSON CLI/canonical application，不直接读写其 SQLite。
+
+题面按“首次抓取并收录、本地持久化、后续直接读取”使用：已有题目先调用 `problem_get`，无需再次爬取；尚未收录时按用户要求 `problem_add` 一次，缺失题面或要求更新时才 `problem_refetch`。分析请求样本不足时，默认由 Agent 查找可信赛题清单并少量首次收录、读回后分析；仅在明确禁止新增或实际权限/网络受限时停止补齐，不要求用户先手工备齐题号。`网页示例/` 是开发抓取器时分析 HTML 的样本，与正式保存的题面无关，也不是使用 Tijian 的前提。详见[本地题面读取说明](docs/tijian.md#题面的本地持久化与正确读取顺序2026-10-22-更正)。
 
 安装 Tijian 后，可先校验并自动启用接口（0.13.0）：
 

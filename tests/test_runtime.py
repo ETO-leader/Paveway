@@ -20,6 +20,55 @@ from oicoach_runtime.models import utc_text
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_static_workflow_rules_are_separate_from_user_envelope(self):
+        directory = self.config.workflow_root / "echo"
+        manifest = directory / "workflow.toml"
+        manifest.write_text(manifest.read_text() + "instructions_in_system = true\n")
+        (directory / "event.md").write_text("TRUSTED_WORKFLOW_RULE\n${event_json}\n")
+        done = self.wait_status(self.schedule()["event_id"])
+        session = next((self.config.state_dir / "sessions").glob("*/session.json"))
+        message = json.loads(session.read_text())["prompts"][0]
+        self.assertEqual(message["event_id"], done["event_id"])
+        system = (session.parent / "customizations" / done["run_id"] / "system.md").read_text()
+        self.assertIn("TRUSTED_WORKFLOW_RULE", system)
+        self.assertNotIn(done["event_id"], system)
+
+    def test_running_event_reports_safe_live_tool_progress(self):
+        event = self.schedule(mode="hold")
+        deadline = time.monotonic() + 5
+        while True:
+            current = self.event(event["event_id"])
+            if current.get("progress", {}).get("tool_calls") == 1:
+                break
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        self.assertEqual(current["progress"]["phase"], "tool")
+        self.assertEqual(current["progress"]["tool"], "bash")
+        self.assertNotIn("PRIVATE_PROGRESS", json.dumps(current["progress"]))
+        (self.root / "fake-release").touch()
+        finished = self.wait_status(event["event_id"])
+        self.assertNotIn("progress", finished)
+
+    def test_uncertain_session_explains_new_task_without_replaying_old_request(self):
+        original = self.schedule(mode="crash-after-ack")
+        self.wait_status(original["event_id"], ("uncertain",))
+        old_file = next((self.config.state_dir / "sessions").glob("*/session.json"))
+        before = old_file.read_bytes()
+        blocked = self.schedule(key="blocked-followup")
+        result = self.wait_status(blocked["event_id"], ("blocked",))
+        self.assertEqual(result["last_error_code"], "session_uncertain")
+        self.assertIn("/new", result["last_error_message"])
+        self.assertIn("/recover", result["last_error_message"])
+        run = request(self.socket_path, "runs.show", {"run_id": result["run_id"]})
+        self.assertIsNone(run["dispatch_intent_at"])
+        self.assertEqual(run["error_message"], result["last_error_message"])
+        self.assertNotIn(str(self.root), run["error_message"])
+        fresh = self.schedule(key="fresh-followup", task="fresh-task")
+        self.wait_status(fresh["event_id"])
+        self.assertEqual(old_file.read_bytes(), before)
+        self.assertEqual(self.event(original["event_id"])["status"], "uncertain")
+        self.assertEqual(len((self.root / "fake-starts.jsonl").read_text().splitlines()), 2)
+
     def test_missing_context_guard_never_dispatches_prompt(self):
         (self.root / "fake-mode").write_text("missing-context-guard")
         event = self.schedule()

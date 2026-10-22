@@ -331,3 +331,33 @@ OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" .venv/bin/python -m uni
 - `/tmp/paveway-context-model-window.log`：3 通过（5.499 秒）。原生 tokenizer 测试 7 类消息，覆盖完整旧轮次、大型工具结果/参数、中文/emoji 超大输入、工具配对和输入不变；真实模型只看到裁剪后的超大输入，回复 MISSING，而随机识别码仍在完整会话文件中。
 
 真实模型验收均使用隔离 workspace/state/session 和当前 workflow 的模型选择，不使用默认余额不足的 relay，不写本机训练记录。模型预算按 o200k_base JSON 计数，不声称不同 provider 的最终计费相同。原文历史保留，不将 prompt 要求等同于模型每次必然写入成功。
+
+
+## 0.19.1 会话冲突诊断
+
+`PYTHONPATH=tests .venv/bin/python -m unittest -v test_store test_runtime.RuntimeTests.test_uncertain_session_explains_new_task_without_replaying_old_request test_runtime.RuntimeTests.test_successful_explicit_reset_leaves_uncertain_event_unreplayed test_runtime.RuntimeTests.test_crash_boundaries_and_explicit_provider_failure test_tui.TimerDisplayTests.test_legacy_and_typed_session_conflicts_explain_how_to_continue`：20 项通过（29.879 秒），日志 `/tmp/paveway-session-conflict.log`。
+
+实际回归场景：前一个已派发请求崩溃后保留 uncertain；同 task 的新请求在派发前被 session_uncertain 阻挡，事件和 run 保存固定安全中文指引且无路径/正文泄露；新 task 可以正常执行；旧文件字节、旧 uncertain 状态不变，无旧 prompt 重播。另验证旧版无说明的 blocked/conflict 界面也给出 /new 和 /recover。没有迁移或修改用户旧错误记录，没有自动清除会话保护。
+
+
+## 0.19.1 工具循环与实时进度修正
+
+对话预算改为计数角色、content、toolCallId/toolName/isError 的 JSON，排除本地 usage/details/耗时等 metadata，避免有效工具证据被过早裁掉；完整会话不改写。上下文说明提醒不要因旧交换省略而重建已完成计划。workflow 明确空库/样本不足应结束并说明缺失数据，todo 的不可完成项目标为 blocked/abandoned，不能反复 init。
+
+`/tmp/paveway-loop-progress.log`：17 项通过（7.252 秒），包括原生 tokenizer/metadata 大对象回归、UI 进度/草稿、Runtime 实际 RPC 工具进度和无命令正文泄漏、会话保护与 OMP 清理/续接。`/tmp/paveway-loop-native.log`：原生 OMP append/replace/Skill 权限 2 项通过（6.911 秒）。进度状态栏最终定向 1 项通过（`/tmp/paveway-loop-ui-final.log`）。
+
+真实 OMP + 真正 Tijian source CLI 的隔离空库验收（`/tmp/paveway-empty-library-smoke.log`）：使用相同赛事风格分析请求、启用原生工具及 MCP，4 次工具操作后 completed 且 settled，最终说明缺少题目数据。harness 禁止外部 OJ 访问，未抓取或修改用户题库，未将本次模型操作当成实质命题风格分析成功。此结果不保证所有长任务绝不会循环。
+
+新增可选 events.show.progress 仅在内存维护；UI 显示阶段、调用次数和最近活动时间，不将工具开始/有活动误判为最终成功，也不自动重播中断任务。
+
+
+## 2026-10-23 Tijian 自动补齐与上下文证据保留
+
+此前为终止空库循环而加入的“空库立即结束”规则过强，已撤回。新流程默认本地优先，样本不足时自动发现可信赛题 ID/URL、少量首次收录，再从 Tijian 读回 statementMd 分析；用户明确只用现有数据或禁止新增、以及 read_only 仍优先。检索最多 6 次，有可靠候选即先收录，不为凑齐目录反复搜索。有 shell 时优先既有 JSON CLI，避免无必要的 eval SDK 探索。小样本需明确覆盖缺口。
+
+上下文裁剪增加最多 1,500 tokens 的已省略工具结果原文片段，计入同一 10k 对话预算；原始调用线索和结果片段只作历史数据，不含 assistant 隐藏思考，不持久化到另一套缓存。原生 tokenizer 测试覆盖长工具轮次的候选线索保留、消息不变、工具配对及上限。
+
+- 真正 OJ 首次收录→保存→不可达代理下仍能读取/重复 add：1 项通过，16.961 秒，`/tmp/paveway-tijian-network-acceptance.log`。使用全新 XDG 用户数据目录，不修改正式题库。
+- Tijian 适配回归：16 通过、2 条件略过，5.660 秒，`/tmp/paveway-tijian-supplement-regression.log`。
+- 上下文及自定义 prompt/Skill 回归：10 通过，4.392 秒，`/tmp/paveway-tijian-context-final.log`。
+- 完整真实模型验收的第一次尝试仍过度检索，触及测试专用 60 次工具调用上限；第二次已自动收录并读取 5 道真实题面，但在 210 秒测试时限内未结束。分别保存为 `/tmp/paveway-tijian-supplement-first-attempt.log`、`/tmp/paveway-tijian-supplement-second-attempt.log`；不能将这两次报告为端到端成功。随后收紧发现阶段、改为先入库后扩展、优先稳定 CLI，继续验证。

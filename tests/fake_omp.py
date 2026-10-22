@@ -142,12 +142,14 @@ def main():
                 emit({"type": "extension_ui_request", "id": "permission", "method": "confirm"})
                 continue
             if mode in ("hold", "hold-with-tool"):
+                emit({"type": "tool_execution_start", "toolName": "bash", "args": {"command": "PRIVATE_PROGRESS_COMMAND"}})
                 if mode == "hold-with-tool":
                     tool = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
                     (args.cwd / "fake-tool-pid").write_text(str(tool.pid))
                 (args.cwd / "fake-entered").write_text(str(os.getpid()))
                 while not (args.cwd / "fake-release").exists():
                     time.sleep(0.01)
+                emit({"type": "tool_execution_end", "toolName": "bash", "result": "PRIVATE_PROGRESS_RESULT"})
             if mode == "ack-only":
                 continue
             if mode == "local-only":

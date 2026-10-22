@@ -55,3 +55,10 @@ OMP 的 profile、工具權限、MCP、Skill 配置由外部管理。啟用 `[ti
 更換 Tijian 操作或 schema 集中在 integrations/tijian_catalog.py，不需要改本 manifest 或排程語義。Runtime 事件和 Tijian 計畫獨立；工具回報 uncertain 不會自動重播業務操作。版本不相容時明確拒絕，不能偷偷改用其他題庫／workflow。
 
 0.10.0 提供 workflow 目录下独立的可选 customization.json（schema v1），由 `workflow customize` 和 UI `/prompt`、`/skills` 管理。其 revision 仅表示用户设置的保存版本，不改变 manifest.version 或既有会话绑定；在派发时加载并生成每轮私密快照，经 OMP 原生参数载入。系统提示词和用户 Skill 属于可信的显式管理输入，不来自事件 payload。默认缺省时保持既有行为；详见 [自定义设置](customization.md)。
+
+
+## 固定 workflow 规则的系统通道
+
+可选 manifest 布尔字段 `instructions_in_system`，省略为 false 以保持旧模板行为，新建 coach 为 true。启用时，模板必须只有一个尾部 `${event_json}`（其后仅允许空白）。WorkflowProvider 在替换前拆出静态规则，将其快照至系统 prompt，事件 JSON 继续作为用户消息；用户正文中包含模板变量、美元符或指令都不会进入规则段。其他形态拒绝而非猜测分割，所有 start/wake/recovery 模板均检查。
+
+固定规则先于用户自定义 system prompt、GPT 命名和上下文约定，用户设置原文不改写。10k 对话预算保留给请求和工具证据；静态规则与现有系统/工具定义一样另计，记忆快照仍独立 10k。不更改原始历史。旧设备需升级支持该字段后才同步使用，回退旧版本先移除该可选字段以恢复原通道。当前本机 workflow 已私密备份并启用，保留既有 revision 与会话绑定，不自动重发旧请求。

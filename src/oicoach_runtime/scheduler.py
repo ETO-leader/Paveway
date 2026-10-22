@@ -15,7 +15,7 @@ from pathlib import Path
 from .adapters.omp_rpc import OmpRpc
 from .config import ensure_private_directory
 from .db import initialize_database
-from .errors import AgentError, ConflictError, RuntimeContractError
+from .errors import AgentError, ConflictError, SessionConflictError, RuntimeContractError
 from .ipc import MAX_REQUEST, handle_connection
 from .models import parse_timestamp, utc_text
 from .memory import Memory, History
@@ -44,6 +44,7 @@ class Runtime:
         self.active_dispatch = None
         self.active_scope = None
         self.pending_restart = None
+        self.execution_progress = None
         self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
@@ -100,7 +101,10 @@ class Runtime:
                     for event in self.store.events(**raw)]
         elif command == "events.show":
             arguments(raw, ("event_id",), ("event_id",))
-            return self.store.event(**raw)
+            event = self.store.event(**raw)
+            if self.execution_progress and event["run_id"] == self.execution_progress["run_id"] and event["status"] not in ("succeeded", "failed", "blocked", "uncertain", "cancelled", "dead_letter"):
+                event["progress"] = dict(self.execution_progress)
+            return event
         elif command in ("events.cancel", "events.reschedule"):
             fields = ("event_id", "expected_version") + (("at",) if command.endswith("reschedule") else ())
             arguments(raw, fields, fields)
@@ -180,9 +184,19 @@ class Runtime:
         agent = OmpRpc(self.config, self.lock_fds, self.config_path)
         terminal = False
         failure_code = "dispatch_interrupted"
+        failure_message = None
         retryable = False
         interrupted = False
         stage = "workflow"
+        self.execution_progress = {"run_id": run_id, "phase": "starting", "tool_calls": 0,
+                                   "started_at": self.store.timestamp(), "last_activity_at": self.store.timestamp()}
+        def progress(kind, tool):
+            state = self.execution_progress
+            state["last_activity_at"] = self.store.timestamp()
+            state["phase"] = "tool" if kind == "tool_execution_start" else "model"
+            if kind == "tool_execution_start":
+                state["tool_calls"] += 1
+                state["tool"] = tool if tool in ("read", "write", "bash", "todo", "glob", "grep") else "external-tool"
         try:
             workflow = self.provider.describe(event["workflow_id"])
             binding = self.store.bind(event, workflow)
@@ -211,7 +225,7 @@ class Runtime:
                     "config_path": str(self.config_path) if self.config_path else None,
                     "commands": ["tools", "doctor", "call"], "read_only": self.config.tijian.read_only,
                     "note": "Call tools to discover schemas; Tijian daily plans are separate from Runtime wake events"})
-            prompt = workflow.render("wake", envelope)
+            binding["workflow_instructions"], prompt = workflow.render_parts("wake", envelope)
             self.agent_health = "starting"
             stage = "startup"
             pid, identity = await agent.start(binding, run_id)
@@ -228,7 +242,7 @@ class Runtime:
             self.agent_health = "running"
             result = await agent.prompt(run_id, prompt,
                                         lambda: self.store.evidence(run_id, acknowledged=True),
-                                        lambda outcome: self.store.evidence(run_id, result=outcome))
+                                        lambda outcome: self.store.evidence(run_id, result=outcome), progress)
             state = await agent.state()
             if state.get("isSettled") is not True:
                 raise AgentError("Session became active after completion")
@@ -267,6 +281,8 @@ class Runtime:
             raise
         except RuntimeContractError as error:
             failure_code = error.code
+            if isinstance(error, SessionConflictError):
+                failure_message = str(error)
             retryable = isinstance(error, AgentError) and stage in ("startup", "session")
         except (OSError, TimeoutError, ValueError):
             # Errors contain no prompt/provider text. Unknown post-intent outcome is never retried.
@@ -281,12 +297,14 @@ class Runtime:
                     if self.stop_event.is_set() or (self.pending_restart and self.active_scope == (self.pending_restart["workflow_id"], self.pending_restart["task_id"])):
                         interrupted, retryable = True, False
                         failure_code = "daemon_shutdown" if self.stop_event.is_set() else "agent_restart_requested"
+                        failure_message = None
                     self.store.finish(run_id, "uncertain" if run["dispatch_intent_at"] else ("failed" if retryable else "blocked"),
-                                      error=failure_code,
+                                      error=failure_code, error_message=failure_message,
                                       exit_code=agent.process.returncode if agent.process else None,
                                       automatic_retry=retryable and not run["dispatch_intent_at"],
                                       record_failure=not interrupted and (retryable or bool(run["dispatch_intent_at"])))
                 self.agent_health = "idle" if terminal else "degraded"
+                self.execution_progress = None
                 run = self.store.run(run_id)
                 print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler", "event_id": event["event_id"],
                                   "run_id": run_id, "transition": run["status"], "error_code": run["error_code"]}), flush=True)

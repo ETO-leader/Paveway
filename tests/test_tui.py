@@ -31,7 +31,7 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
-from oicoach_runtime.tui import CliClient, CliFailure, TerminalUI, SlashCompleter, visible, run, timestamp_text, duration_text
+from oicoach_runtime.tui import CliClient, CliFailure, TerminalUI, SlashCompleter, visible, run, timestamp_text, duration_text, reply_text
 from oicoach_runtime.workflow_setup import create
 
 
@@ -52,6 +52,37 @@ def make_ui(client, workflow="echo", task="task"):
 
 
 class TimerDisplayTests(unittest.TestCase):
+    def test_running_progress_preserves_the_input_draft(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+        event = {"event_id": "running-event", "run_id": "running-run", "status": "running",
+                 "workflow_id": "echo", "task_id": "task", "progress": {
+                     "phase": "tool", "tool_calls": 4, "started_at": stamp, "last_activity_at": stamp}}
+        class Client:
+            def call(self, *args):
+                return event
+        ui = make_ui(Client())
+        ui.pending = event
+        ui.editor.text = "KEEP_DRAFT"
+        ui.poll()
+        collect(ui)
+        self.assertIn("执行工具", ui.notice)
+        self.assertIn("工具 4 次", ui.notice)
+        self.assertIn("最近活动", ui.notice)
+        self.assertIn("工具 4 次", ui.status_text())
+        self.assertNotIn("等待模型或工具完成", ui.status_text())
+        self.assertEqual(ui.editor.text, "KEEP_DRAFT")
+
+    def test_legacy_and_typed_session_conflicts_explain_how_to_continue(self):
+        old = reply_text({"status": "blocked", "last_error_code": "conflict"}, {})
+        self.assertIn("/new", old)
+        self.assertIn("/recover", old)
+        self.assertIn("旧历史保留", old)
+        new = reply_text({"status": "blocked", "last_error_code": "session_uncertain",
+                          "last_error_message": "任务结果未确认；/new 创建新任务"}, {})
+        self.assertIn("任务结果未确认", new)
+        self.assertIn("未自动重发", new)
+        self.assertNotIn("修复原因后再提交新请求", new)
+
     def test_timestamps_use_system_timezone_including_historical_dst(self):
         try:
             with patch.dict(os.environ, {"TZ": "EST5EDT,M3.2.0/2,M11.1.0/2"}):

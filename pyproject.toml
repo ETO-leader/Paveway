@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oicoach-runtime"
-version = "0.19.0"
+version = "0.19.1"
 description = "Durable, workflow-independent OI agent runtime infrastructure"
 readme = "README.md"
 requires-python = ">=3.11"
