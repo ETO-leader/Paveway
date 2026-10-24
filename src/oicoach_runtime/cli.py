@@ -222,6 +222,8 @@ def parser() -> argparse.ArgumentParser:
     for name in ("setup", "tools", "doctor", "call", "mcp-config", "mcp"):
         child = tijian_commands.add_parser(name)
         common(child)
+        if name == "tools":
+            child.add_argument("--name", action="append", help="Read only this operation's schema; repeat for several operations")
         if name == "setup":
             child.add_argument("--executable", required=True)
             child.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
@@ -524,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "tijian":
             from .integrations.tijian import TijianClient, catalog, mcp_configuration
             if args.operation == "tools":
-                report = catalog()
+                report = catalog(args.name)
             elif args.operation == "setup":
                 from .integrations.tijian import configure
                 report = asyncio.run(configure(path, args.executable, args.read_only))

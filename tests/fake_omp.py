@@ -156,6 +156,13 @@ def main():
                 settled = True
                 continue
             result = "error" if mode in ("provider-error", "auth-error") else "completed"
+            if mode == "report-then-postscript":
+                emit({"type": "message_end", "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "PRIVATE_HIDDEN_REASONING"},
+                    {"type": "text", "text": envelope["payload"].get("fake_reply", "FULL_REPORT_BODY")},
+                    {"type": "toolCall", "id": "private", "name": "bash", "arguments": {"secret": "PRIVATE_TOOL_ARGUMENT"}}]}})
+                emit({"type": "message_end", "message": {"role": "toolResult", "content": [{"type": "text", "text": "PRIVATE_TOOL_RESULT"}]}})
+                emit({"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "SHORT_POSTSCRIPT"}]}})
             emit({"type": "prompt_result", "id": "unrelated", "status": "completed", "sessionSettled": True})
             delayed = mode in ("delayed-settle", "crash-before-settled")
             detail = {"error": {"httpStatus": 401, "message": "Invalid API key: sk-private-test-value Authorization: Bearer private-token", "retryable": False}} if mode == "auth-error" else {}

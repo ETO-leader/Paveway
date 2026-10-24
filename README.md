@@ -15,7 +15,7 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用�
 | 终端界面 | ui 全屏交互，中文输入、GPT对话、事件、记忆、历史、workflow 和服务操作，后台调用已有 CLI |
 | 定时跟进 | 绝对时刻或当前回合完全结束后的延迟唤醒；发送 CLI 退出后仍由独立 daemon 执行 |
 | 会话延续 | 按 workflow + task 隔离持久会话，恢复明确绑定的 session |
-| Tijian | 26 个题库、状态/历史、评分、计划、日报、题单、备份操作，以及 stdio MCP bridge |
+| Tijian | 26 个题库、状态/历史、评分、计划、日报、题单、备份操作，按需查询 schema，以及 stdio MCP bridge |
 | 故障恢复 | 启动前有限重试、退避、熔断、人工 Agent 重启；可能已执行的 prompt 不自动重播 |
 | 后台服务 | systemd user unit 的生成、校验、安装、启停、启用/禁用、查询、日志和卸载 |
 | 可观测性 | 配置/数据库/OMP/服务诊断，事件、run、最终回复与恢复记录查询 |

@@ -46,7 +46,7 @@ for(let i=0;i<12;i++) {
 }
 const fixtures = [[],[u("short")], [...old,...recent],
     [u("HUGE_HEAD"+"漢字🙂".repeat(20000)+"HUGE_TAIL")],
-    [u("LATEST_USER"),call,{...result,content:[{type:"text",text:"tool data ".repeat(40000)}]}],
+    [u("LATEST_USER"),call,{...result,content:[{type:"text",text:"LATEST_EVIDENCE_HEAD " + "tool data ".repeat(40000) + " LATEST_EVIDENCE_TAIL"}]}],
     [u("LATEST_USER"),{...call,content:[{type:"toolCall",id:"call-1",name:"bash",arguments:{command:"x".repeat(100000)}}]},result],
     [{role:"toolResult",content:[{type:"text",text:"orphan ".repeat(20000)}]}],longTurn,bookkeeping];
 const checks = fixtures.map(messages=>{
@@ -79,6 +79,10 @@ console.log(JSON.stringify(checks));
         self.assertIn("omitted", checks[3]["text"])
         for check in checks[4:6]:
             self.assertIn("LATEST_USER", check["text"])
+        self.assertIn("LATEST_EVIDENCE_HEAD", checks[4]["text"])
+        self.assertIn("LATEST_EVIDENCE_TAIL", checks[4]["text"])
+        self.assertIn("call-1", checks[4]["text"])
+        self.assertIn("oversized tool result omitted", checks[4]["text"])
         self.assertTrue(checks[-1]["preserved"])
         self.assertIn("LATEST_REPLY", checks[-1]["text"])
         self.assertIn("OK", checks[-1]["text"])

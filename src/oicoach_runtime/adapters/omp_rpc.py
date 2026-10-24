@@ -162,6 +162,7 @@ class OmpRpc:
 
     async def prompt(self, run_id, message, on_ack, on_result, on_progress=None):
         self.agent_invoked = None
+        self.output_text, self.output_truncated = "", False
         self.failure_code, self.failure_message = None, None
         await self.write({"id": run_id, "type": "prompt", "message": message})
         loop = asyncio.get_running_loop()
@@ -177,6 +178,18 @@ class OmpRpc:
             if remaining <= 0:
                 raise AgentError("Agent ack, turn or settle timeout")
             frame = await self.frame(remaining)
+            if frame["type"] == "message_end":
+                completed = frame.get("message")
+                if isinstance(completed, dict) and completed.get("role") == "assistant":
+                    content = completed.get("content")
+                    if isinstance(content, list):
+                        text = "\n".join(block["text"] for block in content if isinstance(block, dict) and
+                            block.get("type") == "text" and isinstance(block.get("text"), str))
+                        if text:
+                            combined = (self.output_text + "\n\n" + text) if self.output_text else text
+                            encoded = combined.encode("utf-8")
+                            self.output_text = encoded[:16384].decode("utf-8", errors="ignore")
+                            self.output_truncated |= len(encoded) > 16384
             if on_progress and frame["type"] in ("turn_start", "tool_execution_start", "tool_execution_end", "message_update"):
                 on_progress(frame["type"], frame.get("toolName"))
             if frame["type"] == "response" and frame.get("id") == run_id:
@@ -211,6 +224,17 @@ class OmpRpc:
             # Unknown events and unrelated request IDs are forward-compatible, not completion.
             if acknowledged and result is not None and settled:
                 return result
+
+    def assistant_output(self):
+        """Bounded visible text from this prompt, excluding thinking and tools.
+
+        A settled prompt can contain several assistant messages, including a
+        report followed by a short todo-completion postscript. The last native
+        assistant message alone loses that report. No old session text is used.
+        """
+        if not getattr(self, "output_text", ""):
+            return None
+        return {"status": "available", "text": self.output_text, "truncated": self.output_truncated}
 
     async def stop(self, abort=False):
         if self.process is None:

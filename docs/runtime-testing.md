@@ -342,7 +342,7 @@ OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" .venv/bin/python -m uni
 
 ## 0.19.1 工具循环与实时进度修正
 
-对话预算改为计数角色、content、toolCallId/toolName/isError 的 JSON，排除本地 usage/details/耗时等 metadata，避免有效工具证据被过早裁掉；完整会话不改写。上下文说明提醒不要因旧交换省略而重建已完成计划。workflow 明确空库/样本不足应结束并说明缺失数据，todo 的不可完成项目标为 blocked/abandoned，不能反复 init。
+对话预算改为计数角色、content、toolCallId/toolName/isError 的 JSON，排除本地 usage/details/耗时等 metadata，避免有效工具证据被过早裁掉；完整会话不改写。上下文说明提醒不要因旧交换省略而重建已完成计划。当时 workflow 要求空库/样本不足结束并说明缺失数据；该规则过强，现已由下文的自动补齐规则取代。实际权限或网络限制阻止继续时，todo 的不可完成项目标为 blocked/abandoned，不能反复 init。
 
 `/tmp/paveway-loop-progress.log`：17 项通过（7.252 秒），包括原生 tokenizer/metadata 大对象回归、UI 进度/草稿、Runtime 实际 RPC 工具进度和无命令正文泄漏、会话保护与 OMP 清理/续接。`/tmp/paveway-loop-native.log`：原生 OMP append/replace/Skill 权限 2 项通过（6.911 秒）。进度状态栏最终定向 1 项通过（`/tmp/paveway-loop-ui-final.log`）。
 
@@ -361,3 +361,33 @@ OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" .venv/bin/python -m uni
 - Tijian 适配回归：16 通过、2 条件略过，5.660 秒，`/tmp/paveway-tijian-supplement-regression.log`。
 - 上下文及自定义 prompt/Skill 回归：10 通过，4.392 秒，`/tmp/paveway-tijian-context-final.log`。
 - 完整真实模型验收的第一次尝试仍过度检索，触及测试专用 60 次工具调用上限；第二次已自动收录并读取 5 道真实题面，但在 210 秒测试时限内未结束。分别保存为 `/tmp/paveway-tijian-supplement-first-attempt.log`、`/tmp/paveway-tijian-supplement-second-attempt.log`；不能将这两次报告为端到端成功。随后收紧发现阶段、改为先入库后扩展、优先稳定 CLI，继续验证。
+
+
+## 2026-10-24 剩余验收与工具证据裁剪
+
+远端已有 53fbb77；本机 HEAD 的空对象从远端重新获取后，git fsck 未见可达对象损坏，工作区文件保留。之前的 /tmp 模型验收日志未留存，不能据此补报成功。
+
+补上可重复的 opt-in 模型验收 `RealSourceTests.test_model_collects_missing_statements_and_finishes_report`：隔离正常 Tijian 数据目录，按所选 workflow 的模型和思考级别执行原始赛事分析请求；要求 completed、settled、实际收录、真正 problem_get 非空题面结果和引用已收录题号的最终报告。不会加载私人 Skill/系统提示，不连接正式 Runtime socket，不写正式题库。
+
+仅移动静态规则到 system 仍不足以通过完整模型验收：本轮第一次尝试读到了真实题面，但 300 秒内未完成（`/tmp/paveway-model-report-before-evidence-fix.log`），不能计作成功。进一步修正最新工具交换超限时被整组丢弃的问题：保留调用/结果配对，在副本中缩短结果文本并标注首尾片段，仍遵守同一 10k 上限、原始会话不变。另提供 `tijian tools --name OP`（可重复）按需读取 schema，旧的完整目录输出和 MCP discovery 保持兼容。
+
+已复验：核心 43 项中 42 通过、1 条件略过（`/tmp/paveway-core-final.log`）；最终上下文/目录/模板/界面状态回归 34 项中 31 通过、3 条件略过（`/tmp/paveway-final-regressions.log`）；真实终端自定义 prompt/Skill 派发和退出重入两项通过；Runtime 安全进度与 uncertain 隔离两项通过（`/tmp/paveway-runtime-resume.log`）；真实 OJ 缓存读取一项通过，23.564 秒（`/tmp/paveway-network-resume.log`）。最初大组测试的两个过时界面断言已修正并定向重验，没有将原始失败报告为全通过。
+
+完整模型验收命令（需要真正 Tijian source CLI、OMP 认证及可用网络）：
+
+```bash
+OICOACH_TEST_TIJIAN_SOURCE_CLI="$PWD/.runtime/tijian-build/debug/tijian-source-cli" \
+OICOACH_TEST_TIJIAN_SOURCE_SEED="$PWD/.runtime/tijian-build/debug/tijian-source-seed" \
+OICOACH_TEST_TIJIAN_NETWORK=1 \
+OICOACH_TEST_TIJIAN_OMP_CONFIG="$PWD/.runtime/config.toml" \
+OICOACH_TEST_WORKFLOW=test01 \
+.venv/bin/python -m unittest tests.test_tijian_source.RealSourceTests.test_model_collects_missing_statements_and_finishes_report -v
+```
+
+第二次完整模型验收虽然减少了前期目录读取，仍在扩展年份和反复读题过程中超时，不能计作成功。workflow 因此将默认首轮收敛为每类赛事 1 题、最多 3 题，逐题保存简短公开证据摘要到临时目录，之后立即生成初步报告并标明样本局限；仅明确要求完整范围时继续分批扩展。
+
+收敛样本后的真实模型在 225.053 秒内 completed 且 settled，并生成三类赛事样本的完整公开分析；但随后 todo 收尾短句成为 native get_last_assistant_text，导致最终文字长度断言失败（`/tmp/paveway-model-report-bounded.log`）。这次没有计作端到端通过。Runtime 已改为有界收集本次 prompt 的 assistant message_end 可见文字，保留完整报告及后续补充，排除 thinking/工具内容；继续执行可选查询，以免吞掉持久化错误。回归覆盖报告后短补充、16 KiB 多字节上限、跨回合隔离及原有持久化失败语义。
+
+最终完整真实验收通过（`/tmp/paveway-model-report-output-final.log`）：1 项，223.679 秒；正常模式的隔离空库收录 3 题，实际读回 P10217、P10786、P11362 的非空题面，completed 且 settled，取得 3,288 字、引用已收录题号的公开回复。该项不是全部近年赛事的统计验收，也不保证所有模型/网络条件下都能在同样耗时内完成。
+
+最后完整 Runtime 回归 46 项全部通过，115.519 秒（`/tmp/paveway-runtime-final.log`）。额外定向检查确认原生可见文字聚合保持 16 KiB 上限、不包含 thinking/工具正文且不跨回合复用。依赖检查、compileall、git diff --check 通过。源代码可达历史 232 个 blob 及最终跟踪工作区的已知私密值检查无命中，未发现运行时资料路径入库；个人资料 Git 没有 remote，不随源码 push。

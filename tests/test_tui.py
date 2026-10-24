@@ -576,7 +576,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(report["checks"])
 
-    def open_terminal(self):
+    def open_terminal(self, *, resuming_active=False):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
@@ -602,7 +602,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 if select.select([master], [], [], 0.1)[0]:
                     stream.feed(os.read(master, 65536))
             self.fail("Terminal did not render " + needle + ":\n" + "\n".join(screen.display))
-        read_until("已恢复最近对话")
+        read_until("最近活动" if resuming_active else "已恢复最近对话")
         return master, slave, process, screen, stream, read_until, before
 
     @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
@@ -772,7 +772,8 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertEqual(saved["revision"], 3)
         system = snapshots[0].with_name("system.md").read_text()
         from oicoach_runtime.customization import IDENTITY_PROMPT
-        self.assertEqual(system, "先给提示\n不要直接给答案 ${literal}\n\n" + IDENTITY_PROMPT)
+        from oicoach_runtime.context_budget import CONTEXT_PROMPT
+        self.assertEqual(system, "先给提示\n不要直接给答案 ${literal}\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
         native_skill = snapshots[0].parent / "skills/training-skill/SKILL.md"
         self.assertIn("[user information]", native_skill.read_text())
         self.assertIn("先检查边界情况\n再检查复杂度，保留原文", native_skill.read_text())
@@ -839,9 +840,10 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertEqual(before[3] & (termios.ECHO | termios.ICANON), after[3] & (termios.ECHO | termios.ICANON))
         self.assertIsNone(self.daemon.poll())
         # Re-enter while the daemon is still executing: resume polling, no manual refresh.
-        master2, slave2, process2, screen2, stream2, read_until2, before2 = self.open_terminal()
-        read_until2("正在继续等待最终回复")
-        read_until2("已等待")
+        master2, slave2, process2, screen2, stream2, read_until2, before2 = self.open_terminal(resuming_active=True)
+        read_until2(marker)
+        read_until2("工具 1 次")
+        read_until2("最近活动")
         os.write(master2, b"NEXT_DRAFT")
         (self.root / "fake-release").touch()
         read_until2("fake completion")

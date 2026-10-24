@@ -20,6 +20,22 @@ from oicoach_runtime.models import utc_text
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_report_survives_a_later_assistant_postscript_without_hidden_content(self):
+        done = self.wait_status(self.schedule(mode="report-then-postscript")["event_id"])
+        output = request(self.socket_path, "runs.output", {"run_id": done["run_id"]})
+        self.assertEqual(output["text"], "FULL_REPORT_BODY\n\nSHORT_POSTSCRIPT")
+        self.assertFalse(output["truncated"])
+        self.assertNotIn("PRIVATE_", json.dumps(output))
+        large = request(self.socket_path, "schedule", {"workflow_id": "echo", "task_id": "task", "reason": "stream output limit",
+            "dedupe_key": "stream-bounded", "at": "now", "payload": {"fake_mode": "report-then-postscript", "fake_reply": "字" * 10000}})
+        large = self.wait_status(large["event_id"])
+        bounded = request(self.socket_path, "runs.output", {"run_id": large["run_id"]})
+        self.assertTrue(bounded["truncated"])
+        self.assertLessEqual(len(bounded["text"].encode("utf-8")), 16384)
+        self.assertNotIn("PRIVATE_", bounded["text"])
+        next_turn = self.wait_status(self.schedule(key="following-turn")["event_id"])
+        self.assertEqual(request(self.socket_path, "runs.output", {"run_id": next_turn["run_id"]})["text"], "fake completion")
+
     def test_static_workflow_rules_are_separate_from_user_envelope(self):
         directory = self.config.workflow_root / "echo"
         manifest = directory / "workflow.toml"

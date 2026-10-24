@@ -82,7 +82,7 @@ service status|logs|start|stop|restart|enable|disable|uninstall [--name UNIT]
 
 `ask` 等價於 payload.mode/message 的 immediate schedule。`at="now"` 由 Store 時鐘轉為 UTC，fingerprint 使用穩定的 now 語義；同 key 相同 immediate 請求幂等，不同輸入 conflict。reschedule 亦可使用 now。等待預算必須有限且大於 0、不超過 86400 秒；逾時回 wait_timeout，不取消事件。ask --wait --json 回 result.event/output，終態非 succeeded 的退出碼為 1。
 
-`runs.output` 是新增 IPC command，arguments={run_id}；回 status=available|pending|unavailable、text、truncated。available text 最多 16 KiB UTF-8，僅保存成功 run 本輪最終 assistant 回覆。不支持的可選文字查詢不假裝有回覆；session/transport 錯誤不被 presentation fallback 吞掉。舊 run 無輸出 metadata 時回 unavailable。輸出與成功提交同交易，不新增資料表或刪除舊 schema v1 記錄。
+`runs.output` 是新增 IPC command，arguments={run_id}；回 status=available|pending|unavailable、text、truncated。available text 最多 16 KiB UTF-8，僅保存成功 run 本輪 assistant 的可見文字；優先合併本次 prompt 的 message_end 文字，避免正文後的短補充取代整份報告。不包含 thinking、工具參數/結果或舊回合文字；缺少原生文字事件時才回退到可選的最後回覆查詢。不支持的可選文字查詢不假裝有回覆；session/transport 錯誤不被 presentation fallback 吞掉。舊 run 無輸出 metadata 時回 unavailable。輸出與成功提交同交易，不新增資料表或刪除舊 schema v1 記錄。
 
 agent restart 是非同步控制，先持久回覆 requested job 與 restart_id；agent show 或 status 才表示其 running/succeeded/failed/interrupted 結果。相同 task 的 active run 會中斷，其他 task 的 run 不被中斷，restart 等其完成後串行執行。同時只接受一個 pending restart；task ID 跨 workflow 重複時必須提供 --workflow。
 

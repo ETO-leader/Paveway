@@ -252,10 +252,11 @@ class Runtime:
                 raise AgentError("Completed session file was not persisted")
             output = {"status": "unavailable", "text": None, "truncated": False}
             if result == "completed" and getattr(agent, "agent_invoked", None) is not False:
+                output = agent.assistant_output() or output
                 try:
                     response = await asyncio.wait_for(agent.command("get_last_assistant_text"), min(5, self.config.agent.ack_timeout_seconds))
                     text = response.get("text")
-                    if isinstance(text, str):
+                    if output["status"] == "unavailable" and isinstance(text, str):
                         encoded = text.encode("utf-8")
                         output = {"status": "available", "text": encoded[:16384].decode("utf-8", errors="ignore"),
                                   "truncated": len(encoded) > 16384}

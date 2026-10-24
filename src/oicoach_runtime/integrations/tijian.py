@@ -22,9 +22,12 @@ class TijianError(RuntimeContractError):
         self.outcome = outcome
 
 
-def catalog():
+def catalog(names=None):
+    selected = list(OPERATIONS) if names is None else list(dict.fromkeys(names))
+    if any(name not in OPERATIONS for name in selected):
+        raise TijianError("tijian_unknown_operation", "Unknown Tijian operation; use tijian tools to list operations")
     return {"api_version": 1, "upstream": UPSTREAM_URL, "upstream_revision": UPSTREAM_REVISION,
-            "transport": "tijian-json-cli", "tools": [item.tool() for item in OPERATIONS.values()]}
+            "transport": "tijian-json-cli", "tools": [OPERATIONS[name].tool() for name in selected]}
 
 
 def mcp_configuration(config_path: Path):

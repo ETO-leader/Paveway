@@ -30,6 +30,48 @@ export function windowMessages(original, count, limit = TOKEN_LIMIT) {
         const start = messages[0].role === "user" ? 1 : 0;
         let end = start + 1;
         while (end < messages.length && messages[end].role === "toolResult") end++;
+        if (end === messages.length && messages[start]?.role === "assistant") break;
+        messages.splice(start, end - start);
+    }
+    // Keep the newest call/result exchange visible even when one tool returns
+    // more than the entire budget. Dropping it makes the model repeat the call.
+    // Shorten text on copies, preserving call IDs and provider tool pairing.
+    const shortened = new Set();
+    for (let index = 0; index < messages.length && size(messages) > target; index++) {
+        const source = messages[index];
+        if (source.role !== "toolResult") continue;
+        if (!messages.slice(0, index).some(message => message.role === "assistant" &&
+            Array.isArray(message.content) && message.content.some(block =>
+                block.type === "toolCall" && block.id === source.toolCallId))) continue;
+        if (typeof source.content !== "string" && !Array.isArray(source.content)) continue;
+        const blocks = typeof source.content === "string" ? [{type:"text", text:source.content}] : [...source.content];
+        for (let blockIndex = 0; blockIndex < blocks.length && size(messages) > target; blockIndex++) {
+            const block = blocks[blockIndex];
+            if (block.type !== "text" || typeof block.text !== "string") continue;
+            const chars = Array.from(block.text);
+            const make = length => ({...source, content:blocks.map((value, offset) => offset === blockIndex ?
+                {...block, text:chars.slice(0, Math.ceil(length * 0.8)).join("") +
+                    "\n[Runtime: middle of oversized tool result omitted; read only the missing section if needed]\n" +
+                    (length > 1 ? chars.slice(-Math.floor(length * 0.2)).join("") : "")} : value)});
+            let low = 0, high = chars.length;
+            while (low < high) {
+                const mid = Math.ceil((low + high) / 2);
+                messages[index] = make(mid);
+                if (size(messages) <= target) low = mid;
+                else high = mid - 1;
+            }
+            messages[index] = make(low);
+            shortened.add(source);
+            // Subsequent blocks retain earlier shortening as well.
+            blocks.splice(blockIndex, 1, messages[index].content[blockIndex]);
+        }
+    }
+    // Oversized call arguments or non-text results can still be impossible to
+    // fit. Fall back to removing the whole exchange, never an orphaned result.
+    while (size(messages) > target && messages.length > 1) {
+        const start = messages[0].role === "user" ? 1 : 0;
+        let end = start + 1;
+        while (end < messages.length && messages[end].role === "toolResult") end++;
         messages.splice(start, end - start);
     }
     // An individual large input is visibly shortened, including multibyte text.
@@ -62,7 +104,7 @@ export function windowMessages(original, count, limit = TOKEN_LIMIT) {
             for (const block of message.content) if (block.type === "toolCall")
                 calls.set(block.id, block.name + " " + JSON.stringify(block.arguments ?? {}).slice(0, 180));
         }
-        if (message.role !== "toolResult" || retained.has(message)) continue;
+        if (message.role !== "toolResult" || retained.has(message) || shortened.has(message)) continue;
         const text = typeof message.content === "string" ? message.content :
             (Array.isArray(message.content) ? message.content : []).filter(block => block.type === "text").map(block => block.text).join("\n");
         excerpts.push((calls.get(message.toolCallId) ?? message.toolName ?? "tool") + " → " +

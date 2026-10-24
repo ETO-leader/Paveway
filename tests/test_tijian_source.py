@@ -173,6 +173,83 @@ class RealSourceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(read.isError)
                 self.assertEqual(read.structuredContent["data"]["problem"]["status"], "explored")
 
+    @unittest.skipUnless(os.environ.get("OICOACH_TEST_TIJIAN_NETWORK") and
+                         os.environ.get("OICOACH_TEST_TIJIAN_OMP_CONFIG"),
+                         "opt in to real OJ collection and model report in an isolated empty library")
+    async def test_model_collects_missing_statements_and_finishes_report(self):
+        from importlib.resources import files
+        from oicoach_runtime.adapters.omp_rpc import OmpRpc
+        from oicoach_runtime.customization import show
+        from oicoach_runtime.proxy import child_environment
+        from oicoach_runtime.workflows import Workflow
+
+        source = Path(os.environ["OICOACH_TEST_TIJIAN_OMP_CONFIG"])
+        base = load_config(source)
+        inference = show(base, os.environ.get("OICOACH_TEST_WORKFLOW", "test01"))["inference"]
+        environment = dict(child_environment(source), TIJIAN_RUNTIME_MODE="normal",
+                           XDG_DATA_HOME=str(self.root / "normal-data"))
+        sessions = self.root / "sessions"
+        sessions.mkdir(mode=0o700)
+        config = replace(base, state_dir=self.root / "state", workflow_root=self.root / "workflows",
+            server=replace(base.server, socket_path=str(self.root / "runtime.sock")),
+            tijian=replace(self.config, timeout_seconds=55, read_only=False),
+            agent=replace(base.agent, model=inference["model"], thinking=inference["thinking"],
+                tools_enabled=True, skills_enabled=False, extensions_enabled=False, rules_enabled=False,
+                turn_timeout_seconds=300, settle_timeout_seconds=15, graceful_stop_seconds=1))
+        path = self.root / "runtime.toml"
+        path.touch(mode=0o600)
+        path.write_text(config_text(config))
+        template = files("oicoach_runtime").joinpath("bundled/coach.md").read_text()
+        workflow = Workflow("test", "1", self.root, "per_task", {"wake": template}, instructions_in_system=True)
+        envelope = {"event_id": str(uuid.uuid4()), "run_id": str(uuid.uuid4()), "workflow_id": "test",
+            "task_id": "report", "reason": "用户请求", "payload": {
+                "message": "根据 Tijian 内的信息分析近几年 NOIP / 联合省选 / NOI 的题目风格，给出报告"},
+            "available_tools": [{"name": "tijian", "argv_prefix": [sys.executable, "-m", "oicoach_runtime", "tijian"],
+                "config_path": str(path), "commands": ["tools", "doctor", "call"], "read_only": False}]}
+        instructions, prompt = workflow.render_parts("wake", envelope)
+        with patch.dict(os.environ, environment):
+            client = TijianClient(config.tijian)
+            # Upstream search initializes a brand-new normal-mode database;
+            # stats requires its schema to exist already.
+            await client.call("search", {"query": "NOIP"})
+            self.assertEqual((await client.call("problem_stats", {}))["data"]["total"], 0)
+            adapter = OmpRpc(config, config_path=path)
+            try:
+                await adapter.start({"workspace": str(self.root), "session_dir": str(sessions), "session_file": None,
+                                     "workflow_instructions": instructions}, envelope["run_id"])
+                await adapter.ready()
+                result = await adapter.prompt(envelope["run_id"], prompt, lambda: None, lambda _: None)
+                self.assertEqual(result, "completed")
+                self.assertTrue((await adapter.state())["isSettled"])
+                messages = (await adapter.command("get_messages"))["messages"]
+                report = adapter.assistant_output() or await adapter.command("get_last_assistant_text")
+                self.assertGreater(len(report.get("text", "")), 500)
+                collected = (await client.call("problem_list", {}))["data"]
+                self.assertGreater(len(collected), 0)
+                self.assertTrue(any(problem["id"] in report["text"] for problem in collected),
+                                "Report must reference a problem actually collected in this run")
+                # Confirm statement evidence actually reached the model, rather
+                # than accepting a successful add acknowledgement as reading.
+                results = [m for m in messages if m.get("role") == "toolResult" and not m.get("isError")]
+                statements = []
+                for message in results:
+                    for block in message.get("content", []):
+                        if block.get("type") != "text":
+                            continue
+                        try:
+                            document, _ = json.JSONDecoder().raw_decode(block["text"].lstrip())
+                        except (ValueError, KeyError):
+                            continue
+                        if isinstance(document, dict):
+                            data = document.get("result", {}).get("data")
+                            if isinstance(data, dict) and data.get("problem", {}).get("statementMd"):
+                                statements.append(data["problem"]["id"])
+                self.assertTrue(statements, "No actual problem_get statement reached the model")
+                print(json.dumps({"acceptance": "tijian-model-report", "collected": len(collected),
+                                  "statements_read": sorted(set(statements)), "report_chars": len(report["text"])}))
+            finally:
+                await adapter.stop(abort=True)
+
     @unittest.skipUnless(importlib.util.find_spec("mcp") and os.environ.get("OICOACH_TEST_TIJIAN_OMP_CONFIG"),
                          "set OICOACH_TEST_TIJIAN_OMP_CONFIG for an actual model + upstream source roundtrip")
     async def test_real_omp_model_reads_real_tijian_through_mcp(self):

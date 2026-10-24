@@ -54,6 +54,12 @@ CASES = [
 
 
 class CatalogTests(unittest.TestCase):
+    def test_selected_schemas_keep_the_full_contract_without_unrelated_tools(self):
+        selected = catalog(["problem_get", "problem_add", "problem_get"])
+        self.assertEqual(selected["tools"], [OPERATIONS[name].tool() for name in ("problem_get", "problem_add")])
+        with self.assertRaises(TijianError):
+            catalog(["not_a_real_operation"])
+
     def test_all_operation_mappings_and_schemas(self):
         self.assertEqual({name for name, _, _ in CASES}, set(OPERATIONS))
         for name, arguments, expected in CASES:
