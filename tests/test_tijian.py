@@ -110,6 +110,23 @@ class CatalogTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_problem_is_distinct_from_process_failure_without_automatic_add(self):
+        for operation, arguments, code, outcome in (
+            ("problem_get", {"problem": "MISSING"}, "tijian_problem_not_found", "no_business_mutation"),
+            ("problem_get", {"problem": "MISSING_NOISE"}, "tijian_command_failed", "no_business_mutation"),
+            ("problem_get", {"problem": "FAIL"}, "tijian_command_failed", "no_business_mutation"),
+            ("problem_status", {"problems": ["MISSING"], "status": "solved"}, "tijian_command_failed", "uncertain"),
+        ):
+            with self.subTest(operation=operation, arguments=arguments):
+                with self.assertRaises(TijianError) as caught:
+                    await self.client.call(operation, arguments)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.outcome, outcome)
+                self.assertNotIn("PRIVATE_SECRET", str(caught.exception))
+        trace = [json.loads(line) for line in (self.root / "trace.jsonl").read_text().splitlines()]
+        self.assertEqual(len(trace), 4)
+        self.assertFalse(any(row[:2] == ["problem", "add"] for row in trace))
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

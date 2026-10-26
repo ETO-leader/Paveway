@@ -26,6 +26,13 @@ ENABLED = bool(os.environ.get("OICOACH_TEST_TIJIAN_SOURCE_CLI") and os.environ.g
 
 @unittest.skipUnless(ENABLED, "build the documented Tijian source CLI and set SOURCE_CLI/SOURCE_SEED")
 class RealSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_missing_problem_has_actionable_error_without_fetching(self):
+        with self.assertRaises(TijianError) as caught:
+            await self.client.call("problem_get", {"problem": "CF1A"})
+        self.assertEqual(caught.exception.code, "tijian_problem_not_found")
+        self.assertEqual(caught.exception.outcome, "no_business_mutation")
+        self.assertEqual((await self.client.call("problem_stats", {}))["data"]["total"], 2)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-tijian-source-")
         self.addCleanup(self.temp.cleanup)

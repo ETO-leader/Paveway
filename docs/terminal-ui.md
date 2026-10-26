@@ -63,6 +63,7 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 | `/sync [setup\|now\|status\|pause\|resume\|conflicts\|history]` | 多设备 Git 配置/历史；后台自动同步，留空 remote 仅本地保存 |
 | `/status`、`/doctor`、`/init` | 状态、诊断、初始化/已知迁移 |
 | `/service [status\|install\|start\|stop\|logs]` | 默认 unit 的操作；stop 明确输入 yes，不自动启用登录启动 |
+| `/tijian [login\|cookie\|test\|status\|clear]` | VJudge 共享登录；密码与 Cookie 隐藏输入，保存前验证，清除需确认 |
 | `/recover` | 查询待核对事件，不自动重播 uncertain |
 | `/retry-send` | 用上次 UI 提交的相同 scope/正文/mode/key 幂等核对 |
 | `/discard-send` | 确认后丢弃 UI 内存提交记录，不取消可能已入库的任务 |

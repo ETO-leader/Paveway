@@ -219,9 +219,17 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--offset", type=int, default=0)
     tijian = commands.add_parser("tijian", help="Tijian JSON CLI adapter and optional stdio MCP bridge")
     tijian_commands = tijian.add_subparsers(dest="operation", required=True)
-    for name in ("setup", "tools", "doctor", "call", "mcp-config", "mcp"):
+    for name in ("setup", "tools", "doctor", "call", "mcp-config", "mcp", "auth"):
         child = tijian_commands.add_parser(name)
         common(child)
+        if name == "auth":
+            actions = child.add_subparsers(dest="auth_action", required=True)
+            for action in ("status", "test", "login", "cookie", "clear"):
+                auth = actions.add_parser(action)
+                common(auth)
+                if action in ("login", "cookie"):
+                    auth.add_argument("--credentials-file" if action == "login" else "--cookie-file", type=Path,
+                                      help="Private input file; otherwise prompt locally (secrets never go in argv)")
         if name == "tools":
             child.add_argument("--name", action="append", help="Read only this operation's schema; repeat for several operations")
         if name == "setup":
@@ -527,6 +535,32 @@ def main(argv: list[str] | None = None) -> int:
             from .integrations.tijian import TijianClient, catalog, mcp_configuration
             if args.operation == "tools":
                 report = catalog(args.name)
+            elif args.operation == "auth":
+                load_config(path)
+                from .integrations.vjudge_auth import VjudgeAuth, read_secret_file
+                auth = VjudgeAuth(path)
+                if args.auth_action in ("status", "test", "clear"):
+                    report = getattr(auth, args.auth_action)()
+                else:
+                    import getpass
+                    secret_path = args.credentials_file if args.auth_action == "login" else args.cookie_file
+                    if secret_path:
+                        secret = read_secret_file(secret_path)
+                    elif sys.stdin.isatty():
+                        secret = (json.dumps({"username": input("VJudge 用户名: "), "password": getpass.getpass("VJudge 密码: ")})
+                                  if args.auth_action == "login" else getpass.getpass("VJudge Cookie: "))
+                    else:
+                        raise RuntimeContractError("请使用本机交互终端或私密输入文件配置 VJudge 登录")
+                    if args.auth_action == "login":
+                        try:
+                            credentials = json.loads(secret)
+                            if not isinstance(credentials, dict) or set(credentials) != {"username", "password"}:
+                                raise ValueError()
+                        except (ValueError, UnicodeError, RecursionError):
+                            raise RuntimeContractError("登录输入必须包含 username 和 password，不回显输入内容") from None
+                        report = auth.login(credentials["username"], credentials["password"])
+                    else:
+                        report = auth.import_cookie(secret)
             elif args.operation == "setup":
                 from .integrations.tijian import configure
                 report = asyncio.run(configure(path, args.executable, args.read_only))

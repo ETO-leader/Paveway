@@ -18,3 +18,5 @@ user-data-git/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+vjudge_session.json
+vjudge_credentials.json

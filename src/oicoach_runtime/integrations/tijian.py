@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import sys
@@ -122,9 +123,15 @@ class TijianClient:
                 return b"".join(chunks)
 
             async def drain_stderr():
-                # Drain, but never retain or relay credentials, URLs, model text or user data.
-                while await process.stderr.read(65536):
-                    pass
+                # Inspect only a bounded diagnostic for a fixed, upstream error.
+                # Never relay raw stderr, even when it resembles a known error.
+                diagnostic = bytearray()
+                overflow = False
+                while data := await process.stderr.read(65536):
+                    if len(diagnostic) + len(data) > 512:
+                        overflow = True
+                    diagnostic.extend(data[:max(0, 512 - len(diagnostic))])
+                return b"" if overflow else bytes(diagnostic)
 
             async def exchange():
                 process.stdin.write(json.dumps({"args": args}, ensure_ascii=False, allow_nan=False).encode())
@@ -138,12 +145,19 @@ class TijianClient:
             tasks = [asyncio.create_task(read_stdout()), asyncio.create_task(drain_stderr()),
                      asyncio.create_task(process.wait())]
             try:
-                stdout, _, exit_code = await asyncio.wait_for(exchange(), self.config.timeout_seconds)
+                stdout, stderr, exit_code = await asyncio.wait_for(exchange(), self.config.timeout_seconds)
             except TimeoutError:
                 raise TijianError("tijian_timeout", "Tijian timed out; no automatic retry was performed", outcome=outcome) from None
             except OSError:
                 raise TijianError("tijian_transport_error", "Tijian process communication failed; no automatic retry was performed", outcome=outcome) from None
             if exit_code != 0:
+                if args[:2] == ["problem", "get"] and re.fullmatch(
+                        r"命令执行失败: 题目不存在: [A-Za-z0-9][A-Za-z0-9_-]{0,127}",
+                        stderr.decode("utf-8", errors="replace").strip()):
+                    raise TijianError("tijian_problem_not_found",
+                        "Problem is not in the local Tijian library. Use problem_add once to collect it, "
+                        "then problem_get to read its saved statement; respect read_only and user restrictions.",
+                        outcome="no_business_mutation")
                 raise TijianError("tijian_command_failed", "Tijian command failed; check Tijian locally. Batch operations may have partially completed", outcome=outcome)
             try:
                 result = json.loads(stdout, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))

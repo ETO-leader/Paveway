@@ -391,3 +391,15 @@ OICOACH_TEST_WORKFLOW=test01 \
 最终完整真实验收通过（`/tmp/paveway-model-report-output-final.log`）：1 项，223.679 秒；正常模式的隔离空库收录 3 题，实际读回 P10217、P10786、P11362 的非空题面，completed 且 settled，取得 3,288 字、引用已收录题号的公开回复。该项不是全部近年赛事的统计验收，也不保证所有模型/网络条件下都能在同样耗时内完成。
 
 最后完整 Runtime 回归 46 项全部通过，115.519 秒（`/tmp/paveway-runtime-final.log`）。额外定向检查确认原生可见文字聚合保持 16 KiB 上限、不包含 thinking/工具正文且不跨回合复用。依赖检查、compileall、git diff --check 通过。源代码可达历史 232 个 blob 及最终跟踪工作区的已知私密值检查无命中，未发现运行时资料路径入库；个人资料 Git 没有 remote，不随源码 push。
+
+
+## 2026-10-26 VJudge 登录集成
+
+新增 Paveway `/tijian` 选单及 `tijian auth status/test/login/cookie/clear` CLI。登录采用与上游桌面端相同的 VJudge HTTPS 协议，成功验证后才原子写入原生 Cookie 会话文件；密码不持久保存，不提供新的密码绑定/自动续期。Tijian 上游工作区没有修改。UI 密码与 Cookie 以隐藏字段输入，CLI 通过 0600 临时文件接收；登录数据不加入模型对话、命令参数或 Paveway Git 归档。
+
+验证结果：
+
+- UI、认证、Tijian 适配回归共 69 项，67 通过、2 条件略过，81.438 秒（`/tmp/paveway-vjudge-regression.log`）。包含真实 PTY 的隐藏输入、Esc 不提交、草稿保留及现有界面操作。
+- 最终认证定向 14 项全部通过，5.167 秒（`/tmp/paveway-vjudge-security-final.log`），覆盖 HTTPS 表单与 Cookie 合并、验证后保存、失败保留旧会话、并发变更不覆盖、跨域/降级重定向阻止、私密临时文件、无命令参数或错误正文泄露、输入注入拒绝、NO_PROXY 与不支持的代理类型，以及未配置时不伪称已联网检查。
+- 真正 VJudge 网络使用明确无效的测试 Cookie，返回 `vjudge_not_logged_in`，没有创建会话文件。未使用私人真实账号，不能据此宣称真实账号登录或 CF1A 抓取成功。
+- bash 语法、compileall、pip check、git diff --check 通过。会话与账号文件名加入源码 Git 忽略规则；独立用户数据仓库仍按自身 remote 配置管理。

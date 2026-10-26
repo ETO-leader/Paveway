@@ -192,6 +192,38 @@ class TimerDisplayTests(unittest.TestCase):
 
 
 class ConversationTests(unittest.TestCase):
+    def test_vjudge_login_secrets_use_private_cli_files_and_never_enter_chat_or_history(self):
+        calls = []
+        class Client:
+            def call(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                return {"configured": True, "logged_in": True, "live_checked": True}
+        ui = make_ui(Client())
+        ui.editor.text = "ORIGINAL_DRAFT"
+        ui.execute("/tijian login")
+        self.assertFalse(ui.secret_field())
+        ui.editor.text = "TEST_ACCOUNT"
+        ui.accept()
+        self.assertTrue(ui.secret_field())
+        ui.editor.text = "SECRET_PASSWORD"
+        ui.accept()
+        collect(ui)
+        self.assertIsNone(ui.wizard)
+        self.assertFalse(ui.secret_field())
+        self.assertEqual(ui.editor.text, "ORIGINAL_DRAFT")
+        self.assertEqual(calls[0][0], ("tijian", "auth", "login"))
+        self.assertEqual(json.loads(calls[0][1]["text_files"]["--credentials-file"]),
+                         {"username": "TEST_ACCOUNT", "password": "SECRET_PASSWORD"})
+        self.assertNotIn("SECRET_PASSWORD", json.dumps(list(ui.chat.values())))
+        self.assertNotIn("SECRET_PASSWORD", str(list(ui.editor.buffer.history.get_strings())))
+        ui.execute("/tijian cookie")
+        self.assertTrue(ui.secret_field())
+        ui.editor.text = "JSESSIONID=COOKIE_SECRET"
+        ui.escape()
+        self.assertFalse(ui.secret_field())
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("COOKIE_SECRET", json.dumps(list(ui.chat.values())))
+
     def test_reenter_running_conversation_keeps_polling_and_shows_completion_once(self):
         event = {"event_id": "existing", "workflow_id": "echo", "task_id": "task", "run_id": "existing-run",
                  "status": "running", "created_at": "2026-10-20T15:33:00Z", "reason": "request", "payload": {"message": "check QOJ"}}
@@ -473,6 +505,31 @@ class ConversationTests(unittest.TestCase):
 
 
 class TerminalIntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
+    def test_pty_vjudge_password_and_cookie_are_masked_and_escape_never_submits(self):
+        master, slave, process, screen, stream, read_until, before = self.open_terminal()
+        os.write(master, b"/tijian login\r")
+        read_until("VJudge 用户名")
+        os.write(master, b"test-account\r")
+        read_until("密码（隐藏输入")
+        os.write(master, b"TOP_SECRET_PASSWORD")
+        rendered = read_until("********")
+        self.assertNotIn("TOP_SECRET_PASSWORD", rendered)
+        os.write(master, b"\x1b")
+        read_until("输入请求或 / 命令")
+        os.write(master, b"/tijian cookie\r")
+        read_until("Cookie（隐藏输入")
+        os.write(master, b"JSESSIONID=TOP_SECRET_COOKIE")
+        rendered = read_until("********")
+        self.assertNotIn("TOP_SECRET_COOKIE", rendered)
+        self.assertNotIn("JSESSIONID=", rendered)
+        os.write(master, b"\x1b")
+        read_until("输入请求或 / 命令")
+        self.assertEqual(self.api("events.list"), [])
+        os.write(master, b"/quit\r")
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="pw-ui-")
         self.addCleanup(self.temporary.cleanup)

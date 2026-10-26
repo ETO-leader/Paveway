@@ -35,6 +35,19 @@ GPT提示放在外部 workflow，Runtime 不写死题目选择、训练时长或
 
 ## 快速开始
 
+已有 Python 3.11+、OMP 和模型认证时，可直接在交互终端执行：
+
+```bash
+./paveway.sh
+# 也可指定已有 workflow/task，或另一份本机配置：
+./paveway.sh --workflow test01 --task training
+./paveway.sh --config /absolute/private/config.toml
+```
+
+脚本可从任意工作目录运行。首次自动建立 `.venv`、安装依赖（需要网络）、初始化缺少的私密配置，并在没有 workflow 时创建 `gpt`。默认读取项目 `.runtime/config.toml`；已有 daemon 直接复用，离线时优先启动同配置的已安装 systemd 服务，否则启动独立后台 `serve`，启动日志在配置的 state_dir/startup.log。退出 UI 不停止后台任务。脚本不安装或替换 systemd 服务；登录自启动见下文部署说明。已有设置、Skill 和历史保留。
+
+以下是手动安装和启动步骤：
+
 在源码仓库根目录执行：
 
 ```bash
@@ -108,6 +121,8 @@ UI 顶栏显示当前系统时间，消息显示时间戳；日期直接使用�
 UI 启动时会同步终端代理并检查代理 TCP 端口，也可用 `/proxy` 重查。HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY（含小写）以及 OMP 的 PI_PROXY/PI_PROXY_PROVIDER 保存在本机私密 `config.service.env`，不进入 Git。service install/start/restart 与 serve 启动会同步检查；无终端代理变量时保留已保存配置，变量显式设为空可清除此项。每次新建 OMP 子程序都会读取最新代理，无需为后续同步重启 daemon；已运行回合保持原环境。端口可达不代表模型认证或生成请求成功。
 
 所有数据操作仍调用独立 CLI 子进程，UI 不直接写数据库，也不自动启动/停止 daemon。正文用私密临时文件传递；提交未确认时 `/retry-send` 用原标识幂等核对。Ctrl+C 清空草稿；空输入连续两次 Ctrl+C、空输入 Ctrl+D 或 `/quit` 退出，不取消已入库事件。完整操作见 [终端 UI 说明](docs/terminal-ui.md)。
+
+配置 Tijian 的 VJudge 登录：重开 UI 后输入 `/tijian`，选择「用户名和密码登录」或「从浏览器导入 Cookie」；也可直接输入 `/tijian login`、`/tijian cookie`。密码/Cookie 隐藏输入，Enter 提交，Esc 取消。登录成功后只在本机 Tijian 的原生会话文件保存 Cookie，不保存密码、不写入 GPT 对话或用户数据 Git；所有 workflow 共用。`/tijian test` 实际验证登录，`/tijian status` 仅查看配置；`/tijian clear` 确认后清除 Cookie，保留已有 Tijian 账号绑定。若网站要求浏览器验证，请在浏览器登录后导入请求 Cookie。此功能不修改 Tijian 上游，也不绕过网站验证，详见 [Tijian 登录说明](docs/tijian.md#vjudge-登录集成)。
 
 选择模型和思考等级（0.16.0）：
 

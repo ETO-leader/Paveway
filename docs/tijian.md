@@ -202,3 +202,32 @@ Tijian 的正式题面流程是：**首次抓取并收录 → 保存到本地 �
 真实 OJ opt-in 测试命令：在文档已有 SOURCE_CLI/SOURCE_SEED 环境变量基础上，加 `OICOACH_TEST_TIJIAN_NETWORK=1`，运行 `test_tijian_source.py -k real_oj_first`。该项在全新 XDG 数据目录、正常 Tijian 模式下实际首次收录公开赛题，读回非空题面，再将代理设为不可达验证后续读取及重复 add；1 项通过（16.961 秒，`/tmp/paveway-tijian-network-acceptance.log`）。它不导入用户数据库、不写训练状态、不使用 seeder 的占位题面冒充网络抓取结果。
 
 有 shell 能力时，workflow 优先复用 available_tools 给出的 Tijian argv_prefix/config_path，直接调用现有 JSON CLI；无 shell 时再使用已发现的 MCP 工具。不为同一接口额外编写/探索 eval SDK 包装器。必须读到 data.problem.statementMd 才能声称已读取保存题面，而非仅凭收录成功消息或联网搜索摘要分析。
+
+
+## VJudge 登录集成
+
+Paveway UI 输入 `/tijian` 打开共享登录选单：
+
+- `/tijian login`：依次输入用户名和隐藏的密码，只向 `https://vjudge.net` 提交登录请求。成功验证后保存 Cookie，不持久保存密码，也不创建新的账号密码绑定。
+- `/tijian cookie`：在浏览器登录 VJudge，开发者工具 Network 中复制请求的 Cookie 值，粘贴到隐藏输入框。接受可选 `Cookie:` 前缀；先验证再保存，失效 Cookie 不覆盖旧会话。
+- `/tijian test`：联网检查当前 Cookie 是否登录；`/tijian status` 只检查本地是否配置，不能作为登录成功证明。
+- `/tijian clear`：输入 yes 后只清除 Cookie，不删除已有 Tijian 的账号绑定文件；若原有账号绑定有效，Tijian 可能在下次抓取时自动续期。
+
+CLI 同样可交互使用：
+
+```bash
+.venv/bin/python -m oicoach_runtime tijian auth login --config .runtime/config.toml
+.venv/bin/python -m oicoach_runtime tijian auth cookie --config .runtime/config.toml
+.venv/bin/python -m oicoach_runtime tijian auth test --config .runtime/config.toml --json
+.venv/bin/python -m oicoach_runtime tijian auth status --config .runtime/config.toml --json
+```
+
+用户名和密码不支持命令行明文参数。UI 通过 0600 临时输入文件交给独立 CLI，退出调用后清理；CLI 自动化可使用 `auth login --credentials-file PATH`（UTF-8 JSON，仅 username/password）或 `auth cookie --cookie-file PATH`（Cookie 文本），输入文件必须由当前用户拥有、权限 0600 且不能是 symlink。正常使用不需要手写文件。
+
+实现复用 Tijian 原生会话格式及相同的 VJudge HTTPS 登录协议：访问首页取得初始 Cookie，POST `/user/login`，再 GET `/user/checkLogInStatus` 确认成功。不是调用不存在的 Tijian 登录 CLI，也没有修改上游或重写其题面抓取器。HTTP/HTTPS 代理及 NO_PROXY 沿用本机代理配置；SOCKS 代理需要改用 HTTP/HTTPS 接口，当前登录入口不会悄悄忽略它。重定向仅允许 VJudge 同源 HTTPS；网络错误、403、429、额外验证及异常响应都有固定安全错误，失败不保存部分会话。
+
+普通 Linux 模式写入 `${XDG_DATA_HOME:-$HOME/.local/share}/tijian/vjudge_session.json`，与当前 Tijian CLI 共用；harness 模式写到所选 profile 的 sessions 目录。文件原子替换且权限 0600。会话不加入源代码或 Paveway 用户数据 Git，不注入模型 prompt。登录只创建会话，不收录题目、不改训练状态；下一次 Tijian 调用读取新会话，无需重启 daemon。旧 UI 需要重开。
+
+浏览器可能要求验证码或其他人工验证；这里不自动处理，也不保证导入 Cookie 后所有 OJ 抓取均成功。Cookie 失效且没有既有 Tijian 账号绑定时，需要重新登录/导入。Windows 桌面与 Linux 默认使用不同数据目录，不会自动共享会话。
+
+读取未收录题目时，Paveway 现在将上游明确的「题目不存在」分类为 `tijian_problem_not_found`，可据用户取题要求调用原生 problem_add。网络、认证、数据库错误仍为独立失败，不能当作未收录；适配器本身不会自动抓取或重试写入。

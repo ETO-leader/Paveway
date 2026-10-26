@@ -34,6 +34,11 @@ if "STDERR" in args:
 if "FAIL" in args:
     sys.stderr.write("PRIVATE_SECRET")
     sys.exit(1)
+if any(value in args for value in ("MISSING", "MISSING_NOISE")):
+    sys.stderr.write("命令执行失败: 题目不存在: CF1A\n")
+    if "MISSING_NOISE" in args:
+        sys.stderr.write("PRIVATE_SECRET")
+    sys.exit(1)
 if "MALFORMED" in args:
     print("PRIVATE_SECRET")
     sys.exit(0)

@@ -45,6 +45,7 @@ COMMANDS = {
     "/select-model": "选择当前GPT使用的模型",
     "/select-thinking-hardness": "选择模型思考等级",
     "/proxy": "同步代理并检查代理端口",
+    "/tijian": "VJudge 登录 / Cookie / 连接测试",
     "/status": "运行状态", "/service": "服务安装 / 启停 / 日志", "/recover": "查看待核对事件",
     "/doctor": "运行诊断", "/init": "初始化配置", "/refresh": "刷新当前视图",
     "/next": "下一页", "/prev": "上一页", "/retry-send": "用原标识核对上次提交",
@@ -69,6 +70,7 @@ PageUp/PageDown 滚动记录，Ctrl+L 重绘；草稿保留在本次界面内存
 /select-model [provider/model]  选择模型；切换时思考等级恢复 auto
 /select-thinking-hardness [LEVEL]  选择思考等级；default 恢复继承
 /proxy                         同步终端代理并检查端口
+/tijian [login|cookie|test|status|clear]  Tijian 的共享 VJudge 登录会话
 /memory [shared|task]           共享 / 当前 task 笔记
 /memory add [KEY]               创建笔记
 /memory edit KEY · forget KEY   修改 / 确认后删除
@@ -138,6 +140,7 @@ class SlashCompleter(Completer):
             return
         choices = COMMANDS
         for command, options in (("/mode ", ("plan", "checkin", "review")),
+                                 ("/tijian ", ("login", "cookie", "test", "status", "clear")),
                                  ("/service ", ("status", "install", "start", "stop", "logs")),
                                  ("/prompt ", ("show", "edit", "reset")),
                                  ("/skills ", ("add", "show", "edit", "category", "enable", "disable", "delete", *SKILL_CATEGORIES)),
@@ -173,6 +176,7 @@ class TerminalUI:
         self.app = None
         self.input, self.output = input, output
         self.editor = TextArea(multiline=True, height=Dimension(min=1, max=6),
+            password=Condition(self.secret_field),
             prompt="❯ ", completer=SlashCompleter(lambda: not self.picker and not self.wizard), history=InMemoryHistory(),
             complete_while_typing=True, wrap_lines=True)
         self.transcript = TextArea(read_only=True, focusable=False, scrollbar=True, wrap_lines=True)
@@ -181,6 +185,10 @@ class TerminalUI:
     @property
     def scope(self):
         return self.workflow, self.task
+
+    def secret_field(self):
+        return bool(self.wizard and not self.wizard.get("saving") and
+                    self.wizard["steps"][self.wizard["index"]][0] in self.wizard.get("secret_fields", ()))
 
     def _draft_changed(self, _):
         if self.picker:
@@ -530,8 +538,9 @@ class TerminalUI:
         items.append(("＋ 创建 coach workflow", self.create_workflow))
         self.open_picker("选择 workflow · ↑↓ Enter · 输入可筛选 · Esc 返回", items)
 
-    def start_wizard(self, title, steps, done):
-        self.wizard = {"title": title, "steps": steps, "index": 0, "answers": {}, "done": done, "draft": self.editor.text}
+    def start_wizard(self, title, steps, done, *, secret_fields=()):
+        self.wizard = {"title": title, "steps": steps, "index": 0, "answers": {}, "done": done, "draft": self.editor.text,
+                       "secret_fields": secret_fields}
         self.replace_draft(steps[0][2])
         self.editor.buffer.cancel_completion()
         self.invalidate()
@@ -582,6 +591,36 @@ class TerminalUI:
         self.info("自定义设置已保存 · v" + str(settings["revision"]),
             "当前 workflow 的所有 task 下次派发请求时生效，无需重启 daemon；已开始的回合和旧历史不变。\n"
             + skill_notice)
+
+    def tijian_auth(self, args):
+        action = args[0] if len(args) == 1 else "menu" if not args else None
+        if action not in ("menu", "login", "cookie", "test", "status", "clear"):
+            raise RuntimeContractError("用法：/tijian [login|cookie|test|status|clear]；不要在命令中填写密码或 Cookie")
+        def display(value):
+            state = "已保存会话" if value.get("configured") else "未配置 Cookie"
+            if value.get("live_checked"):
+                state += " · " + ("已验证登录" if value.get("logged_in") else "当前未登录")
+            self.info("Tijian · VJudge", state + "\n所有 workflow 共用；仅保存 Cookie，不保存密码。"
+                      + ("\n已有 Tijian 账号绑定保留，清除 Cookie 后其可能自动续期。" if value.get("has_bound_account") else ""))
+        if action == "menu":
+            self.open_picker("Tijian · VJudge 登录 · ↑↓ Enter", [
+                (label, lambda item=item: self.tijian_auth([item])) for item, label in (
+                    ("login", "用户名和密码登录"), ("cookie", "从浏览器导入 Cookie"),
+                    ("test", "测试当前登录会话"), ("status", "查看本机配置状态"), ("clear", "清除保存的 Cookie"))])
+        elif action == "login":
+            self.start_wizard("VJudge 登录", [("username", "VJudge 用户名", "", 512),
+                ("password", "密码（隐藏输入；只保存 Cookie，不保存密码）", "", 4096)],
+                lambda values: self.submit("登录 VJudge", lambda: self.client.call("tijian", "auth", "login",
+                    text_files={"--credentials-file": json.dumps(values)}), display), secret_fields=("password",))
+        elif action == "cookie":
+            self.start_wizard("VJudge Cookie 导入", [("cookie", "Cookie（隐藏输入；浏览器验证后复制请求 Cookie）", "", 16384)],
+                lambda values: self.submit("验证 VJudge Cookie", lambda: self.client.call("tijian", "auth", "cookie",
+                    text_files={"--cookie-file": values["cookie"]}), display), secret_fields=("cookie",))
+        elif action == "clear":
+            self.confirm("清除共享 VJudge Cookie（不解绑已有账号）", lambda: self.submit("清除 VJudge Cookie",
+                lambda: self.client.call("tijian", "auth", "clear"), display))
+        else:
+            return self.submit("检查 VJudge 会话", lambda: self.client.call("tijian", "auth", action), display)
 
     def select_inference(self, kind, args):
         self.scope_args()
@@ -956,6 +995,8 @@ class TerminalUI:
             return False
         if name in ("/prompt", "/skills"):
             return self.custom_command(name[1:], args)
+        if name == "/tijian":
+            return self.tijian_auth(args)
         if name in ("/select-model", "/select-thinking-hardness"):
             return self.select_inference("model" if name == "/select-model" else "thinking", args)
         if name == "/proxy":
