@@ -21,7 +21,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window, ConditionalContainer, FloatContainer, Float
+from prompt_toolkit.layout import HSplit, VSplit, Layout, Window, ConditionalContainer, FloatContainer, Float
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -33,6 +33,7 @@ from .customization import SKILL_CATEGORIES, THINKING_LEVELS, skill_category
 from .errors import RuntimeContractError
 from .models import parse_timestamp, validate_id
 from .ui_client import CliClient, CliFailure
+from .tui_scroll import TranscriptWindow
 
 TERMINAL = {"succeeded", "failed", "blocked", "uncertain", "dead_letter", "cancelled"}
 COMMANDS = {
@@ -55,7 +56,8 @@ HELP = """直接在底部输入，Enter 发送；Ctrl+J / Alt+Enter 换行。
 输入 / 显示命令，Tab 补全，↑↓ 选择，Enter 确认，Esc 返回。
 普通数字、q、r、s 等始终是输入文字，不是全局操作键。
 Ctrl+C 清空草稿 / 取消选择；空输入连续两次 Ctrl+C 或 Ctrl+D 退出。
-PageUp/PageDown 滚动记录，Ctrl+L 重绘；草稿保留在本次界面内存。
+滚轮、拖动右侧滚动条或 PageUp/PageDown 滚动记录；Ctrl+End 回到最新，Ctrl+Home 到开头。
+Ctrl+L 重绘；浏览历史时保持位置，草稿保留在本次界面内存。Shift+鼠标使用终端原生选字。
 
 /workflow [ID]                  选择 workflow
 /workflow create [ID PATH]      创建 coach（PATH 是已存在的绝对目录）
@@ -179,7 +181,9 @@ class TerminalUI:
             password=Condition(self.secret_field),
             prompt="❯ ", completer=SlashCompleter(lambda: not self.picker and not self.wizard), history=InMemoryHistory(),
             complete_while_typing=True, wrap_lines=True)
-        self.transcript = TextArea(read_only=True, focusable=False, scrollbar=True, wrap_lines=True)
+        self.transcript = TextArea(read_only=True, focusable=False, wrap_lines=True)
+        self.transcript.window = TranscriptWindow(self.transcript.control, following=lambda: self.follow_tail,
+            set_following=lambda value: setattr(self, "follow_tail", value), invalidate=self.invalidate)
         self.editor.buffer.on_text_changed += self._draft_changed
 
     @property
@@ -372,8 +376,6 @@ class TerminalUI:
                     self.track_pending(event)
             if not background or changed:
                 self.notice = "已恢复最近对话；正在继续等待最终回复" if self.pending else "已恢复最近对话；可直接输入，/history 查询更早记录"
-            if changed and background:
-                self.follow_tail = True
         if not self.submit("恢复对话", read, loaded):
             self.restore_pending = True
         else:
@@ -448,7 +450,6 @@ class TerminalUI:
                 self.pending_since = None
                 self.last_timer_poll = 0
                 self.notice = f"请求完成 · {event['status']} · {scope[0]}/{scope[1]}"
-                self.follow_tail = True
         self.submit("检查回复", read, loaded)
 
     def timer_line(self, event, now=None):
@@ -1259,13 +1260,16 @@ class TerminalUI:
                 self.escape()
             else:
                 event.app.exit()
-        for key, delta in (("pageup", -10), ("pagedown", 10)):
+        for key, direction in (("pageup", -1), ("pagedown", 1)):
             @bindings.add(key, eager=True)
-            def scroll(event, delta=delta):
-                buffer = self.transcript.buffer
-                row = max(0, min(buffer.document.line_count - 1, buffer.document.cursor_position_row + delta))
-                buffer.cursor_position = buffer.document.translate_row_col_to_index(row, 0)
-                self.follow_tail = row == buffer.document.line_count - 1
+            def scroll(event, direction=direction):
+                self.transcript.window.page(direction)
+        @bindings.add("c-home", eager=True)
+        def first(event):
+            self.transcript.window.scroll_to(0)
+        @bindings.add("c-end", eager=True)
+        def latest(event):
+            self.transcript.window.scroll_to(self.transcript.window.maximum)
         @bindings.add("c-l", eager=True)
         def redraw(event):
             event.app.renderer.clear()
@@ -1283,18 +1287,19 @@ class TerminalUI:
                 self.set_mode(modes[(modes.index(self.mode) + 1) % 3])
         root = FloatContainer(HSplit([
             Window(FormattedTextControl(lambda: [("class:title", f"Paveway {__version__} · GPT · " + datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))]), height=1),
-            self.transcript,
+            VSplit([self.transcript, Window(FormattedTextControl(self.transcript.window.scrollbar), width=1)]),
             Window(FormattedTextControl(self.timer_text), height=Dimension(min=1, max=4), style="class:muted"),
             ConditionalContainer(Window(FormattedTextControl(self.picker_text), height=Dimension(min=2, max=9)), Condition(lambda: self.picker is not None)),
             Window(FormattedTextControl(self.status_text), height=1, style="class:status"),
             Frame(self.editor, title=self.composer_title, style="class:composer"),
-            Window(FormattedTextControl("Enter 发送 · Ctrl+J/Alt+Enter 换行 · / 命令 · Tab 补全 · Ctrl+D 空输入退出"), height=1, style="class:muted"),
+            Window(FormattedTextControl("Enter 发送 · Ctrl+J 换行 · 滚轮/拖动滚动条 · PgUp/PgDn · Ctrl+End 最新 · Ctrl+D 退出"), height=1, style="class:muted"),
         ]), floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=8, scroll_offset=1))])
         self.app = Application(layout=Layout(root, focused_element=self.editor), key_bindings=bindings, full_screen=True,
-            input=self.input, output=self.output, mouse_support=False, style=Style.from_dict({
+            input=self.input, output=self.output, mouse_support=True, style=Style.from_dict({
                 "title": "bold #88c0d0", "status": "#a3be8c", "muted": "#888888", "composer": "#88c0d0",
                 "picker.title": "bold #88c0d0", "picker.selected": "bg:#304050 #ffffff",
                 "completion-menu.completion.current": "bg:#304050 #ffffff",
+                "scrollbar.arrow": "#88c0d0", "scrollbar.thumb": "#88c0d0", "scrollbar.track": "#555555",
             }), min_redraw_interval=0.05)
         # Do not wait a second for unsupported cursor-position reports (tmux/PTY terminals).
         if hasattr(self.app.output, "enable_cpr"):

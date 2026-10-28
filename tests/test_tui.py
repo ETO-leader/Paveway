@@ -192,6 +192,22 @@ class TimerDisplayTests(unittest.TestCase):
 
 
 class ConversationTests(unittest.TestCase):
+    def test_new_reply_does_not_force_a_reader_back_to_the_bottom(self):
+        event = {"event_id": "reading", "workflow_id": "echo", "task_id": "task", "run_id": "run",
+                 "status": "succeeded", "created_at": "2026-10-27T12:00:00Z", "reason": "reply", "payload": {}}
+        class Client:
+            def call(self, *args):
+                return event if args[0] == "events" else {"status": "available", "text": "NEW_REPLY"}
+        ui = make_ui(Client())
+        ui.track_pending({**event, "status": "running"})
+        ui.follow_tail = False
+        ui.editor.text = "DRAFT_WHILE_READING"
+        ui.poll()
+        collect(ui)
+        self.assertFalse(ui.follow_tail)
+        self.assertEqual(ui.editor.text, "DRAFT_WHILE_READING")
+        self.assertIn("NEW_REPLY", ui.transcript.text)
+
     def test_vjudge_login_secrets_use_private_cli_files_and_never_enter_chat_or_history(self):
         calls = []
         class Client:
@@ -505,6 +521,57 @@ class ConversationTests(unittest.TestCase):
 
 
 class TerminalIntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
+    def test_pty_wheel_scrollbar_drag_wrapped_rows_and_composer_focus(self):
+        paragraph = "".join(f"WRAP{i:03d} " + "中文" * 12 + " " for i in range(60))
+        reply = paragraph + "\n" + "\n".join(f"SCROLL_LINE_{i:03d}" for i in range(200))
+        event = self.api("schedule", {"workflow_id": "echo", "task_id": "pty-task", "at": "now",
+            "reason": "scrolling test", "dedupe_key": "scroll-content", "payload": {"fake_reply": reply}})
+        self.until(lambda: self.api("events.show", {"event_id": event["event_id"]})["status"] == "succeeded")
+        master, slave, process, screen, stream, read_until, before = self.open_terminal()
+        read_until("SCROLL_LINE_199")
+        os.write(master, b"KEEP_DRAFT")
+        read_until("KEEP_DRAFT")
+        def until_screen(predicate):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                rows = list(screen.display)
+                if predicate(rows): return rows
+                if select.select([master], [], [], 0.1)[0]:
+                    stream.feed(os.read(master, 65536))
+            self.fail("Scroll did not update the rendered viewport:\n" + "\n".join(screen.display))
+        os.write(master, b"\x1b[<64;10;10M" * 4)
+        rows = until_screen(lambda rows: "SCROLL_LINE_199" not in "\n".join(rows))
+        self.assertIn("KEEP_DRAFT", "\n".join(rows))
+        # Click the top of the track, then scroll *within* a wrapped paragraph.
+        os.write(master, b"\x1b[<0;120;3M\x1b[<0;120;3m")
+        rows = until_screen(lambda rows: any("WRAP000" in row for row in rows))
+        first = rows[1]
+        os.write(master, b"\x1b[<65;10;10M")
+        rows = until_screen(lambda rows: rows[1] != first)
+        self.assertNotIn("WRAP000", rows[1])
+        self.assertIn("KEEP_DRAFT", "\n".join(rows))
+        # Return to the track top, grab its thumb and drag to the bottom.
+        os.write(master, b"\x1b[<0;120;3M\x1b[<0;120;3m")
+        rows = until_screen(lambda rows: any("WRAP000" in row for row in rows))
+        timer_row = next(i for i, row in enumerate(rows) if row.startswith("定时任务"))
+        bottom = timer_row - 1
+        os.write(master, f"\x1b[<0;120;3M\x1b[<32;120;{bottom}M\x1b[<0;120;{bottom}m".encode())
+        read_until("SCROLL_LINE_199")
+        # Dragging continues after moving horizontally out of the scrollbar.
+        os.write(master, f"\x1b[<0;120;{bottom}M\x1b[<32;100;3M\x1b[<0;100;3m".encode())
+        until_screen(lambda rows: any("WRAP000" in row for row in rows))
+        os.write(master, b"X")
+        read_until("KEEP_DRAFTX")
+        os.write(master, b"\x1b[1;5F")  # Ctrl+End restores tail following.
+        read_until("SCROLL_LINE_199")
+        os.write(master, b"\x1b[5~")
+        until_screen(lambda rows: "SCROLL_LINE_199" not in "\n".join(rows))
+        self.assertEqual(len(self.api("events.list")), 1)
+        os.write(master, b"\x15/quit\r")
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+
     @unittest.skipUnless(pyte, "install .[test] to verify actual terminal screen cells")
     def test_pty_vjudge_password_and_cookie_are_masked_and_escape_never_submits(self):
         master, slave, process, screen, stream, read_until, before = self.open_terminal()

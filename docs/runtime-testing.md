@@ -403,3 +403,10 @@ OICOACH_TEST_WORKFLOW=test01 \
 - 最终认证定向 14 项全部通过，5.167 秒（`/tmp/paveway-vjudge-security-final.log`），覆盖 HTTPS 表单与 Cookie 合并、验证后保存、失败保留旧会话、并发变更不覆盖、跨域/降级重定向阻止、私密临时文件、无命令参数或错误正文泄露、输入注入拒绝、NO_PROXY 与不支持的代理类型，以及未配置时不伪称已联网检查。
 - 真正 VJudge 网络使用明确无效的测试 Cookie，返回 `vjudge_not_logged_in`，没有创建会话文件。未使用私人真实账号，不能据此宣称真实账号登录或 CF1A 抓取成功。
 - bash 语法、compileall、pip check、git diff --check 通过。会话与账号文件名加入源码 Git 忽略规则；独立用户数据仓库仍按自身 remote 配置管理。
+
+
+## 2026-10-27 终端滚动修正
+
+原界面关闭 mouse_support，原生 ScrollbarMargin 只负责绘制，无法点击/拖动。现启用鼠标事件，使用独立的交互滚动条和只读 TranscriptWindow；按折行后的显示行计算视口，滚动不切换输入焦点，Ctrl+Home/End 跳转首尾，PageUp/Down 按实际窗口高度翻页。移除新回复及后台恢复时无条件开启 tail-follow 的行为，阅读历史时保持位置。
+
+`/tmp/paveway-scroll-regression.log`：完整 UI 回归 39 项全部通过，69.297 秒。新增真实 PTY 测试发送 SGR 滚轮、轨道点击、滑块拖动、移出滑块到正文后的拖动、Ctrl+End 与 PageUp 事件，验证中文单段折行仍可滚动、输入焦点及草稿保持，且不额外提交模型请求。另验证新回复到达时阅读模式不被重置。原登录隐藏输入、选择器、终端缩放与退出重入回归均通过。compileall、pip check、git diff --check 通过。重开 UI 生效，不需要重启 daemon。

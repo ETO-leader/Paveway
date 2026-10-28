@@ -19,6 +19,8 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 
 ## 日常操作
 
+右侧滚动条可以点击轨道跳转、拖动滑块或点击上下箭头；正文区域可用鼠标滚轮。PageUp/PageDown 按窗口显示高度翻页，中文及长段落的自动折行也计算在内。滚动不会抢走底部输入框焦点或清除草稿；向上浏览时，新回复到达仍保持阅读位置。滚回底部或按 Ctrl+End 后恢复跟随最新内容。应用启用终端鼠标事件；需要终端原生选字复制时，通常可按住 Shift 再拖选。
+
 | 操作 | 按键 |
 | --- | --- |
 | 输入请求 | 直接在底部打字，普通数字/q/r 等不会导航或退出 |
@@ -29,7 +31,7 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 | 模式 | `/mode` 选择，或 `/mode plan|checkin|review`；Shift+Tab 轮换训练模式 |
 | 编辑 | 编辑器默认的方向键/Home/End/删除和历史；支持中文及 bracketed paste |
 | 表单 | Enter 下一项/保存，Ctrl+J 正文换行，Shift+Tab 回上一项，Esc 取消 |
-| 滚动 | PageUp/PageDown，Ctrl+L 重绘 |
+| 滚动 | 滚轮、右侧滚动条点击/拖动、PageUp/PageDown；Ctrl+Home 到开头，Ctrl+End 回到最新；Ctrl+L 重绘 |
 | 取消当前界面操作 | Esc 关闭选择器/表单/补全；不 abort 模型 |
 | 清草稿/退出 | Ctrl+C 清草稿或取消选择；空输入连续两次 Ctrl+C 退出 |
 | 退出 | `/quit`，或普通输入区为空时 Ctrl+D；不停止 daemon/取消事件 |
