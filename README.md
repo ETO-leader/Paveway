@@ -25,11 +25,11 @@ GPT提示放在外部 workflow，Runtime 不写死题目选择、训练时长或
 ## 环境要求
 
 - Linux，支持 pidfd、parent-death signal 和 child subreaper。本机验证环境为 Ubuntu 24.04、Python 3.12.3、systemd 255。
-- Python **3.11+**、venv、pip。调度核心与 Tijian CLI 适配只用标准库；终端 UI 使用随包安装的 prompt_toolkit，MCP bridge 额外安装 `.[tijian]`。
+- Python **3.11+**、venv、pip。调度核心只用标准库；终端 UI 使用随包安装的 prompt_toolkit。Tijian 原生 MCP 服务端（`tijian-mcp`）由 Rust 二进制独立运行。
 - 可执行且已完成模型认证的 **OMP**，本机验证版本 **18.10.4**。安装与模型配置见 [OMP 项目](https://github.com/can1357/oh-my-pi)；先确认 OMP 自身能调用模型。
 - 后台部署需要 `systemctl --user`、`systemd-analyze`、`journalctl`；前景 serve 不需要 systemd。
 - 用户数据 Git 保存/同步需要可执行的 Git；daemon 默认创建本地 Git 归档；Git 不可用时会报告同步错误，不影响 Runtime/模型工作。
-- Tijian 可选，需要提供 JSON CLI 的可执行文件。本轮核对的上游 commit 为 `b3ca3f92ef757e1eefa6f71d7f55e60abbefc01f`。
+- Tijian 可选，需要提供原生 stdio MCP Server（`tijian-mcp`）可执行文件。已知基线为 `90e2c75`。
 
 没有 Tijian 也可使用基于用户输入的 coach。Paveway 不自动登录模型/OJ，不修改 OMP 全局 profile、认证或已有聊天。
 
@@ -52,7 +52,7 @@ GPT提示放在外部 workflow，Runtime 不写死题目选择、训练时长或
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install '.[tijian]'
+.venv/bin/python -m pip install -e .
 .venv/bin/oicoach-runtime --version
 omp --version
 
@@ -403,14 +403,6 @@ default_max_attempts = 3
 expired_event_policy = "keep"
 uncertain_event_policy = "manual_review"
 
-[tijian]
-enabled = false
-executable = "tijian"
-timeout_seconds = 120
-max_output_bytes = 8388608
-read_only = false
-```
-
 配置、API 和 workflow manifest 保持 v1；DB 为 v2，由 init/serve 事务式迁移已有 v1，doctor 只读。拒绝未知字段/版本/策略。state/sessions 要求当前用户拥有且为 0700，配置/DB/socket 为 0600；不要自动 chmod 共享目录绕过检查。Unix socket 路径最多 107 字节。控制 socket 仅接受同 UID，不构成对同 UID 不可信插件的隔离。
 
 工具、MCP、扩展和 Skill 权限由 OMP/用户配置决定。关掉工具时 coach 可根据输入回复，但不能靠文字承诺修改题库或安排唤醒。
@@ -429,7 +421,7 @@ SQLite 使用 WAL，不能只复制主 DB 而遗漏 WAL；使用 SQLite backup A
 
 ```bash
 .venv/bin/oicoach-runtime service stop --config "$PWD/.runtime/config.toml"
-.venv/bin/python -m pip install '.[tijian]'
+.venv/bin/python -m pip install -e .
 .venv/bin/oicoach-runtime service install --replace --config "$PWD/.runtime/config.toml"
 .venv/bin/oicoach-runtime service start --config "$PWD/.runtime/config.toml"
 .venv/bin/oicoach-runtime doctor --config "$PWD/.runtime/config.toml" --json
@@ -442,7 +434,7 @@ SQLite 使用 WAL，不能只复制主 DB 而遗漏 WAL；使用 SQLite backup A
 没有模型凭证也可跑单元/fixture/MCP SDK 主流程，真实模型/systemd/Tijian 源码测试为 opt-in：
 
 ```bash
-.venv/bin/python -m pip install '.[tijian,test]'
+.venv/bin/python -m pip install '.[test]'
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests -v
 

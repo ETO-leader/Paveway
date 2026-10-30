@@ -50,9 +50,9 @@ if [[ ! -x "$python" ]]; then
     printf '正在建立项目 .venv…\n'
     python3 -m venv "$project_dir/.venv"
 fi
-if ! "$python" -c 'import oicoach_runtime, prompt_toolkit, tiktoken, mcp; from pathlib import Path; assert Path(oicoach_runtime.__file__).resolve().parent == Path("src/oicoach_runtime").resolve()' 2>/dev/null; then
-    printf '正在安装 Paveway 及 Tijian 接口依赖…\n'
-    "$python" -m pip install -e '.[tijian]'
+if ! "$python" -c 'import oicoach_runtime, prompt_toolkit, tiktoken; from pathlib import Path; assert Path(oicoach_runtime.__file__).resolve().parent == Path("src/oicoach_runtime").resolve()' 2>/dev/null; then
+    printf '正在安装 Paveway 依赖…\n'
+    "$python" -m pip install -e .
 fi
 
 "$python" - "$config_path" <<'PY'

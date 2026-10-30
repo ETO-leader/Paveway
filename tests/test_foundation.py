@@ -142,10 +142,10 @@ class InitTests(TemporaryCase):
                                  "--workflow-root", str(self.workflows)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["schema_version"], 2)
-        with contextlib.redirect_stderr(io.StringIO()) as stream:
-            result = main(["doctor", "--json", "--config", str(self.root / "missing")])
-        self.assertEqual(result, 1)
-        self.assertEqual(json.loads(stream.getvalue())["error"]["code"], "invalid_config")
+        err_res = subprocess.run([sys.executable, "-m", "oicoach_runtime", "doctor", "--json",
+                                  "--config", str(self.root / "missing")], capture_output=True, text=True)
+        self.assertEqual(err_res.returncode, 1)
+        self.assertEqual(json.loads(err_res.stderr)["error"]["code"], "invalid_config")
 
 
 class DatabaseTests(TemporaryCase):

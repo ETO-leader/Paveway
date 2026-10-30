@@ -31,9 +31,9 @@ builtin_skills = ["paveway-tijian"]
 
 它必须是已注册内置 Skill 名称的数组；非数组、非字符串、非法名称、未知名称和重复名称均明确拒绝，不忽略、不猜测。加载后名称保存为不可变 tuple，`workflow create/show/list` 的诊断 JSON 以数组列出。声明仅属于当前 workflow，不影响其他 workflow。
 
-新建 coach 显式声明 `["paveway-tijian"]`；example 不声明，保持空列表。此默认值不依赖 `[tijian].enabled`：启用集成不会自动授予 Skill，Skill 声明也不代表 MCP、凭据或题库已经可用。内置 Skill 随 Paveway 打包，由派发时的私密快照加载；用户 Skill 仍由独立的 `customization.json` 管理，不把内置内容复制进去。
+新建 coach 显式声明 `["paveway-tijian"]`；example 不声明，保持空列表。Skill 声明不代表 MCP、凭据或题库已经可用。内置 Skill 随 Paveway 打包，由派发时的私密快照加载；用户 Skill 仍由独立的 `customization.json` 管理，不把内置内容复制进去。
 
-既有 workflow 不自动迁移，加载、升级及查看均不改写 `workflow.toml` 或 `event.md`。为旧 coach 启用时，管理员应显式添加上述字段并提升 manifest `version`，使用新 task/session；不要修改旧 task 的绑定来绕过 revision 检查，也不要自动重发旧事件。已有会话继续遵守 workspace/revision/session 身份校验和 uncertain 的人工处理规则。无需改动旧 `event.md`；仅启用 `[tijian]` 仍不会启用此 Skill。
+既有 workflow 不自动迁移，加载、升级及查看均不改写 `workflow.toml` 或 `event.md`。为旧 coach 启用时，管理员应显式添加上述字段并提升 manifest `version`，使用新 task/session；不要修改旧 task 的绑定来绕过 revision 检查，也不要自动重发旧事件。已有会话继续遵守 workspace/revision/session 身份校验和 uncertain 的人工处理规则。无需改动旧 `event.md`。
 
 prompt 路徑相對於該 workflow 目錄；拒絕絕對路徑、`..`、缺檔及逃出目錄的 symlink。manifest 和每份模板限 64 KiB。workflow 本身不可透過 symlink 逃出 registry。配置與 workflow 是同 UID 的可信管理者提供；不接受從事件 payload 安裝模板。
 

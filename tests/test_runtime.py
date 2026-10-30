@@ -14,7 +14,7 @@ from pathlib import Path
 
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
-from oicoach_runtime.errors import RuntimeContractError
+from oicoach_runtime.errors import ConflictError, RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.models import utc_text
 
@@ -612,7 +612,15 @@ class RuntimeTests(unittest.TestCase):
             event = self.wait_status(self.schedule("sync-auto", "sync-history")["event_id"])
             customization.update(self.config, "echo", 0, "prompt", mode="append", content="automatic profile transfer")
             git_sync.configure(self.config, self.config.state_dir / "user-data-git", str(remote), interval=10)
-            git_sync.configure(base, base.state_dir / "user-data-git", str(remote), interval=10)
+            sync_deadline = time.monotonic() + 10
+            while True:
+                try:
+                    git_sync.configure(base, base.state_dir / "user-data-git", str(remote), interval=10)
+                    break
+                except ConflictError:
+                    if time.monotonic() > sync_deadline:
+                        raise
+                    time.sleep(0.05)
             deadline = time.monotonic() + 30
             transferred = False
             while time.monotonic() < deadline:

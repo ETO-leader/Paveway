@@ -58,7 +58,7 @@ class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
         except ValueError:
             allowed = False
         if not allowed:
-            raise TijianError("vjudge_redirect_blocked", "VJudge 登录被重定向到其他站点，已停止，未保存会话。")
+            raise VjudgeAuthError("vjudge_redirect_blocked", "VJudge 登录被重定向到其他站点，已停止，未保存会话。")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -138,7 +138,7 @@ class VjudgeAuth:
     def _request(self, endpoint, cookie="", fields=None):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise TijianError("vjudge_timeout", "VJudge 登录或连接测试超时，未保存新会话")
+            raise VjudgeAuthError("vjudge_timeout", "VJudge 登录或连接测试超时，未保存新会话")
         if self.transport:
             return self.transport(endpoint, cookie, fields)
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -155,33 +155,33 @@ class VjudgeAuth:
             value = value or self.environment.get("all_proxy", self.environment.get("ALL_PROXY"))
             if value and not bypass:
                 if not value.startswith(("http://", "https://")):
-                    raise TijianError("vjudge_proxy_unsupported", "VJudge 登录需要 HTTP/HTTPS 代理；当前代理类型不受此登录入口支持")
+                    raise VjudgeAuthError("vjudge_proxy_unsupported", "VJudge 登录需要 HTTP/HTTPS 代理；当前代理类型不受此登录入口支持")
                 proxies[scheme] = value
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies), SameOriginRedirect())
         try:
             with opener.open(urllib.request.Request(ORIGIN + endpoint, data=data, headers=headers), timeout=min(7, remaining)) as response:
                 if response.headers.get("cf-mitigated") == "challenge":
-                    raise TijianError("vjudge_access_blocked", "VJudge 要求浏览器验证；请在浏览器登录后使用 Cookie 导入")
+                    raise VjudgeAuthError("vjudge_access_blocked", "VJudge 要求浏览器验证；请在浏览器登录后使用 Cookie 导入")
                 if endpoint in ("/", "/user/login"):
                     return "", response.headers.get_all("Set-Cookie", [])
                 body = response.read(262145)
                 if len(body) > 262144:
-                    raise TijianError("vjudge_response_limit", "VJudge 响应过大，未保存会话")
+                    raise VjudgeAuthError("vjudge_response_limit", "VJudge 响应过大，未保存会话")
                 return body.decode("utf-8", errors="replace"), response.headers.get_all("Set-Cookie", [])
         except urllib.error.HTTPError as error:
             error.close()
             if error.code in (401, 403):
-                raise TijianError("vjudge_access_blocked", "VJudge 拒绝访问或要求浏览器验证；请在浏览器登录后使用 Cookie 导入") from None
+                raise VjudgeAuthError("vjudge_access_blocked", "VJudge 拒绝访问或要求浏览器验证；请在浏览器登录后使用 Cookie 导入") from None
             if error.code == 429:
-                raise TijianError("vjudge_rate_limited", "VJudge 请求频率受限，请稍后重试") from None
-            raise TijianError("vjudge_http_error", "VJudge 服务返回错误，未保存新会话") from None
+                raise VjudgeAuthError("vjudge_rate_limited", "VJudge 请求频率受限，请稍后重试") from None
+            raise VjudgeAuthError("vjudge_http_error", "VJudge 服务返回错误，未保存新会话") from None
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
-            raise TijianError("vjudge_network_error", "无法连接 VJudge，请检查网络或代理；未保存新会话") from None
+            raise VjudgeAuthError("vjudge_network_error", "无法连接 VJudge，请检查网络或代理；未保存新会话") from None
 
     def _check(self, cookie):
         body, _ = self._request("/user/checkLogInStatus", cookie)
         if body.strip() not in ("true", "false"):
-            raise TijianError("vjudge_invalid_response", "VJudge 未返回登录状态，可能要求浏览器验证；未保存新会话")
+            raise VjudgeAuthError("vjudge_invalid_response", "VJudge 未返回登录状态，可能要求浏览器验证；未保存新会话")
         return body.strip() == "true"
 
     def _save(self, cookie, original):
@@ -209,7 +209,7 @@ class VjudgeAuth:
             original, _ = self._read()
             self.deadline = time.monotonic() + 20
             if not self._check(cookie):
-                raise TijianError("vjudge_not_logged_in", "Cookie 未通过 VJudge 登录检查，原会话保持不变")
+                raise VjudgeAuthError("vjudge_not_logged_in", "Cookie 未通过 VJudge 登录检查，原会话保持不变")
             return self._save(cookie, original)
 
     def login(self, username, password):
@@ -226,17 +226,17 @@ class VjudgeAuth:
                     try:
                         parsed.load(value)
                     except CookieError:
-                        raise TijianError("vjudge_invalid_cookie", "VJudge 返回的会话格式无效，未保存") from None
+                        raise VjudgeAuthError("vjudge_invalid_cookie", "VJudge 返回的会话格式无效，未保存") from None
                     cookies.update({key: item.coded_value for key, item in parsed.items()})
                 return "; ".join(key + "=" + value for key, value in sorted(cookies.items()))
             cookie = merge(initial)
             _, values = self._request("/user/login", cookie, {"username": username.strip(), "password": password})
             cookie = merge(values)
             if not cookie:
-                raise TijianError("vjudge_login_failed", "VJudge 未返回登录会话，请检查账号密码或改用浏览器 Cookie；原会话保持不变")
+                raise VjudgeAuthError("vjudge_login_failed", "VJudge 未返回登录会话，请检查账号密码或改用浏览器 Cookie；原会话保持不变")
             cookie = normalize_cookie(cookie)
             if not self._check(cookie):
-                raise TijianError("vjudge_login_failed", "VJudge 登录未成功，请检查账号密码或改用浏览器 Cookie；原会话保持不变")
+                raise VjudgeAuthError("vjudge_login_failed", "VJudge 登录未成功，请检查账号密码或改用浏览器 Cookie；原会话保持不变")
             return self._save(cookie, original)
 
     def clear(self):

@@ -133,6 +133,11 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ConflictError):
             connect_tijian(self.config, "coach", self.fake_mcp)
         self.assertEqual(target.read_bytes(), before)
+        target.write_text(json.dumps({"mcpServers": {}, "disabledServers": ["tijian"]}))
+        before = target.read_bytes()
+        with self.assertRaises(ConflictError):
+            connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertEqual(target.read_bytes(), before)
 
     def test_explicit_read_write_omits_read_only_flag(self):
         create(self.config, "coach", self.workspace)

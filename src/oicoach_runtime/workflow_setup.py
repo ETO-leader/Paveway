@@ -72,6 +72,9 @@ def connect_tijian(config, workflow_id, executable, *, read_only=True):
             raise ValueError()
     except (ValueError, UnicodeError, RecursionError):
         raise WorkflowError("Existing MCP configuration is invalid; repair it explicitly") from None
+    disabled = raw.get("disabledServers")
+    if isinstance(disabled, list) and "tijian" in disabled:
+        raise ConflictError("Tijian MCP server is disabled in disabledServers; enable it explicitly in .mcp.json before connecting")
     server = {
         "command": str(executable_path.absolute()),
         "args": ["--read-only"] if read_only else [],

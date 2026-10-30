@@ -86,7 +86,7 @@ Runtime 的 `agent.skills_enabled=false` 会阻止所有 Paveway 管理的 Skill
 builtin_skills = ["paveway-tijian"]
 ```
 
-省略等同 `[]`，未声明的内置 Skill 不进入该 workflow。新建 coach 默认声明 `paveway-tijian`，新建 example 不声明；升级不会自动改动已有 workflow manifest 或 `event.md`。已有 coach 需要管理员显式添加字段；与 `[tijian].enabled`、MCP 是否连接无关。`workflow show/list` 返回声明名称以供诊断。未知、非法或重复名称会拒绝加载。
+省略等同 `[]`，未声明的内置 Skill 不进入该 workflow。新建 coach 默认声明 `paveway-tijian`，新建 example 不声明；升级不会自动改动已有 workflow manifest 或 `event.md`。已有 coach 需要管理员显式添加字段；与 MCP 是否连接无关。`workflow show/list` 返回声明名称以供诊断。未知、非法或重复名称会拒绝加载。
 
 官方资源名称使用 `paveway-` 命名空间。用户 Skill 名称规则不变；若声明的内置 Skill 与已有用户记录同名（包括停用记录），派发前明确报冲突，不覆盖、不自动重命名、不迁移或删除用户数据。需要用户显式解决记录或调整声明。全局停用不会绕过 manifest 校验或隐瞒名称冲突。
 

@@ -122,6 +122,34 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         self.assertEqual(data["disabledServers"], ["unused"])
         self.assertIn("tijian", data["mcpServers"])
 
+    def test_disabled_servers_containing_tijian_raises_conflict_and_preserves_file(self):
+        mcp_path = self.workspace / ".mcp.json"
+        initial = {
+            "mcpServers": {},
+            "disabledServers": ["tijian", "other"]
+        }
+        mcp_path.write_text(json.dumps(initial, indent=2))
+        original_bytes = mcp_path.read_bytes()
+        with self.assertRaises(ConflictError) as caught:
+            connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertIn("disabledServers", str(caught.exception))
+        self.assertEqual(mcp_path.read_bytes(), original_bytes)
+
+    def test_disabled_servers_containing_other_allows_tijian_and_preserves_disabled_list(self):
+        mcp_path = self.workspace / ".mcp.json"
+        initial = {
+            "mcpServers": {},
+            "disabledServers": ["other"]
+        }
+        mcp_path.write_text(json.dumps(initial, indent=2))
+        connect_tijian(self.config, "coach", self.fake_mcp)
+        data = json.loads(mcp_path.read_text())
+        self.assertEqual(data["disabledServers"], ["other"])
+        self.assertIn("tijian", data["mcpServers"])
+        first_content = mcp_path.read_bytes()
+        connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertEqual(mcp_path.read_bytes(), first_content)
+
     def test_idempotent_when_called_repeatedly_with_same_config(self):
         connect_tijian(self.config, "coach", self.fake_mcp)
         first_content = (self.workspace / ".mcp.json").read_bytes()

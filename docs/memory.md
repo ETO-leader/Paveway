@@ -125,7 +125,7 @@ messages 只读取已验证绑定的任务 sessionFile，核对 header session I
 ## 验证命令
 
 ```bash
-.venv/bin/python -m pip install '.[tijian]'
+.venv/bin/python -m pip install -e .
 .venv/bin/python -m unittest discover -s tests -p 'test_memory*.py' -v
 .venv/bin/python -m unittest discover -s tests -p test_runtime.py -k memory -v
 

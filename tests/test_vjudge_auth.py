@@ -66,7 +66,7 @@ class VjudgeAuthTests(unittest.TestCase):
         original = self.seed()
         for response in ("false", "<html>verification required</html>"):
             auth = self.auth(lambda endpoint, cookie, fields: (response, ["JSESSIONID=UNVERIFIED"]))
-            with self.assertRaises(TijianError):
+            with self.assertRaises(VjudgeAuthError):
                 auth.login("test", "SECRET_PASSWORD")
             self.assertEqual(auth.path.read_bytes(), original)
 
@@ -161,7 +161,7 @@ class VjudgeAuthTests(unittest.TestCase):
         request = urllib.request.Request("https://vjudge.net/user/login", data=b"password=SECRET")
         for url in ("https://other.example/user/login", "http://vjudge.net/", "https://vjudge.net:444/", "https://evil@vjudge.net/",
                     "https://:password@vjudge.net/", "https://vjudge.net:INVALID/"):
-            with self.subTest(url=url), self.assertRaises(TijianError):
+            with self.subTest(url=url), self.assertRaises(VjudgeAuthError):
                 handler.redirect_request(request, None, 302, "redirect", {}, url)
 
     def test_unconfigured_session_does_not_claim_a_live_check(self):
@@ -182,7 +182,7 @@ class VjudgeAuthTests(unittest.TestCase):
         with patch("urllib.request.OpenerDirector.open", return_value=Response()):
             self.assertFalse(auth._check("JSESSIONID=dummy"))
         auth.environment["NO_PROXY"] = ""
-        with self.assertRaises(TijianError) as caught:
+        with self.assertRaises(VjudgeAuthError) as caught:
             auth._check("JSESSIONID=dummy")
         self.assertEqual(caught.exception.code, "vjudge_proxy_unsupported")
 
@@ -191,7 +191,7 @@ class VjudgeAuthTests(unittest.TestCase):
         auth.deadline = float("inf")
         failure = urllib.error.HTTPError("https://vjudge.net/", 403, "SECRET_RESPONSE", {}, io.BytesIO(b"SECRET_RESPONSE"))
         with patch("urllib.request.OpenerDirector.open", side_effect=failure):
-            with self.assertRaises(TijianError) as caught:
+            with self.assertRaises(VjudgeAuthError) as caught:
                 auth._request("/", "JSESSIONID=SECRET_COOKIE", {"password": "SECRET_PASSWORD"})
         self.assertEqual(caught.exception.code, "vjudge_access_blocked")
         self.assertNotIn("SECRET", str(caught.exception))

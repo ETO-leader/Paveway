@@ -7,7 +7,7 @@
 ## 启动
 
 ```bash
-.venv/bin/python -m pip install '.[tijian]'
+.venv/bin/python -m pip install -e .
 .venv/bin/oicoach-runtime ui --config "$PWD/.runtime/config.toml" --workflow coach --task training
 # 不指定 workflow：只有一个时自动选用，多个时用方向键选择，无环境时提示创建。
 .venv/bin/oicoach-runtime ui --config "$PWD/.runtime/config.toml"
