@@ -3,7 +3,7 @@
 Stage: **M0 调查与门槛判定已交付；不等于 M1–M6 完成。**
 日期：2026-10-30。依据用户提供的 Implementation Contract 与 Native Refactor Plan；D4 失败分支要求禁用受管 TUI、保留旧 RPC/TUI。本次没有新增受管入口、切换默认入口或修改 OMP 上游。
 
-**最新状态见末尾「0.20.1 阻碍修复」：两项基线失败已修复，全量回归恢复通过；已加载的 Paveway Guard 错误边界已实测 fail-stop。完整 D4／原生入口仍未验收。下列首轮失败记录保留，不作为修复后状态。**
+**最新状态见末尾「第三轮：实际子进程准入与原生旁路」：基线回归通过，受限启动准入已实测；原生 `/rename` 绕过 context Guard 的模型请求也已实测，因此完整 D4／原生入口仍禁止启用。前两轮记录保留为历史证据。**
 
 ## 基线与数据边界
 
@@ -192,4 +192,64 @@ PYTHONPATH=src:tests .venv/bin/python -m unittest \
 Rollback tested: **没有新入口或 schema 切换可回滚**；旧入口仍为默认，修复后实际 PTY 与后台回归通过。0.20.1 Guard 的异常行为是有意的安全变更：异常会立即终止，不等待正常刷盘或证明 settled。若撤销此修复，将重新暴露已证实的 Guard fail-open；不能把撤销代码当作解决问题，且绝不因此重放 uncertain 请求。
 
 Commit SHA：包含本节的修复提交（最终交付中给出）。本轮未执行真实模型／Tijian／Windows→WSL 验收，未改用户数据库、Session、event.md 或私有配置。下一允许动作是继续 M0 的受管准入与缺失矩阵验证，而不是直接切换 `./paveway.sh`。
+
+## 第三轮：实际子进程准入与原生旁路
+
+Stage: M0 admission probes。Code base HEAD：`7b39dcfb03a44d13fce79b802441d242e29b9883`，开始时工作树干净，OMP 仍为 18.12.6。应用版本仍为 0.20.1；没有发布新原生入口、改变默认启动器、迁移 schema 或触碰正式用户数据。
+
+### 新交付与准入边界
+
+- `examples/verify_omp_admission.py`：完整可执行的隔离场景，不是应用启动器。真实 OMP 原生 TUI 经 PTY 运行；parent 在握手前不转送任何用户输入。终端查询回复不是用户输入，单独按协议处理。
+- `examples/omp_admission.mjs`：实验扩展。通过私有继承 socket 发送协议版本、nonce、Guard/入口源码摘要、实际 PID、序号和原生 Session 身份；parent 校验该 PID 确实是自有 guardian 的子进程，再依次批准 Guard 与 Session 准入。每次普通 context 还须同步取得新授权；断线、拒绝或裁剪异常不能返回原始输入。
+- `bundled/context-window.mjs` 抽出同一实现的 `installContextGuard(pi, ready)`，允许同步就绪回调走专用通道；默认 RPC factory 仍输出原有 ready 帧，10k 裁剪算法不变。新增回归覆盖就绪回调自身抛错时同样 fail-stop。
+- 复用既有 Linux guardian、subreaper 和 owned-group cleanup，不建立新 Scheduler、DB、Renderer 或 Agent Loop，不占用后台 leased/running 槽。PID/Session 校验是这次隔离准入的身份关联，**不是 M2 的 Coach/Conversation 注册、generation CAS 或接管协议**。
+
+本机安装源码还提供普通 `--help` 未列出的 **`--trusted-extension`** 路径。此轮在实际二进制中验证了它会拒绝缺失路径、缺失依赖与 factory 抛错；不能再把普通 `--extension` 的 fail-open 结果泛化到此路径。源码锚点：`cli/args.ts:420–435`、`main.ts:512–529,2388–2412`。这只是安装版本 18.12.6 的能力结论，不假定其他版本也支持。
+
+准入实验使用显式新 session 目录，禁止 resume/restore/goal/初始 argv prompt，只允许已固定的 trusted entry；禁用启动记忆、自动标题、缓存预热、live steering、自动 compaction、advisor、autolearn 等已定位的自主模型来源。模型与 tiny/smol 角色均指向本地 HTTP fixture。**startup overlay 不是不可变的全局安全策略**；provider discovery/HEAD 不等于模型推理，本轮没有宣称封锁了整个进程的一切网络访问。
+
+不依赖原生 UI 的 `disableSubmit` 作为权限边界：安装源码显示普通 Enter 被门控，但 custom follow-up key handler 在 `session_start` 完成前已可触达 prompt（`input-controller.ts:698–700,1880–1982`）。实验因此在最终 Session 准入前由外部 PTY 保留用户字节，而不是把 factory 加载成功冒充交互准入。
+
+### 实际场景与结果
+
+```bash
+.venv/bin/python examples/verify_omp_admission.py
+# 只运行启动/context 准入场景，不运行标题旁路反例：
+.venv/bin/python examples/verify_omp_admission.py --admission-only
+```
+
+完整默认运行已执行：**13 个场景均得到预期观测，44.73 秒**。日志 `artifact://36`；最终 `cases_passed=true`、`provider_bypass_observed=true`、`full_d4=BLOCKED`，故退出码为 **2**。这里「预期观测」包括证实旁路存在，不是「13 个场景全部安全」。
+
+| 场景 | Guard 授权／模型请求 | 关键结果 |
+| --- | --- | --- |
+| 正常原生对话 | 1 / 1 | 最终握手后放行输入，原生回复可见，正常退出 0；TUI stdout 无 RPC ready 帧 |
+| trusted entry 缺失、Guard 依赖缺失、factory 抛错（3 例） | 0 / 0 | 子进程非零退出，用户输入字节均为 0 |
+| Guard 摘要错配、外国 nonce、协议版本错配（3 例） | 0 / 0 | parent 拒绝实际 attestation，终止自有进程组；不放行输入 |
+| 不提供握手 | 0 / 0 | 用户输入始终保留；10 秒 watchdog 终止进程，不把等待超时冒充 Guard 已加载 |
+| context 授权被拒绝、准入后 IPC 断开（2 例） | 0 / 0 | 输入已真正送到 TUI，随后进程 fail-stop，无回复 |
+| parent 不回应 context 授权 | 0 / 0 | 已发出 context 请求但未获授权；2 秒外部 watchdog 终止，未发送模型请求 |
+| 取得授权后 Guard 自身抛错 | 1 / 0 | Guard fail-stop，无模型请求或成功回复 |
+| 正常对话后执行原生 `/rename` | **1 / 2** | 第二次模型请求未取得 context 授权，随后原生正常退出 0 |
+
+故障退出结果区分 root 自我 SIGKILL 与 supervisor 终止：guardian 将其子进程的 `-9` 作为退出值返回时，外层可观察到 `247`；parent 直接终止自有进程组时是 `-9`。两者都不是 settled 或用户已见。IPC 不回应会阻塞同步 context，安全性依靠外部 watchdog，而不是 OMP 可吞掉的异步 Hook timeout；不能据此宣称 UI 在失联期间仍响应。
+
+回归：`.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v`：**271 项，257 通过、14 跳过，132.408 秒，无失败**，日志 `artifact://37`。另外在隔离 HOME/XDG 中执行现有 `Probe.existing_native_checks()`，真实 RPC transport、append/replace、原生 Skill 读取及权限 4 项全部 exit_code=0；没有发送真实模型请求。没有新增措辞断言或以 Mock 替代原生 TUI。
+
+### 为什么仍不能切换原生入口
+
+阻碍已不再只是「缺失扩展或没有握手」。**原生辅助推理有不经过 context 的公开路径**；本轮即使提供真实子进程握手、每次 context 授权、禁用自动标题并配置 `title.icons=boring`，手动 `/rename` 仍产生第二个模型请求。继续假定每个模型调用都经过已注册 Guard 将是错误保证。
+
+与实际反例对应的已安装源码：
+
+- `slash-commands/builtin-lifecycle.ts:633–665` → `session/agent-session.ts:10518–10554` → `utils/title-generator.ts:338–361`：手动标题通过 `completeSimple` 直接调用模型；`PI_NO_TITLE` 限制自动调度，不禁用手动调用。
+- `session/session-provider-boundary.ts:201–211` 区分 `convertToLlmForSideRequest` 与会调用 transformContext 的 `convertMessagesToLlm`。
+- **仅源码确认、尚未运行的其他旁路**：`/compact soft` 的手动 override 不受 `compaction.enabled=false`／空 methodOrder 的自动配置限制；摘要使用 side-request converter。`/tree` 摘要、`/live`、增量 live steering 的完整窗口以及各类子 Agent 仍需独立验证。不能把本轮 13 场景当作这些路径已通过。
+
+要在**保留原生功能范围**的前提下越过 D4，需要同一受信 mandatory request boundary 覆盖标题、compaction、branch summary 等调用，而不只是普通 Agent context；或者先取得明确的受限产品范围决策并验证每个禁用入口。只拦截用户输入的 `/rename` 字符串不能保护内部/菜单/SDK 调用，修改标题角色或隐藏命令也不是该请求边界的实现。
+
+最小上游 API/补丁建议（未实施）：让原生标题以及 `convertToLlmForSideRequest` 的消费者在请求前经过同一可拒绝的受信消息转换／授权路径；失败必须阻止请求，而非采用 optional Extension Hook 的吞错继续策略。再为其他 provider/helper/child 路径补同等契约与实际矩阵。此建议不授权改动安装包、Fork OMP、替换 Agent Loop 或静默删除原生命令。
+
+**决定：依契约 D4 失败分支继续禁用受管原生入口，保留旧 TUI/CLI/RPC。** 此轮不安装半成品启动器，也不宣称 M1–M6 完成。D1/D2/D3/D6/D7 的既定安全分支不变。需要越过上述原生请求边界缺口后才能开启依赖它的阶段；不能靠继续补一份 ready 标志跨过去。
+
+Rollback tested: 没有应用入口或 schema 切换，因此没有新 schema 可回退；探针中正常 native `/exit` 与失败的 owned-group 清理实际执行，旧路径回归通过。复原不涉及数据库恢复、Session 重写或 uncertain 重放。所有生成的 profile/config/session 均在临时目录，未测试付费模型、真实 Browser/Tijian、Windows→WSL；Commit SHA 见包含本节的实验提交。
 

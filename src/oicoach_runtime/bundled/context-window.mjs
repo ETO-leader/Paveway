@@ -133,7 +133,9 @@ function stopOnGuardFailure() {
     }
 }
 
-export default async function contextWindow(pi) {
+// ready must finish synchronously. Callers may use a dedicated admission
+// channel; the default RPC factory below retains its existing stdout frame.
+export async function installContextGuard(pi, ready) {
     try {
         // Resolve only through the host. A bare import may trigger Bun's
         // auto-install from a workspace instead of reaching the fallback.
@@ -147,8 +149,14 @@ export default async function contextWindow(pi) {
                 stopOnGuardFailure();
             }
         });
-        process.stdout.write(JSON.stringify({type: "paveway_context_ready", tokenLimit: TOKEN_LIMIT}) + "\n");
+        ready();
     } catch {
         stopOnGuardFailure();
     }
+}
+
+export default async function contextWindow(pi) {
+    await installContextGuard(pi, () => {
+        process.stdout.write(JSON.stringify({type: "paveway_context_ready", tokenLimit: TOKEN_LIMIT}) + "\n");
+    });
 }

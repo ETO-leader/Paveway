@@ -95,18 +95,23 @@ console.log(JSON.stringify(checks));
         module = str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))
         host = str(Path(shutil.which("omp")).resolve())
         script = r'''
-const {default: guard} = await import(process.argv[2]);
+const {default: guard, installContextGuard} = await import(process.argv[2]);
 // OMP's factory loader turns process.exit into a catchable exception.
 process.exit = () => {throw new Error("PRIVATE_EXIT_INTERCEPTED");};
 let context;
-await guard({on(event, handler) {
+const pi = {on(event, handler) {
     if (process.argv[3] === "registration") throw new Error("PRIVATE_REGISTRATION_CONTENT");
     context = handler;
-}});
+}};
+if (process.argv[3] === "admission") {
+    await installContextGuard(pi, () => {throw new Error("PRIVATE_ADMISSION_CONTENT");});
+} else {
+    await guard(pi);
+}
 context({get messages() {throw new Error("PRIVATE_CONTEXT_CONTENT");}});
 process.stdout.write("INFERENCE_REACHED\n");
 '''
-        for stage in ("registration", "context"):
+        for stage in ("registration", "admission", "context"):
             with self.subTest(stage=stage):
                 process = subprocess.run([shutil.which("bun"), "-e", script, host, module, stage],
                                          capture_output=True, text=True, timeout=40)

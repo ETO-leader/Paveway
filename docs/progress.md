@@ -378,3 +378,17 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 真实 OMP RPC／原生 PTY 的 Guard 注册及 context 错误共 4 个场景，均退出 -9、provider 请求为 0，无成功回复。原生 TUI 运行时 stderr 被 OMP 重定向到日志，探针按隔离目录中的该 PID 日志核验，不冒充已显示给用户。正常 Guard 仍裁剪副本且保留 Session 原文，4 项原生 Prompt／Skill／transport 检查通过。保留探针运行 48.14 秒，`guard-failure-boundary.fail_closed=true`、`controls_passed=true`；日志 `artifact://30`。
 
 **完整 D4 仍 BLOCKED，探针按设计退出 2**：扩展缺失的 raw OMP 仍能推理；同一子进程的受管启动握手、输入准入及完整来源矩阵尚未实现/验证。已加载 Guard 的错误边界修复不等于 M1 通过。explicit-only 固定扩展在源码上具备继续验证的路径，不把“只能等上游”当成唯一方案；当前仍保留旧入口，关闭原生受管入口，不开放前台 settled 锚点／共享 Session／自动投递。详细证据与风险见 [M0 记录的 0.20.1 小节](verification/omp-m0-compatibility.md#0201-阻碍修复第二轮)。
+
+## 2026-10-30 — M0 第三轮：实际子进程准入与辅助推理旁路
+
+从 `7b39dcfb03a44d13fce79b802441d242e29b9883` 继续，应用版本保持 0.20.1，未改 OMP 18.12.6 上游、默认入口或正式用户数据。新增 `examples/verify_omp_admission.py` 和 `examples/omp_admission.mjs`，提供真实原生 PTY、私有继承 socket、源码摘要／nonce／PID／Session 身份握手及逐次 context 授权。Guard 抽出同步就绪回调接口，默认 RPC ready 与 10k 算法不变；回归增加就绪回调抛错时的 fail-stop 检查。
+
+实测本机 `--trusted-extension` 会拒绝缺失入口、缺失依赖与 factory 异常；不能把普通 `--extension` 的结果泛化到此模式。输入只在同一子进程最终 Session 准入后转送，TUI stdout 不再承载探针的 RPC ready JSON。启动自动推理来源由隔离 profile 与固定 argv 限制，不把 UI 的普通 Enter 禁用标志当作全局权限门控。
+
+**13 个场景按预期观测完成，44.73 秒**，日志 `artifact://36`：正常对话 1 次授权／1 次模型请求；入口/依赖/factory 错误、摘要/nonce/版本错配、无握手、拒绝授权、IPC 断开、IPC 不回应和 Guard 错误均没有模型请求。无握手与 IPC 不回应由明确的外部 watchdog 终止，不冒充已加载、settled 或完成。
+
+**发现并保留新阻碍：原生 `/rename` 产生第二个模型请求，但 context 授权仍只有一次。** 该场景即使 `--no-title`、固定角色和 `title.icons=boring` 仍成立。故探针 `cases_passed=true` 表示包括旁路反例在内的观测符合预期；`provider_bypass_observed=true`、`full_d4=BLOCKED`，退出码 2，不是安全验收通过。
+
+完整回归 **271 项，257 通过、14 跳过，132.408 秒，无失败**，日志 `artifact://37`；隔离环境中原生 RPC transport、append/replace、Skill 全文读取及权限 4 项也通过。所有模型请求仅到本地 fixture，没有真实模型费用，未验收 Browser/Tijian 或 Windows→WSL。
+
+当前按 D4 保留旧 TUI/CLI/RPC，不安装尚不能覆盖辅助推理的应用启动器。要保留完整原生能力，需要让标题及其他 side-request 路径也经过受信 mandatory 请求边界；不能只补启动握手、拦截命令字符串或静默删掉原生能力来达标。最小上游接口建议、未实测的 compaction/tree/live/child 路径、回退边界与完整矩阵见 [M0 验证记录](verification/omp-m0-compatibility.md) 第三轮小节。

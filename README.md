@@ -6,7 +6,7 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用�
 
 当前版本 **0.20.1**：运行框架 M0–M4、Tijian 原生 stdio MCP 接入、首次启动交互式 Workflow 创建、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
-0.20.1 修复 Paveway Context Guard 初始化／裁剪异常被 OMP 吞掉后继续推理的问题：已加载的 Guard 发生异常时同步报告固定诊断并终止当前进程，后台按原有证据规则保留不确定结果，不自动重放。10k 裁剪算法不变。另修复重启回归测试的到期竞态和 PTY 测试解码器的宽字符覆写问题。**这不是 OMP 原生入口重构完成的发布**：扩展缺失、受管启动握手等完整 D4 门槛尚未通过，默认仍为旧 TUI/RPC；详见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
+0.20.1 修复 Paveway Context Guard 初始化／裁剪异常被 OMP 吞掉后继续推理的问题：已加载的 Guard 发生异常时同步报告固定诊断并终止当前进程，后台按原有证据规则保留不确定结果，不自动重放。10k 裁剪算法不变。另修复重启回归测试的到期竞态和 PTY 测试解码器的宽字符覆写问题。**这不是 OMP 原生入口重构完成的发布**：同一子进程握手与缺失扩展拒绝已在隔离探针中验证，但原生 `/rename` 仍能绕过 context Guard 调用模型，完整 D4 仍未通过，默认保持旧 TUI/RPC；详见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
 
 ## 能做什么
 
