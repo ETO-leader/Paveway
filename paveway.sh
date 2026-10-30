@@ -5,6 +5,7 @@ umask 077
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 config_path="$project_dir/.runtime/config.toml"
+requested_workflow=""
 ui_args=()
 
 usage() {
@@ -13,6 +14,7 @@ usage() {
 
 检查/安装本地 .venv，初始化缺少的配置，启动 Runtime 并进入终端 UI。
 默认使用项目 .runtime/config.toml；已有设置、会话和活动请求继续沿用。
+首次启动且无 Workflow 时，将提示输入第一个 Workflow 的名称（或使用 --workflow 预先指定）。
 退出 UI 不会停止后台 Runtime。OMP 需要事先安装并完成模型认证。
 EOF
 }
@@ -20,16 +22,27 @@ EOF
 while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        --config|--workflow|--task)
+        --config)
             if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
                 printf '缺少 %s 的值。\n' "$1" >&2
                 exit 2
             fi
-            if [[ "$1" == --config ]]; then
-                config_path="$2"
-            else
-                ui_args+=("$1" "$2")
+            config_path="$2"
+            shift 2 ;;
+        --workflow)
+            if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
+                printf '缺少 %s 的值。\n' "$1" >&2
+                exit 2
             fi
+            requested_workflow="$2"
+            ui_args+=("$1" "$2")
+            shift 2 ;;
+        --task)
+            if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
+                printf '缺少 %s 的值。\n' "$1" >&2
+                exit 2
+            fi
+            ui_args+=("$1" "$2")
             shift 2 ;;
         *) printf '未知参数：%s；使用 --help 查看用法。\n' "$1" >&2; exit 2 ;;
     esac
@@ -55,7 +68,10 @@ if ! "$python" -c 'import oicoach_runtime, prompt_toolkit, tiktoken; from pathli
     "$python" -m pip install -e .
 fi
 
-"$python" - "$config_path" <<'PY'
+workflow_file="$(mktemp -t paveway-workflow-XXXXXX)"
+trap 'rm -f "$workflow_file"' EXIT
+
+python_code="$(cat <<'PY'
 import os
 import shutil
 import stat
@@ -69,19 +85,56 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import ensure_private_directory, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
+from oicoach_runtime.models import validate_id
 from oicoach_runtime.workflow_setup import create
 
 path = Path(sys.argv[1]).absolute()
+requested_workflow = sys.argv[2] if len(sys.argv) > 2 else ""
+workflow_file = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
 try:
     if not path.exists():
         initialize(path, str(path.parent / "state"), str(path.parent / "workflows"))
     config = load_config(path)
     if not shutil.which(config.agent.executable):
         raise RuntimeContractError("找不到配置的 OMP；请安装 OMP 或修改配置中的 agent.executable。")
-    if not any(config.workflow_root.glob("*/workflow.toml")):
+
+    existing_workflows = sorted(p.parent.name for p in config.workflow_root.glob("*/workflow.toml"))
+    if not existing_workflows:
         workspace = path.parent / "workspace"
         ensure_private_directory(workspace)
-        create(config, "gpt", workspace)
+        if requested_workflow:
+            validate_id(requested_workflow)
+            create(config, requested_workflow, workspace)
+            if workflow_file:
+                workflow_file.write_text(requested_workflow, encoding="utf-8")
+        else:
+            print("当前尚未创建任何 Workflow。\n", flush=True)
+            print("请输入第一个 Workflow 的名称（ID）：", flush=True)
+            while True:
+                try:
+                    raw = input("> ")
+                except (EOFError, KeyboardInterrupt):
+                    print("\n已取消创建 Workflow。", file=sys.stderr, flush=True)
+                    sys.exit(1)
+                name = raw.strip()
+                if not name:
+                    print("Workflow 名称不能为空，请重新输入。\n", file=sys.stderr, flush=True)
+                    continue
+                try:
+                    validate_id(name)
+                    create(config, name, workspace)
+                    if workflow_file:
+                        workflow_file.write_text(name, encoding="utf-8")
+                    break
+                except RuntimeContractError as error:
+                    print(f"名称无效：{error}，请重新输入。\n", file=sys.stderr, flush=True)
+                    continue
+    else:
+        if requested_workflow and requested_workflow not in existing_workflows:
+            raise RuntimeContractError(
+                f"指定的 Workflow 不存在：{requested_workflow}。已有 Workflow：{', '.join(existing_workflows)}。"
+            )
 
     def online():
         try:
@@ -119,5 +172,18 @@ except OSError:
     print("启动失败：请检查 Python、文件权限及本机服务环境。", file=sys.stderr)
     sys.exit(1)
 PY
+)"
+"$python" -c "$python_code" "$config_path" "$requested_workflow" "$workflow_file"
+
+if [[ -z "$requested_workflow" && -s "$workflow_file" ]]; then
+    created_id="$(cat "$workflow_file")"
+    if [[ -n "$created_id" ]]; then
+        ui_args+=("--workflow" "$created_id")
+    fi
+fi
+
+if [[ "${PAVEWAY_PROBE_STARTUP_ONLY:-0}" == "1" ]]; then
+    exit 0
+fi
 
 exec "$python" -m oicoach_runtime ui --config "$config_path" "${ui_args[@]}"

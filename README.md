@@ -39,12 +39,12 @@ GPT提示放在外部 workflow，Runtime 不写死题目选择、训练时长或
 
 ```bash
 ./paveway.sh
-# 也可指定已有 workflow/task，或另一份本机配置：
-./paveway.sh --workflow test01 --task training
+# 也可指定已有 workflow/task，或在首次启动时预先指定要创建的 workflow 名称：
+./paveway.sh --workflow oi-coach --task training
 ./paveway.sh --config /absolute/private/config.toml
 ```
 
-脚本可从任意工作目录运行。首次自动建立 `.venv`、安装依赖（需要网络）、初始化缺少的私密配置，并在没有 workflow 时创建 `gpt`。默认读取项目 `.runtime/config.toml`；已有 daemon 直接复用，离线时优先启动同配置的已安装 systemd 服务，否则启动独立后台 `serve`，启动日志在配置的 state_dir/startup.log。退出 UI 不停止后台任务。脚本不安装或替换 systemd 服务；登录自启动见下文部署说明。已有设置、Skill 和历史保留。
+脚本可从任意工作目录运行。首次自动建立 `.venv`、安装依赖（需要网络）并初始化缺少的私密配置。若当前尚未创建任何 Workflow，脚本会在终端提示输入第一个 Workflow 的名称（ID），用户也可通过 `./paveway.sh --workflow NAME` 非交互指定。Workflow 名称由用户自行决定，与使用的语言模型无关；已有 Workflow 不需要每次重新创建，再次启动时直接进入现有选择流程。默认读取项目 `.runtime/config.toml`；已有 daemon 直接复用，离线时优先启动同配置的已安装 systemd 服务，否则启动独立后台 `serve`，启动日志在配置的 state_dir/startup.log。退出 UI 不停止后台任务。脚本不安装或替换 systemd 服务；登录自启动见下文部署说明。已有设置、Skill 和历史保留。
 
 以下是手动安装和启动步骤：
 
