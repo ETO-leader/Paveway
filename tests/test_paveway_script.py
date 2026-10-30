@@ -3,6 +3,7 @@
 import os
 import pty
 import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,6 @@ SCRIPT_PATH = PROJECT_DIR / "paveway.sh"
 class PavewayScriptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-script-test-")
-        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.config_path = self.root / "config.toml"
         initialize(self.config_path, str(self.root / "state"), str(self.root / "workflows"))
@@ -31,6 +31,27 @@ class PavewayScriptTests(unittest.TestCase):
         fake_omp.chmod(0o755)
         self.config = replace(config, agent=replace(config.agent, executable=str(fake_omp)))
         self.config_path.write_text(config_text(self.config))
+
+    def tearDown(self):
+        pid_file = self.root / "state/daemon.pid"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(40):
+                    try:
+                        os.kill(pid, 0)
+                        time.sleep(0.05)
+                    except OSError:
+                        break
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+        self.temp.cleanup()
 
     def _run_script(self, args=(), input_lines=(), pty_eof=False, timeout=15):
         master, slave = pty.openpty()

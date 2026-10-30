@@ -159,9 +159,10 @@ try:
                 info = os.fstat(log.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                     raise RuntimeContractError("后台启动日志必须是当前用户拥有的私密普通文件。")
-                subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)],
+                daemon_proc = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)],
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True,
                     env={**os.environ, **service.read_environment(path)})
+                (config.state_dir / "daemon.pid").write_text(str(daemon_proc.pid), encoding="utf-8")
             print("正在启动后台 Runtime…", flush=True)
         deadline = time.monotonic() + 20
         while not online():
