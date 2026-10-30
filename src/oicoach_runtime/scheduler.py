@@ -219,13 +219,6 @@ class Runtime:
                 envelope["memory"] = {key: value for key, value in binding["memory_context"].items() if key != "notes"}
                 envelope["memory"]["location"] = "system_prompt.runtime_memory_snapshot"
                 envelope["available_tools"][0]["commands"].extend(["memory", "history"])
-            if self.config.tijian.enabled:
-                envelope["available_tools"].append({
-                    "name": "tijian", "contract_version": 1, "availability": "configured_not_verified",
-                    "argv_prefix": [sys.executable, "-m", "oicoach_runtime", "tijian"],
-                    "config_path": str(self.config_path) if self.config_path else None,
-                    "commands": ["tools", "doctor", "call"], "read_only": self.config.tijian.read_only,
-                    "note": "Call tools to discover schemas; Tijian daily plans are separate from Runtime wake events"})
             binding["workflow_instructions"], prompt = workflow.render_parts("wake", envelope)
             self.agent_health = "starting"
             stage = "startup"

@@ -227,7 +227,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIsNone(ui.wizard)
         self.assertFalse(ui.secret_field())
         self.assertEqual(ui.editor.text, "ORIGINAL_DRAFT")
-        self.assertEqual(calls[0][0], ("tijian", "auth", "login"))
+        self.assertEqual(calls[0][0], ("vjudge", "auth", "login"))
         self.assertEqual(json.loads(calls[0][1]["text_files"]["--credentials-file"]),
                          {"username": "TEST_ACCOUNT", "password": "SECRET_PASSWORD"})
         self.assertNotIn("SECRET_PASSWORD", json.dumps(list(ui.chat.values())))

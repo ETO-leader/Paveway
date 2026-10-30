@@ -53,11 +53,11 @@ def create(config, workflow_id, workspace, template="coach"):
     return {"api_version": 1, "workflow": result, "template": template, "path": str(destination)}
 
 
-def connect_tijian(config, config_path, workflow_id):
-    from .integrations.tijian import mcp_configuration
-    if not config.tijian.enabled:
-        raise WorkflowError("Enable [tijian] before connecting it to a workflow")
+def connect_tijian(config, workflow_id, executable, *, read_only=True):
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
+    executable_path = Path(executable).expanduser().resolve()
+    if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+        raise WorkflowError(f"tijian-mcp executable not found or not executable: {executable_path}")
     path = workflow.workspace / ".mcp.json"
     if path.is_symlink():
         raise ConflictError("Refusing to modify a symlink MCP configuration")
@@ -72,7 +72,10 @@ def connect_tijian(config, config_path, workflow_id):
             raise ValueError()
     except (ValueError, UnicodeError, RecursionError):
         raise WorkflowError("Existing MCP configuration is invalid; repair it explicitly") from None
-    server = mcp_configuration(config_path)["mcpServers"]["tijian"]
+    server = {
+        "command": str(executable_path.absolute()),
+        "args": ["--read-only"] if read_only else [],
+    }
     servers = raw.setdefault("mcpServers", {})
     if "tijian" in servers and servers["tijian"] != server:
         raise ConflictError("An existing tijian MCP server differs; merge it explicitly")
@@ -86,12 +89,17 @@ def connect_tijian(config, config_path, workflow_id):
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
+            temporary.chmod(0o600)
             if original is None:
-                os.link(temporary, path)
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    raise ConflictError("MCP configuration changed concurrently; retry after reviewing it") from None
             else:
                 if path.is_symlink() or path.read_bytes() != original:
                     raise ConflictError("MCP configuration changed concurrently; retry after reviewing it")
                 os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-    return {"api_version": 1, "path": str(path), "server": "tijian", "availability": "configured_not_verified"}
+    path.chmod(0o600)
+    return {"api_version": 1, "path": str(path), "server": "tijian", "availability": "configured_not_verified", "read_only": read_only}

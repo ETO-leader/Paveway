@@ -21,7 +21,14 @@ from pathlib import Path
 
 from ..errors import ConflictError, RuntimeContractError
 from ..proxy import child_environment
-from .tijian import TijianError
+class VjudgeAuthError(RuntimeContractError):
+    def __init__(self, code, message, *, outcome="not_started"):
+        super().__init__(message)
+        self.code = code
+        self.outcome = outcome
+
+
+TijianError = VjudgeAuthError
 
 ORIGIN = "https://vjudge.net"
 MAX_COOKIE = 16384

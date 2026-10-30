@@ -64,10 +64,7 @@ dispatcher 提供此 v1 envelope：
 
 真實 OMP 可能在第一輪前就回報尚未落盤的 session 路徑。僅在明確人工重試、該 session 從未有 dispatch intent 且檔案不存在時，Runtime 允許清除暫定 file/ID 後重新建立；曾送出過 prompt 或已有成功歷史的 session 不適用此例外。模型回合必須在 session 落盤、完全 settled、進程正常退出後才成功；持久化錯誤或非零退出保留 uncertain。
 
-OMP 的 profile、工具权限和 MCP 配置由外部管理；Skill 可来自上述显式内置声明或用户自定义设置。啟用 `[tijian]` 時 envelope 的 available_tools 額外提供 Tijian CLI prefix/config、read_only 和 configured_not_verified 標記；可用 tools/doctor/call 發現及執行接口，不預先宣稱 MCP／題庫可用。`tijian mcp-config` 可生成待合併至 workflow workspace/.mcp.json 的 stdio server 配置，`examples/prepare_tijian.py` 可建立全新範例 workspace。詳見 [Tijian 適配](tijian.md)。
-
-更換 Tijian 操作或 schema 集中在 integrations/tijian_catalog.py，不需要改本 manifest 或排程語義。Runtime 事件和 Tijian 計畫獨立；工具回報 uncertain 不會自動重播業務操作。版本不相容時明確拒絕，不能偷偷改用其他題庫／workflow。
-
+OMP 的 profile、工具权限和 MCP 配置由外部管理；Skill 可来自上述显式内置声明或用户自定义设置。Tijian 已完全迁移至原生 `tijian-mcp`，通过 `workflow connect-tijian` 直接将 MCP Server 写入 workflow workspace 的 `.mcp.json`，Paveway 不在 Python 中复刻工具 Schema，旧 Python 桥接器已被删除；具体工具定义与执行权限由运行中的 `tijian-mcp` 原生暴露。詳見 [Tijian 原生 MCP 接入](tijian.md)。
 0.10.0 提供 workflow 目录下独立的可选 customization.json（schema v1），由 `workflow customize` 和 UI `/prompt`、`/skills` 管理。其 revision 仅表示用户设置的保存版本，不改变 manifest.version 或既有会话绑定；在派发时加载并生成每轮私密快照，经 OMP 原生参数载入。系统提示词和用户 Skill 属于可信的显式管理输入，不来自事件 payload。默认缺省时保持既有行为；详见 [自定义设置](customization.md)。
 
 

@@ -46,7 +46,8 @@ COMMANDS = {
     "/select-model": "选择当前GPT使用的模型",
     "/select-thinking-hardness": "选择模型思考等级",
     "/proxy": "同步代理并检查代理端口",
-    "/tijian": "VJudge 登录 / Cookie / 连接测试",
+    "/vjudge": "VJudge 登录 / Cookie / 连接测试",
+    "/tijian": "VJudge 登录 / Cookie / 连接测试（同 /vjudge）",
     "/status": "运行状态", "/service": "服务安装 / 启停 / 日志", "/recover": "查看待核对事件",
     "/doctor": "运行诊断", "/init": "初始化配置", "/refresh": "刷新当前视图",
     "/next": "下一页", "/prev": "上一页", "/retry-send": "用原标识核对上次提交",
@@ -72,7 +73,8 @@ Ctrl+L 重绘；浏览历史时保持位置，草稿保留在本次界面内存�
 /select-model [provider/model]  选择模型；切换时思考等级恢复 auto
 /select-thinking-hardness [LEVEL]  选择思考等级；default 恢复继承
 /proxy                         同步终端代理并检查端口
-/tijian [login|cookie|test|status|clear]  Tijian 的共享 VJudge 登录会话
+/vjudge [login|cookie|test|status|clear]  VJudge 登录会话（同 /tijian）
+/tijian [login|cookie|test|status|clear]  VJudge 登录会话
 /memory [shared|task]           共享 / 当前 task 笔记
 /memory add [KEY]               创建笔记
 /memory edit KEY · forget KEY   修改 / 确认后删除
@@ -142,6 +144,7 @@ class SlashCompleter(Completer):
             return
         choices = COMMANDS
         for command, options in (("/mode ", ("plan", "checkin", "review")),
+                                 ("/vjudge ", ("login", "cookie", "test", "status", "clear")),
                                  ("/tijian ", ("login", "cookie", "test", "status", "clear")),
                                  ("/service ", ("status", "install", "start", "stop", "logs")),
                                  ("/prompt ", ("show", "edit", "reset")),
@@ -596,7 +599,7 @@ class TerminalUI:
     def tijian_auth(self, args):
         action = args[0] if len(args) == 1 else "menu" if not args else None
         if action not in ("menu", "login", "cookie", "test", "status", "clear"):
-            raise RuntimeContractError("用法：/tijian [login|cookie|test|status|clear]；不要在命令中填写密码或 Cookie")
+            raise RuntimeContractError("用法：/vjudge [login|cookie|test|status|clear]（或 /tijian）；不要在命令中填写密码或 Cookie")
         def display(value):
             state = "已保存会话" if value.get("configured") else "未配置 Cookie"
             if value.get("live_checked"):
@@ -611,17 +614,17 @@ class TerminalUI:
         elif action == "login":
             self.start_wizard("VJudge 登录", [("username", "VJudge 用户名", "", 512),
                 ("password", "密码（隐藏输入；只保存 Cookie，不保存密码）", "", 4096)],
-                lambda values: self.submit("登录 VJudge", lambda: self.client.call("tijian", "auth", "login",
+                lambda values: self.submit("登录 VJudge", lambda: self.client.call("vjudge", "auth", "login",
                     text_files={"--credentials-file": json.dumps(values)}), display), secret_fields=("password",))
         elif action == "cookie":
             self.start_wizard("VJudge Cookie 导入", [("cookie", "Cookie（隐藏输入；浏览器验证后复制请求 Cookie）", "", 16384)],
-                lambda values: self.submit("验证 VJudge Cookie", lambda: self.client.call("tijian", "auth", "cookie",
+                lambda values: self.submit("验证 VJudge Cookie", lambda: self.client.call("vjudge", "auth", "cookie",
                     text_files={"--cookie-file": values["cookie"]}), display), secret_fields=("cookie",))
         elif action == "clear":
             self.confirm("清除共享 VJudge Cookie（不解绑已有账号）", lambda: self.submit("清除 VJudge Cookie",
-                lambda: self.client.call("tijian", "auth", "clear"), display))
+                lambda: self.client.call("vjudge", "auth", "clear"), display))
         else:
-            return self.submit("检查 VJudge 会话", lambda: self.client.call("tijian", "auth", action), display)
+            return self.submit("检查 VJudge 会话", lambda: self.client.call("vjudge", "auth", action), display)
 
     def select_inference(self, kind, args):
         self.scope_args()
@@ -996,7 +999,7 @@ class TerminalUI:
             return False
         if name in ("/prompt", "/skills"):
             return self.custom_command(name[1:], args)
-        if name == "/tijian":
+        if name in ("/tijian", "/vjudge"):
             return self.tijian_auth(args)
         if name in ("/select-model", "/select-thinking-hardness"):
             return self.select_inference("model" if name == "/select-model" else "thinking", args)

@@ -83,9 +83,6 @@ def diagnose(config: Config, config_path: Path) -> dict:
         checks.append({"check": "proxy", "status": "WARN" if unhealthy or proxy["mode"] == "direct" else "PASS", "detail": proxy})
     except RuntimeContractError as error:
         checks.append({"check": "proxy", "status": "FAIL", "detail": str(error)})
-    if config.tijian.enabled:
-        checks.append({"check": "tijian", "status": "PASS" if shutil.which(config.tijian.executable) else "FAIL",
-                       "detail": "Executable path check only; use tijian doctor --with-data for JSON CLI and data verification"})
     try:
         runtime = request(config.server.socket_path, "status")
         checks.append({"check": "daemon", "status": "PASS", "detail": runtime})

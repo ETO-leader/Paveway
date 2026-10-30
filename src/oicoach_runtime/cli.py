@@ -138,6 +138,13 @@ def parser() -> argparse.ArgumentParser:
         if name == "create":
             child.add_argument("--workspace", type=Path, required=True)
             child.add_argument("--template", choices=("coach", "example"), default="coach")
+        if name == "connect-tijian":
+            child.add_argument("--executable", required=True, type=Path, help="Absolute path to native tijian-mcp executable")
+            mode = child.add_mutually_exclusive_group()
+            mode.add_argument("--read-only", dest="read_only", action="store_true", default=None,
+                              help="Configure native tijian-mcp in read-only mode (recommended default)")
+            mode.add_argument("--read-write", dest="read_write", action="store_true", default=None,
+                              help="Configure native tijian-mcp in read-write mode (explicitly removes --read-only)")
     sync = commands.add_parser("sync", help="Independent Git storage for user settings and archived history")
     sync_commands = sync.add_subparsers(dest="operation", required=True)
     for name in ("setup", "remote", "status", "now", "run", "pause", "resume", "conflicts", "resolve", "bind", "history", "show", "messages"):
@@ -217,32 +224,17 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--task", required=name == "messages")
             child.add_argument("--query", default="")
             child.add_argument("--offset", type=int, default=0)
-    tijian = commands.add_parser("tijian", help="Tijian JSON CLI adapter and optional stdio MCP bridge")
-    tijian_commands = tijian.add_subparsers(dest="operation", required=True)
-    for name in ("setup", "tools", "doctor", "call", "mcp-config", "mcp", "auth"):
-        child = tijian_commands.add_parser(name)
-        common(child)
-        if name == "auth":
-            actions = child.add_subparsers(dest="auth_action", required=True)
-            for action in ("status", "test", "login", "cookie", "clear"):
-                auth = actions.add_parser(action)
-                common(auth)
-                if action in ("login", "cookie"):
-                    auth.add_argument("--credentials-file" if action == "login" else "--cookie-file", type=Path,
-                                      help="Private input file; otherwise prompt locally (secrets never go in argv)")
-        if name == "tools":
-            child.add_argument("--name", action="append", help="Read only this operation's schema; repeat for several operations")
-        if name == "setup":
-            child.add_argument("--executable", required=True)
-            child.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
-                               help="Preserve the existing setting when omitted")
-        if name == "doctor":
-            child.add_argument("--with-data", action="store_true", help="Also verify three read queries against local Tijian data")
-        if name == "call":
-            child.add_argument("name", help="Operation from tijian tools, e.g. problem_get")
-            data = child.add_mutually_exclusive_group()
-            data.add_argument("--arguments", default="{}", help="Operation arguments as a JSON object")
-            data.add_argument("--arguments-file", type=Path, help="JSON object file, at most 64 KiB")
+    vjudge = commands.add_parser("vjudge", help="VJudge authentication and session management")
+    vjudge_commands = vjudge.add_subparsers(dest="operation", required=True)
+    auth_child = vjudge_commands.add_parser("auth", help="VJudge authentication actions")
+    common(auth_child)
+    auth_actions = auth_child.add_subparsers(dest="auth_action", required=True)
+    for action in ("status", "test", "login", "cookie", "clear"):
+        auth_parser = auth_actions.add_parser(action)
+        common(auth_parser)
+        if action in ("login", "cookie"):
+            auth_parser.add_argument("--credentials-file" if action == "login" else "--cookie-file", type=Path,
+                                     help="Private input file; otherwise prompt locally (secrets never go in argv)")
     agent = commands.add_parser("agent", help="Control managed agent processes without replaying prompts")
     agent_commands = agent.add_subparsers(dest="operation", required=True)
     restart = agent_commands.add_parser("restart", help="Stop a task's active run and probe a fresh process using its session")
@@ -526,16 +518,14 @@ def main(argv: list[str] | None = None) -> int:
             elif args.operation == "create":
                 report = create(config, args.identifier, args.workspace, args.template)
             elif args.operation == "connect-tijian":
-                report = connect_tijian(config, path, args.identifier)
+                read_only = False if args.read_write else True
+                report = connect_tijian(config, args.identifier, args.executable, read_only=read_only)
             elif args.operation == "show":
                 report = {"api_version": 1, "workflow": describe(provider.describe(args.identifier))}
             else:
                 report = {"api_version": 1, "workflows": [describe(provider.describe(p.name)) for p in sorted(config.workflow_root.iterdir()) if p.is_dir()]}
-        elif args.command == "tijian":
-            from .integrations.tijian import TijianClient, catalog, mcp_configuration
-            if args.operation == "tools":
-                report = catalog(args.name)
-            elif args.operation == "auth":
+        elif args.command == "vjudge":
+            if args.operation == "auth":
                 load_config(path)
                 from .integrations.vjudge_auth import VjudgeAuth, read_secret_file
                 auth = VjudgeAuth(path)
@@ -561,32 +551,6 @@ def main(argv: list[str] | None = None) -> int:
                         report = auth.login(credentials["username"], credentials["password"])
                     else:
                         report = auth.import_cookie(secret)
-            elif args.operation == "setup":
-                from .integrations.tijian import configure
-                report = asyncio.run(configure(path, args.executable, args.read_only))
-            elif args.operation == "mcp-config":
-                report = mcp_configuration(path)
-            else:
-                tijian_config = load_config(path).tijian
-                if args.operation == "mcp":
-                    from .integrations.tijian_mcp import serve
-                    asyncio.run(serve(tijian_config))
-                    return 0
-                client = TijianClient(tijian_config)
-                if args.operation == "doctor":
-                    report = asyncio.run(client.diagnose(args.with_data))
-                else:
-                    data = args.arguments
-                    if args.arguments_file:
-                        with args.arguments_file.open("rb") as stream:
-                            data = stream.read(65537)
-                    if len(data.encode() if isinstance(data, str) else data) > 65536:
-                        raise RuntimeContractError("Tijian arguments exceed 64 KiB")
-                    try:
-                        values = json.loads(data)
-                    except (ValueError, UnicodeError, RecursionError):
-                        raise RuntimeContractError("Tijian arguments must be a JSON object") from None
-                    report = {"api_version": 1, "result": asyncio.run(client.call(args.name, values))}
         else:
             config = load_config(path)
             if args.command == "events" and args.operation == "wait":

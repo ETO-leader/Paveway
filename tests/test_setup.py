@@ -27,7 +27,9 @@ class SetupTests(unittest.TestCase):
         self.config = load_config(self.path)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
-
+        self.fake_mcp = self.root / "tijian-mcp"
+        self.fake_mcp.touch()
+        self.fake_mcp.chmod(0o755)
     def test_bundled_workflows_are_editable_private_and_render_data_once(self):
         for template in ("coach", "example"):
             created = create(self.config, template, self.workspace, template)
@@ -41,7 +43,6 @@ class SetupTests(unittest.TestCase):
                 create(self.config, template, self.workspace, template)
 
     def test_builtin_skill_defaults_are_explicit_and_independent_of_tijian(self):
-        self.assertFalse(self.config.tijian.enabled)
         for template, names in (("coach", ["paveway-tijian"]), ("example", [])):
             with self.subTest(template=template):
                 created = create(self.config, template, self.workspace, template)
@@ -63,15 +64,11 @@ class SetupTests(unittest.TestCase):
             original_manifest = manifest.read_bytes().replace(b'builtin_skills = ["paveway-tijian"]\n', b"")
             manifest.write_bytes(original_manifest)
             original_event = event.read_bytes()
-            for enabled in (False, True):
-                with self.subTest(template=template, tijian_enabled=enabled):
-                    config = replace(self.config, tijian=replace(self.config.tijian, enabled=enabled))
-                    workflow = WorkflowProvider(config.workflow_root).describe(template)
-                    self.assertEqual(workflow.builtin_skills, ())
-                    self.assertEqual(describe(workflow)["builtin_skills"], [])
-                    self.assertEqual(manifest.read_bytes(), original_manifest)
-                    self.assertEqual(event.read_bytes(), original_event)
-
+            workflow = WorkflowProvider(self.config.workflow_root).describe(template)
+            self.assertEqual(workflow.builtin_skills, ())
+            self.assertEqual(describe(workflow)["builtin_skills"], [])
+            self.assertEqual(manifest.read_bytes(), original_manifest)
+            self.assertEqual(event.read_bytes(), original_event)
     def test_builtin_skill_manifest_validation_rejects_invalid_declarations(self):
         created = create(self.config, "invalid", self.workspace, "example")
         manifest = Path(created["path"]) / "workflow.toml"
@@ -118,37 +115,65 @@ class SetupTests(unittest.TestCase):
 
     def test_project_mcp_merge_preserves_other_servers_and_rejects_conflicts(self):
         create(self.config, "coach", self.workspace)
-        config = replace(self.config, tijian=replace(self.config.tijian, enabled=True))
         target = self.workspace / ".mcp.json"
         target.write_text(json.dumps({"mcpServers": {"other": {"command": "other"}}, "disabledServers": ["other"]}))
-        connect_tijian(config, self.path, "coach")
+        connect_tijian(self.config, "coach", self.fake_mcp)
         data = json.loads(target.read_text())
         self.assertEqual(data["mcpServers"]["other"], {"command": "other"})
         self.assertEqual(data["disabledServers"], ["other"])
+        self.assertEqual(data["mcpServers"]["tijian"], {
+            "command": str(self.fake_mcp.resolve()),
+            "args": ["--read-only"],
+        })
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
-        connect_tijian(config, self.path, "coach")
-        data["mcpServers"]["tijian"] = {"command": "existing"}
-        target.write_text(json.dumps(data))
-        with self.assertRaises(ConflictError):
-            connect_tijian(config, self.path, "coach")
+        connect_tijian(self.config, "coach", self.fake_mcp)
         self.assertEqual(json.loads(target.read_text()), data)
+        target.write_text(json.dumps({"mcpServers": {"tijian": {"command": "existing"}}}))
+        before = target.read_bytes()
+        with self.assertRaises(ConflictError):
+            connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_explicit_read_write_omits_read_only_flag(self):
+        create(self.config, "coach", self.workspace)
+        target = self.workspace / ".mcp.json"
+        connect_tijian(self.config, "coach", self.fake_mcp, read_only=False)
+        data = json.loads(target.read_text())
+        self.assertEqual(data["mcpServers"]["tijian"], {
+            "command": str(self.fake_mcp.resolve()),
+            "args": [],
+        })
 
     def test_disabled_malformed_and_symlink_mcp_are_not_modified(self):
         create(self.config, "coach", self.workspace)
-        with self.assertRaises(RuntimeContractError):
-            connect_tijian(self.config, self.path, "coach")
-        config = replace(self.config, tijian=replace(self.config.tijian, enabled=True))
+        with self.assertRaises(WorkflowError):
+            connect_tijian(self.config, "coach", self.root / "missing-mcp")
+        non_exec = self.root / "non-exec-mcp"
+        non_exec.touch()
+        non_exec.chmod(0o644)
+        with self.assertRaises(WorkflowError):
+            connect_tijian(self.config, "coach", non_exec)
         target = self.workspace / ".mcp.json"
         target.write_text("not json")
-        with self.assertRaises(RuntimeContractError):
-            connect_tijian(config, self.path, "coach")
+        with self.assertRaises(WorkflowError):
+            connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertEqual(target.read_text(), "not json")
         target.unlink()
         target.symlink_to(self.path)
         before = self.path.read_bytes()
         with self.assertRaises(ConflictError):
-            connect_tijian(config, self.path, "coach")
+            connect_tijian(self.config, "coach", self.fake_mcp)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_cli_connect_tijian_flags_and_mutual_exclusion(self):
+        create(self.config, "coach", self.workspace)
+        target = self.workspace / ".mcp.json"
+        code = main(["workflow", "connect-tijian", "coach", "--executable", str(self.fake_mcp), "--config", str(self.path), "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(target.read_text())
+        self.assertEqual(data["mcpServers"]["tijian"]["args"], ["--read-only"])
+        with self.assertRaises(SystemExit):
+            main(["workflow", "connect-tijian", "coach", "--executable", str(self.fake_mcp), "--read-only", "--read-write", "--config", str(self.path)])
     def test_service_rejects_unit_injection_and_renders_venv_without_enabling(self):
         for name in ("../other.service", "other@instance.service", "x\nExecStart=bad.service"):
             with self.assertRaises(RuntimeContractError):

@@ -124,7 +124,7 @@ UI 启动时会同步终端代理并检查代理 TCP 端口，也可用 `/proxy`
 
 所有数据操作仍调用独立 CLI 子进程，UI 不直接写数据库，也不自动启动/停止 daemon。正文用私密临时文件传递；提交未确认时 `/retry-send` 用原标识幂等核对。Ctrl+C 清空草稿；空输入连续两次 Ctrl+C、空输入 Ctrl+D 或 `/quit` 退出，不取消已入库事件。完整操作见 [终端 UI 说明](docs/terminal-ui.md)。
 
-配置 Tijian 的 VJudge 登录：重开 UI 后输入 `/tijian`，选择「用户名和密码登录」或「从浏览器导入 Cookie」；也可直接输入 `/tijian login`、`/tijian cookie`。密码/Cookie 隐藏输入，Enter 提交，Esc 取消。登录成功后只在本机 Tijian 的原生会话文件保存 Cookie，不保存密码、不写入 GPT 对话或用户数据 Git；所有 workflow 共用。`/tijian test` 实际验证登录，`/tijian status` 仅查看配置；`/tijian clear` 确认后清除 Cookie，保留已有 Tijian 账号绑定。若网站要求浏览器验证，请在浏览器登录后导入请求 Cookie。此功能不修改 Tijian 上游，也不绕过网站验证，详见 [Tijian 登录说明](docs/tijian.md#vjudge-登录集成)。
+配置 Tijian 的 VJudge 登录：重开 UI 后输入 `/vjudge`（或 `/tijian`），选择「用户名和密码登录」或「从浏览器导入 Cookie」；也可直接输入 `/vjudge login`、`/vjudge cookie`。密码/Cookie 隐藏输入，Enter 提交，Esc 取消。登录成功后只在本机 Tijian 的原生会话文件保存 Cookie，不保存密码、不写入 GPT 对话或用户数据 Git；所有 workflow 共用。`/vjudge test`（或 `/tijian test`）实际验证登录，`/vjudge status` 仅查看配置；`/vjudge clear` 确认后清除 Cookie，保留已有 Tijian 账号绑定。若网站要求浏览器验证，请在浏览器登录后导入请求 Cookie。此功能不修改 Tijian 上游，也不绕过网站验证，详见 [Tijian 登录说明](docs/tijian.md#6-vjudge-登录与会话管理)。
 
 选择模型和思考等级（0.16.0）：
 
@@ -234,59 +234,30 @@ unit 包含绝对 ExecStart、明确 WorkingDirectory、当前 PATH 快照、UMa
 
 调整模板应更新 manifest.version。已有 task 绑定原 workspace/revision；变更后旧 task 会 blocked，不会偷偷新建会话。继续旧 task 需恢复原条件，新版本使用新 task ID。细节见 [workflow 契约](docs/workflow-contract.md)。
 
-## Tijian 题库与 MCP
+## Tijian 题库与原生 MCP
 
-Tijian 日计划不是 Runtime 唤醒队列。适配器调用 Tijian 自己的 JSON CLI/canonical application，不直接读写其 SQLite。
+Paveway 直接接入 Tijian 原生 stdio MCP Server（`tijian-mcp`）。旧 Python 桥接器（包括 `tijian_catalog`、`tijian_mcp`、`tijian.py`、旧 `[tijian]` 运行配置及 `tijian tools/call/doctor/setup/mcp` 等 CLI 命令）已被完整删除；Paveway 不再在 Python 中复刻工具 Schema。
 
-题面按“首次抓取并收录、本地持久化、后续直接读取”使用：已有题目先调用 `problem_get`，无需再次爬取；尚未收录时按用户要求 `problem_add` 一次，缺失题面或要求更新时才 `problem_refetch`。分析请求样本不足时，默认由 Agent 查找可信赛题清单并少量首次收录、读回后分析；仅在明确禁止新增或实际权限/网络受限时停止补齐，不要求用户先手工备齐题号。`网页示例/` 是开发抓取器时分析 HTML 的样本，与正式保存的题面无关，也不是使用 Tijian 的前提。详见[本地题面读取说明](docs/tijian.md#题面的本地持久化与正确读取顺序2026-10-22-更正)。
+题面使用原则：已收录题目直接读取本地持久化数据；尚未收录或缺失题面时，依权限按需确保或抓取，普通阅读不重复刷新。具体工具能力与 Schema 以运行中 `tijian-mcp` 实际暴露的 `tools/list` 为准。
 
-安装 Tijian 后，可先校验并自动启用接口（0.13.0）：
-
-```bash
-.venv/bin/oicoach-runtime tijian setup --executable /absolute/path/to/tijian \
-  --config "$PWD/.runtime/config.toml" --json
-.venv/bin/oicoach-runtime workflow connect-tijian test01 --config "$PWD/.runtime/config.toml"
-```
-
-setup 会检查真实 JSON CLI 协议、题库统计、计划与题单读取，成功后才原子保存配置；失败保留原配置。可加 `--read-only` 或 `--no-read-only`，省略时保留原值。连接后在无活动回合时重启 daemon，新建的 OMP 进程即可加载 Tijian 工具。
-
-也可以手动修改 Runtime 配置中已有的 [tijian] 表；旧配置没有时再新增，避免重复 TOML 表：
-
-```toml
-[tijian]
-enabled = true
-executable = "/absolute/path/to/tijian"
-timeout_seconds = 120
-max_output_bytes = 8388608
-read_only = true
-```
+通过 Paveway 命令配置 workflow workspace 的 `.mcp.json`：
 
 ```bash
-.venv/bin/oicoach-runtime tijian doctor --config "$PWD/.runtime/config.toml" --with-data --json
-.venv/bin/oicoach-runtime workflow connect-tijian coach --config "$PWD/.runtime/config.toml"
-.venv/bin/oicoach-runtime tijian tools --json
-.venv/bin/oicoach-runtime tijian call problem_get --arguments '{"problem":"P1001"}' \
-  --config "$PWD/.runtime/config.toml" --json
+# 默认推荐只读模式（包含 --read-only 参数）
+.venv/bin/oicoach-runtime workflow connect-tijian coach \
+  --executable /absolute/path/to/tijian-mcp \
+  --config "$PWD/.runtime/config.toml"
+
+# 显式读写模式
+.venv/bin/oicoach-runtime workflow connect-tijian coach \
+  --executable /absolute/path/to/tijian-mcp \
+  --read-write \
+  --config "$PWD/.runtime/config.toml"
 ```
 
-connect-tijian 合并 workspace/.mcp.json，保留其他 servers/settings。已有不同的 tijian server、无效 JSON 或 symlink 会拒绝；disabledServers 也保留。configured 不等于已验证。修改活动 Runtime 配置后需在适当时机重启服务；新 wake 建立新 OMP 进程读取 workspace 配置。
+`connect-tijian` 安全合并 `workspace/.mcp.json`，保留已有其他 servers 及 `disabledServers`。相同配置重复执行保持幂等，存在不同定义时报 `ConflictError` 且原文件不变；拒绝 symlink 并保持 `0600` 权限。配置成功仅代表 `.mcp.json` 已正确写入，MCP 进程由 OMP 派发时按需启动。
 
-read_only=true 禁止适配器业务写入和文件导出，MCP 只列读操作；不是 OS sandbox。需要状态/计划写入时由你改为 false，coach 仍只应依据明确反馈操作。删除、清空、备份导入导出、文章文件导出要求 confirm=true 或 dry_run=true。
-
-| 类别 | operation（MCP 名称加 tijian_ 前缀） |
-| --- | --- |
-| 能力/题库 | help, problem_get, problem_list, problem_stats |
-| 收录/更新 | problem_add, problem_refetch, problem_vector_compute |
-| 状态/评分/历史 | problem_status, problem_edit, problem_remove, history_import |
-| 检索 | search |
-| 计划/日报 | plan_add, plan_remove, plan_target, plan_show, plan_carry, plan_clear, daily_show |
-| 备份 | backup_export, backup_import, backup_verify |
-| 题单 | article_import, article_list, article_show, article_export |
-
-search 是本地 quick_search；真正向量重算需要运行中的 Tijian Desktop executor。可读已有译文/向量，不代表 CLI 暴露了翻译触发、GUI 语义检索、提交同步、竞赛或附件/文件夹管理。题目四种状态没有单独“看过题解”字段，不把 explored/胡 当成独立 AC 或题解使用记录。
-
-`tijian mcp` 可独立启动 stdio server，不需要 daemon；`tijian mcp-config --config ABS_CONFIG` 可生成手动合并用的配置。完整 schema、原码 CLI 建置与限制见 [Tijian 文档](docs/tijian.md)。
-
+VJudge 登录功能已独立为 `vjudge auth` CLI（支持 `status`、`test`、`login`、`cookie`、`clear`），TUI 中 `/vjudge` 与 `/tijian` 均可直接使用。详细架构、构建与使用说明参见 [Tijian 原生 MCP 接入](docs/tijian.md)。
 ## 定时、查询与回复
 
 绝对时间必须为带时区的 RFC3339；now 由 daemon 按自己的时钟立即入队。以下时刻是示例，使用时请调整：

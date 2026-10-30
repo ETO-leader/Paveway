@@ -50,14 +50,6 @@ class QueueConfig:
     uncertain_event_policy: str = "manual_review"
 
 
-@dataclass(frozen=True)
-class TijianConfig:
-    enabled: bool = False
-    executable: str = "tijian"
-    timeout_seconds: float = 120
-    max_output_bytes: int = 8388608
-    read_only: bool = False
-
 
 @dataclass(frozen=True)
 class Config:
@@ -68,7 +60,6 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
-    tijian: TijianConfig = field(default_factory=TijianConfig)
 
     @property
     def database_path(self) -> Path:
@@ -166,18 +157,14 @@ def load_config(path: Path) -> Config:
     queue = _section(QueueConfig, raw.get("queue", {}))
     if queue.expired_event_policy != "keep" or queue.uncertain_event_policy != "manual_review":
         raise ConfigError("Only keep/manual_review queue policies are supported")
-    tijian = _section(TijianConfig, raw.get("tijian", {}))
-    if not tijian.executable or (not Path(tijian.executable).is_absolute() and
-                                ("/" in tijian.executable or any(c.isspace() for c in tijian.executable))):
-        raise ConfigError("tijian.executable must be an executable name or absolute path")
-    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue, tijian=tijian)
+    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue)
 
 
 def config_text(config: Config) -> str:
     # JSON string quoting is compatible with TOML basic strings for filesystem paths.
     lines = ["schema_version = 1", f"state_dir = {json.dumps(str(config.state_dir), ensure_ascii=False)}",
              f"workflow_root = {json.dumps(str(config.workflow_root), ensure_ascii=False)}"]
-    for name in ("server", "agent", "restart", "queue", "tijian"):
+    for name in ("server", "agent", "restart", "queue"):
         section = getattr(config, name)
         lines.extend(["", f"[{name}]"])
         for f in fields(section):

@@ -11,8 +11,7 @@ from unittest.mock import patch
 
 from oicoach_runtime.cli import initialize, main
 from oicoach_runtime.errors import ConflictError, RuntimeContractError
-from oicoach_runtime.integrations.tijian import TijianError
-from oicoach_runtime.integrations.vjudge_auth import SameOriginRedirect, VjudgeAuth, read_secret_file
+from oicoach_runtime.integrations.vjudge_auth import SameOriginRedirect, VjudgeAuth, VjudgeAuthError, TijianError, read_secret_file
 
 
 class VjudgeAuthTests(unittest.TestCase):
@@ -204,7 +203,7 @@ class VjudgeAuthTests(unittest.TestCase):
         secret.chmod(0o600)
         output = io.StringIO()
         with patch.object(VjudgeAuth, "login", return_value={"logged_in": True}) as login, redirect_stdout(output):
-            code = main(["tijian", "auth", "login", "--credentials-file", str(secret), "--config", str(self.config), "--json"])
+            code = main(["vjudge", "auth", "login", "--credentials-file", str(secret), "--config", str(self.config), "--json"])
         self.assertEqual(code, 0)
         login.assert_called_once_with("TEST_USER", "TEST_PASSWORD")
         self.assertNotIn("TEST_PASSWORD", output.getvalue())
@@ -225,7 +224,7 @@ class VjudgeAuthTests(unittest.TestCase):
             self.assertIn("SECRET_PASSWORD", path.read_text())
             return Process()
         with patch("subprocess.Popen", side_effect=spawn):
-            result = CliClient(self.config).call("tijian", "auth", "login",
+            result = CliClient(self.config).call("vjudge", "auth", "login",
                 text_files={"--credentials-file": '{"username":"user","password":"SECRET_PASSWORD"}'})
         self.assertTrue(result["configured"])
         self.assertFalse(paths[0].exists())

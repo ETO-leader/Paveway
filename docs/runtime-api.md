@@ -88,10 +88,9 @@ agent restart 是非同步控制，先持久回覆 requested job 與 restart_id�
 
 restart 以已綁定 session 執行新進程的 ready/get_state 檢查後回收，不發送 prompt；prompt_replayed 恆為 false。中斷的 active prompt 保留 uncertain，不因 restart 成功而自動恢復。--reset-circuit 只有在新進程檢查且正常退出後清除 supervisor 計數／冷卻，不重設事件 attempt，不會重播 failed/uncertain/dead_letter。daemon 中斷的控制工作標為 interrupted，不自動重做。
 
-## Tijian 進程接口
+## VJudge 認證接口
 
-0.5.0 增加獨立進程接口 `tijian tools`、`tijian doctor [--with-data]`、`tijian call NAME [--arguments JSON | --arguments-file PATH]`、`tijian mcp-config`、`tijian mcp`，皆接受 --config；不經 Runtime socket，不需要 daemon 已啟動。一般命令可 --json，成功 stdout／錯誤 stderr；mcp 的 stdout 僅供協議。tools 輸出完整 inputSchema，call 回 api_version/result，錯誤額外包含 outcome。mcp-config 直接回 mcpServers 設定物件。詳見 [Tijian 契約](tijian.md)。
-
+舊版 `tijian tools/doctor/call/mcp-config/mcp` 等 Python 橋接器接口已在遷移至原生 `tijian-mcp` 後徹底刪除。VJudge 認證遷移為獨立的 `vjudge auth [status|test|login|cookie|clear]` 命令，直接維護共享會話，支援私密輸入檔案與終端交互。原生 Tijian MCP 透過 `workflow connect-tijian` 直接配置。詳見 [Tijian 原生 MCP 接入](tijian.md)。
 ## IPC v1
 
 Unix domain socket，控制資料夾 0700、socket 0600，透過 SO_PEERCRED 檢查同 UID。每個連線一個 JSONL 請求／回應、各限 128 KiB，讀取 10 秒、寫入 5 秒超時，同時最多處理 64 個 client。daemon 不接受從 payload 指定執行檔、OMP flags 或模板路徑。

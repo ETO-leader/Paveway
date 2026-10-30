@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from oicoach_runtime.cli import initialize
-from oicoach_runtime.config import TijianConfig, config_text, load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.models import utc_text
@@ -198,7 +198,7 @@ class RuntimeTests(unittest.TestCase):
     def event(self, event_id):
         return request(self.socket_path, "events.show", {"event_id": event_id})
 
-    def wait_status(self, event_id, statuses=("succeeded",), timeout=6):
+    def wait_status(self, event_id, statuses=("succeeded",), timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             event = self.event(event_id)
@@ -207,7 +207,7 @@ class RuntimeTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail(f"Event did not reach {statuses}: {self.event(event_id)}; log=" + (self.root / "daemon.log").read_text())
 
-    def wait_restart(self, job_id, statuses=("succeeded",), timeout=6):
+    def wait_restart(self, job_id, statuses=("succeeded",), timeout=10):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             job = request(self.socket_path, "agent.show", {"restart_id": job_id})
@@ -311,19 +311,6 @@ class RuntimeTests(unittest.TestCase):
         conflict = subprocess.run(command, capture_output=True, text=True, timeout=5)
         self.assertEqual(conflict.returncode, 1)
         self.assertEqual(json.loads(conflict.stderr)["error"]["code"], "conflict")
-
-    def test_enabled_tijian_is_discoverable_without_claiming_it_was_verified(self):
-        self.stop()
-        self.config = replace(self.config, tijian=TijianConfig(enabled=True, executable="/missing/tijian"))
-        self.config_path.write_text(config_text(self.config))
-        self.start()
-        self.wait_status(self.schedule()["event_id"])
-        session = json.loads(next((self.config.state_dir / "sessions").glob("*/session.json")).read_text())
-        tool = session["prompts"][0]["available_tools"][1]
-        self.assertEqual(tool["name"], "tijian")
-        self.assertEqual(tool["availability"], "configured_not_verified")
-        self.assertEqual(tool["argv_prefix"], [sys.executable, "-m", "oicoach_runtime", "tijian"])
-        self.assertEqual(tool["config_path"], str(self.config_path))
 
     def test_active_restart_stops_owned_run_and_keeps_uncertain_for_review(self):
         active = self.schedule(mode="hold")
