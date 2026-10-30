@@ -408,3 +408,9 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 用户在原生重构期间明确回复「取消 10k limit」，取代先前固定 Guard 门槛。后台不再加载预算扩展，只验证原生 RPC ready/protocol；prompt 不再宣称 10k 裁剪，记忆快照去掉 token 上限，仅保留 64 KiB IPC 字节边界。用户自定义 prompt、Skill、既存 event.md 和历史原文均未改写。旧预算算法仅保留历史探针，不进入默认路径。
 
 D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚点；D6 采用持久 Inbox、不自动注入；D7 原生索引必须完成才切默认入口。这些分支不变。另修复启动器遗漏 PyYAML 检查造成旧环境升级失败的实际问题。定向验证 41 项，40 通过、1 opt-in 跳过（6.375 秒），包含真实 fake-daemon 完成与旧 CLI/UI 启动。无 schema／正式数据变化。后续逐阶段新增显式原生入口。
+
+## 2026-10-30 — M1 显式原生入口
+
+新增 `oicoach-runtime native --workflow ID [--task ID]`、原生 OMP 薄扩展及透明 PTY supervisor。精确 trusted-extension、私密配置、nonce／源码摘要／实际 guardian 子 PID／Session 目录核验完成后才转送用户输入。提供只读 `/paveway status` 和 `/coach`，无自研聊天渲染器；当前每次建立独立前台目录，不接管后台 Session，旧 ui/CLI/RPC 保留默认。
+
+`PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest test_native_omp -v`：真实 OMP 18.10.4、原生 PTY 与本地 provider fixture，1 项通过（2.889 秒）。超长输入中段确实进入 provider，原文保存；native /exit 为 0，daemon 仍 running，无旧 Guard ready 输出。没有使用私人模型凭据，Browser／Subagent／真实 Tijian 未验收。M2 的注册／恢复／归档与 M3 的工具尚未在本提交实现，故不切默认入口。

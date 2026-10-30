@@ -89,6 +89,10 @@ def parser() -> argparse.ArgumentParser:
     common(ui)
     ui.add_argument("--workflow", help="Initially selected workflow; otherwise choose in the UI")
     ui.add_argument("--task", default="training")
+    native = commands.add_parser("native", help="Experimental controlled OMP native TUI; legacy ui remains available")
+    common(native)
+    native.add_argument("--workflow", required=True)
+    native.add_argument("--task", default="training")
     service = commands.add_parser("service", help="Render, install and manage owned systemd user units")
     service_commands = service.add_subparsers(dest="operation", required=True)
     for name in ("render", "install", "status", "logs", "start", "stop", "restart", "enable", "disable", "uninstall"):
@@ -414,7 +418,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         path = (args.config or (Path(os.environ["OICOACH_CONFIG"]) if os.environ.get("OICOACH_CONFIG") else default_config_path())).absolute()
-        if args.command == "ui":
+        if args.command == "native":
+            from .native import run
+            return run(load_config(path), path, args.workflow, args.task)
+        elif args.command == "ui":
             if args.json:
                 raise RuntimeContractError("The terminal UI is interactive; use the individual CLI commands for JSON")
             from .tui import run
