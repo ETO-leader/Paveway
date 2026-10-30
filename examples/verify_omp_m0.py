@@ -6,6 +6,7 @@ exit 1 means the probe itself failed. The loopback provider is a fixture,
 not evidence that a real model, Browser, Subagent or Tijian works.
 """
 
+import argparse
 import asyncio
 import fcntl
 import json
@@ -25,6 +26,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 
 import pyte
+
+# This checkout-only acceptance harness already runs the repository's tests.
+# Use their strict wide-cell decoder for the same PTY byte-boundary semantics.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+from terminal_screen import WideScreen
 
 
 def emit(name, **values):
@@ -73,6 +79,15 @@ class Probe:
         self.failure.write_text('export default function(pi) { pi.on("context", () => { '
                                 'throw new Error("M0_CONTEXT_FAILURE"); }); }')
         self.guard = Path(str(files("oicoach_runtime").joinpath("bundled/context-window.mjs")))
+        self.guard_faults = []
+        for stage in ("registration", "context"):
+            extension = root / f"guard-{stage}-fault.mjs"
+            callback = ('throw new Error("M0_GUARD_REGISTRATION_FAULT");' if stage == "registration" else
+                'pi.on(event, original => handler({get messages() { '
+                'throw new Error("M0_GUARD_CONTEXT_FAULT"); }}));')
+            extension.write_text(f"import guard from {json.dumps(str(self.guard))};\n"
+                f"export default async function(pi) {{ await guard({{on(event, handler) {{ {callback} }}}}); }}")
+            self.guard_faults.append((stage, extension))
 
     def argv(self, name, extensions):
         return [self.executable, "--cwd", str(self.workspace), "--session-dir", str(self.root / name),
@@ -136,12 +151,54 @@ class Probe:
                 await process.wait()
             await stderr
 
+    async def guard_failure(self, name, extension):
+        before = len(self.server.requests)
+        process = await asyncio.create_subprocess_exec(
+            *self.argv(name, [extension]), "--mode", "rpc", "--no-ui", env=self.env,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, limit=1048576, start_new_session=True)
+        stderr = asyncio.create_task(process.stderr.read())
+        result_status = None
+        timed_out = False
+        frame_types = []
+        try:
+            async with asyncio.timeout(40):
+                while line := await process.stdout.readline():
+                    frame = json.loads(line)
+                    frame_types.append(frame.get("type"))
+                    if frame.get("type") == "ready":
+                        process.stdin.write(b'{"type":"prompt","id":"fault","message":"M0_GUARD_FAULT_INPUT"}\n')
+                        await process.stdin.drain()
+                    if frame.get("type") == "prompt_result":
+                        result_status = frame.get("status")
+                        break
+                if process.returncode is None and result_status is None:
+                    await process.wait()
+        except TimeoutError:
+            timed_out = True
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), 10)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+            errors = await stderr
+        observation = {"requests": len(self.server.requests) - before,
+                       "status": result_status, "exit_code": process.returncode,
+                       "timed_out": timed_out, "frames": frame_types,
+                       "guard_failure_reported": b"paveway_context_failed" in errors}
+        emit(name, **observation)
+        return observation
+
     def tui(self, name, extensions):
         before = len(self.server.requests)
         master, slave = pty.openpty()
         process = None
         output = bytearray()
-        screen = pyte.Screen(120, 40)
+        stream_closed = False
+        screen = WideScreen(120, 40)
         stream = pyte.ByteStream(screen)
         try:
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
@@ -155,8 +212,10 @@ class Probe:
                     try:
                         data = os.read(master, 65536)
                     except OSError:
+                        stream_closed = True
                         break
                     if not data:
+                        stream_closed = True
                         break
                     output.extend(data)
                     stream.feed(data)
@@ -164,10 +223,18 @@ class Probe:
                         os.write(master, b"\x1b[1;1R")
                 if len(self.server.requests) > before and "M0_REPLY" in "\n".join(screen.display):
                     break
-                if process.poll() is not None:
-                    break
+            if stream_closed:
+                process.wait(timeout=5)
+            terminal_diagnostic = b"paveway_context_failed" in output
+            # OMP redirects fd 2 to its per-process log while owning the TUI.
+            # Read only this child's logs under the disposable HOME/XDG tree.
+            log_diagnostic = any(b"paveway_context_failed" in path.read_bytes()
+                                 for path in self.root.rglob(f"omp.*.{process.pid}.log"))
             observation = {"requests": len(self.server.requests) - before,
                 "context_error_visible": b"M0_CONTEXT_FAILURE" in output,
+                "guard_failure_reported": terminal_diagnostic or log_diagnostic,
+                "diagnostic_source": "terminal" if terminal_diagnostic else ("omp-log" if log_diagnostic else None),
+                "exit_code": process.poll(),
                 "reply_visible": "M0_REPLY" in "\n".join(screen.display),
                 "screen": "\n".join(line.rstrip() for line in screen.display).strip()}
             emit(name, **observation)
@@ -205,6 +272,10 @@ class Probe:
 
 
 async def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--guard-faults-only", action="store_true",
+                        help="Exercise actual Paveway Guard failures, not generic OMP Hook failures")
+    arguments = parser.parse_args()
     executable = shutil.which("omp")
     if not executable:
         raise RuntimeError("omp is not installed")
@@ -219,6 +290,16 @@ async def main():
                                      capture_output=True, text=True, check=True, timeout=30)
             emit("environment", omp=version.stdout.strip(), platform=sys.platform,
                  provider="loopback fixture; no external model or credentials")
+            failures = []
+            for stage, extension in probe.guard_faults:
+                failures.append(await probe.guard_failure(f"rpc-guard-{stage}-fault", extension))
+                failures.append(probe.tui(f"tui-guard-{stage}-fault", [extension]))
+            guarded = all(row["requests"] == 0 and row["exit_code"] == -9 and row["guard_failure_reported"]
+                          for row in failures)
+            emit("guard-failure-boundary", fail_closed=guarded,
+                 managed_tui="disabled; required-extension removal remains unverified")
+            if arguments.guard_faults_only:
+                return 0 if guarded else 1
             message = "M0_INPUT " + "漢字 filler " * 12000
             failed_hook = await probe.rpc("rpc-throwing-context", [probe.failure], message)
             guard = await probe.rpc("rpc-guard", [probe.guard], message)
@@ -227,7 +308,7 @@ async def main():
             tui_missing = probe.tui("tui-missing-extension", [probe.root / "absent.mjs"])
             native = probe.existing_native_checks()
             blocked = any(row["requests"] for row in (failed_hook, missing, tui_failed_hook, tui_missing))
-            controls = guard["guard_ready"] and guard["omission_visible"] and guard["original_retained"] and native
+            controls = guard["guard_ready"] and guard["omission_visible"] and guard["original_retained"] and native and guarded
             emit("decision", managed_tui="disabled", d4="BLOCKED" if blocked else "NOT_CERTIFIED",
                  controls_passed=controls, remaining="D1/D2/D3/D6/D7 require further probes; do not enable M1")
             return 1 if not controls else (2 if blocked else 0)

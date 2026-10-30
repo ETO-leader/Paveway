@@ -364,3 +364,17 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 完整 D1–D7 状态、失败样例、源码证据、复现命令、回退边界和最小上游 API 缺口见 [M0 兼容性记录](verification/omp-m0-compatibility.md)。没有把 loopback fixture 视为真实模型、Browser、Subagent、Tijian 或 Windows→WSL 验收；未通过的交接、settled、投递与新历史同步能力不开放。
 
 最终同一全量回归运行 186.130 秒：250 通过、14 跳过、1 failure、1 error，**不是全绿**。未修改的重启测试在预定 0.6 秒到期前未能保证停机，事件被领取后以 `blocked/daemon_shutdown` 结束；另一项旧 UI PTY 测试在 pyte 渲染空字符单元时抛出 `IndexError`。保留失败日志与具体位置，不重跑掩盖、不修改这些断言；完整 M0 验收也未通过。此次交付是可复现调查与安全停止记录，不是完成了原生重构的发布。
+
+## 2026-10-30 — 0.20.1：M0 基线修复与已加载 Guard fail-stop
+
+从 `68e7efe8066e360fb87bb8a2765a94f2632a44e7` 继续处理，不修改 OMP 18.12.6 上游。版本更新为 0.20.1；schema、旧队列解释、用户配置及 Session 不变。
+
+- 修复重启回归的 0.6 秒到期竞态：先检查未来事件跨重启保持 queued/due/version 且没有 Run，再用真实 CAS reschedule 明确放行，验证只执行一次。没有增加等待超时或接受 blocked。
+- 独立 `中\rA` 已复现 pyte 0.8.2 的宽字符续格缺陷。测试专用 WideScreen 在写入、部分擦除和移位时处理旧字形全体，保留严格显示检查；旧 UI PTY 与原生探针共用，不改应用内容或渲染器。
+- Paveway Context Guard 初始化／注册和同步裁剪异常时，先写不含原始异常内容的固定诊断，再同步自我 SIGKILL；10k 算法与正常 RPC ready 不变。实测发现 OMP factory 会把 process.exit/reallyExit 转成可吞掉的异常，因此不能用 exit(78) 充当启动失败的保证。Tokenizer 仅从宿主解析，避免隔离 wrapper 的 Bun 自动安装。
+
+原先两项失败场景 2 项通过（8.124 秒）；宽字符边界 4 项通过；Guard 原生预算、配对、原文与故障边界 3 项通过。**完整回归 271 项，257 通过、14 跳过，158.516 秒，无 failure/error**，日志 `artifact://29`。随后增强的 factory exit 拦截回归 1 项通过（0.483 秒）；实际 CLI 输出 `0.20.1`。
+
+真实 OMP RPC／原生 PTY 的 Guard 注册及 context 错误共 4 个场景，均退出 -9、provider 请求为 0，无成功回复。原生 TUI 运行时 stderr 被 OMP 重定向到日志，探针按隔离目录中的该 PID 日志核验，不冒充已显示给用户。正常 Guard 仍裁剪副本且保留 Session 原文，4 项原生 Prompt／Skill／transport 检查通过。保留探针运行 48.14 秒，`guard-failure-boundary.fail_closed=true`、`controls_passed=true`；日志 `artifact://30`。
+
+**完整 D4 仍 BLOCKED，探针按设计退出 2**：扩展缺失的 raw OMP 仍能推理；同一子进程的受管启动握手、输入准入及完整来源矩阵尚未实现/验证。已加载 Guard 的错误边界修复不等于 M1 通过。explicit-only 固定扩展在源码上具备继续验证的路径，不把“只能等上游”当成唯一方案；当前仍保留旧入口，关闭原生受管入口，不开放前台 settled 锚点／共享 Session／自动投递。详细证据与风险见 [M0 记录的 0.20.1 小节](verification/omp-m0-compatibility.md#0201-阻碍修复第二轮)。

@@ -3,6 +3,8 @@
 Stage: **M0 调查与门槛判定已交付；不等于 M1–M6 完成。**
 日期：2026-10-30。依据用户提供的 Implementation Contract 与 Native Refactor Plan；D4 失败分支要求禁用受管 TUI、保留旧 RPC/TUI。本次没有新增受管入口、切换默认入口或修改 OMP 上游。
 
+**最新状态见末尾「0.20.1 阻碍修复」：两项基线失败已修复，全量回归恢复通过；已加载的 Paveway Guard 错误边界已实测 fail-stop。完整 D4／原生入口仍未验收。下列首轮失败记录保留，不作为修复后状态。**
+
 ## 基线与数据边界
 
 | 项目 | 本轮观察 |
@@ -119,3 +121,75 @@ Rollback tested: **未做入口／schema 切换，故没有新运行路径可供
 复原方式：本次提交仅为验证脚本、措辞断言和文档；继续使用原来的 `./paveway.sh` 或 CLI 即为原有行为，不需要恢复数据库或重播 Prompt。若要撤销本次源码改动，可在确认后撤销该 M0 提交；不要重置用户数据、删除 Session 或重试 uncertain 任务。
 
 **下一允许阶段：继续 M0，或在具备 fail-closed API 的 OMP 版本上重新执行探针。** 只有 D4 不再失败并完成缺失矩阵后才能验收 M1；M2–M6 仍分别受它们自己的门槛限制。没有测试真实模型、Browser、Subagent、Tijian 服务端授权、Windows→WSL MCP 或完整交替恢复；这些均不得标为完成。当前安装 OMP 的普通 Hook 报错策略也适用于 RPC；旧 ready 双握手不是“任何运行时异常都能阻止推理”的证明，本次未擅改旧派发状态语义。
+
+## 0.20.1 阻碍修复（第二轮）
+
+Stage: M0 blocker fixes。Code base HEAD：`68e7efe8066e360fb87bb8a2765a94f2632a44e7`，`main`，开始时工作树干净。OMP 仍为 18.12.6，Linux/Python 环境不变。应用版本更新为 **0.20.1**；schema、队列状态和正式用户数据未变，未修改 OMP 上游。
+
+### 已修复的边界
+
+1. **重启测试的到期竞态**：不再假定「第二个 CLI 启动＋停止 daemon」能在 0.6 秒内完成。先持久化一个次日事件，重启后断言它仍 queued、原 due/version 未变、没有 Run；然后通过真实 IPC 的 CAS reschedule 设为 now，断言只执行一次、attempt=1。不是延长等待超时，也没有把 blocked 当成功。
+2. **PTY 解码器的宽字符变更**：用独立序列 `中\rA` 在 pyte 0.8.2 复现同一 `IndexError`，无需应用或模型。新增测试专用 `tests/terminal_screen.py`，在覆写、部分擦除、插入和删除涉及旧宽字符时先处理其完整字形；保留严格的 pyte display，不吞异常、不在读屏时把孤立空格强行补掉。测试覆盖 UTF-8/CSI 任意字节分片、邻接中文及颜色、移位截断和换行。应用自身的渲染代码不变；旧 PTY 测试和原生探针共用此解码器。
+3. **已加载 Guard 的异常放行**：`bundled/context-window.mjs` 对初始化/注册及同步 context 裁剪增加 fail-stop。先同步写固定诊断 `paveway_context_failed`，再对当前进程发送 SIGKILL；不等待 IPC，不返回原 context，不输出异常中的私有内容。10k `windowMessages` 算法不变，ready 帧保持现有 RPC 格式。Tokenizer 只从宿主解析，避免裸 import 在隔离 wrapper 中触发 Bun 自动安装。
+
+实测否定了第一版 `process.exit(78)` 方案：OMP 的 `src/extensibility/utils.ts` 在 factory 加载期间把 exit/reallyExit 替换为抛错，初始化失败会再次被吞掉并继续发送请求。最终自我 SIGKILL 不依赖该可拦截路径。永久回归也主动把 process.exit 替换成抛错，确认仍在推理前终止。
+
+故障退出不是 settled、不是持久化完成，可能丢失尚未刷盘的当前轮尾部。原后台代码仍先记录 dispatch intent；之后进程异常退出进入既有 uncertain/人工核验流程，不自动重放。初始化前置失败仍依原有有限重试规则处理。本次没有放宽任何旧状态解释。
+
+### 修复后运行证据
+
+```bash
+# 原先两项失败的实际 daemon / PTY 场景
+PYTHONPATH=src:tests .venv/bin/python -m unittest \
+  test_runtime.RuntimeTests.test_restart_preserves_future_event_and_single_instance \
+  test_tui.TerminalIntegrationTests.test_pty_custom_prompt_and_skill_crud_reach_native_dispatch -v
+
+# 全量回归
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+
+# 原生 OMP + 本地 fixture，完整矩阵中的已实现探针
+.venv/bin/python examples/verify_omp_m0.py
+
+# 只检验 Paveway 自己的 Guard 故障边界；不认证完整 D4
+.venv/bin/python examples/verify_omp_m0.py --guard-faults-only
+```
+
+已执行的结果：
+
+| 检查 | 结果 |
+| --- | --- |
+| 原先失败的 daemon 重启／旧 UI PTY 场景 | 2 项通过，8.124 秒 |
+| 新宽字符解码器回归 | 4 项通过，0.002 秒 |
+| Guard 原生 Tokenizer、预算／配对／原文及故障边界 | 3 项通过，4.131 秒 |
+| 全量回归 | **271 项，257 通过、14 跳过、0 failure/error，158.516 秒**；日志 `artifact://29` |
+| 增强后的 exit 拦截回归 | 1 项通过，0.483 秒；CLI `--version` 为 `0.20.1` |
+| 完整保留探针 | 48.14 秒；`guard-failure-boundary.fail_closed=true`、`controls_passed=true`；完整 D4 仍 BLOCKED，故退出码 **2**；日志 `artifact://30` |
+| 原生 RPC transport／append/replace／Skill 发现与全文读取／权限对照 | 探针内 4 项检查 exit_code=0，无真实模型调用 |
+
+完整保留探针中的 4 个 Paveway Guard 故障场景：
+
+| 入口／注入点 | 退出状态 | Provider 请求 | 诊断证据 |
+| --- | --- | --- | --- |
+| RPC／初始化注册失败 | SIGKILL（-9） | 0 | stderr 固定诊断；无 ready |
+| 原生 TUI／初始化注册失败 | SIGKILL（-9） | 0 | 终端固定诊断 |
+| RPC／context 输入读取抛错 | SIGKILL（-9） | 0 | stderr 固定诊断；不产生 completed |
+| 原生 TUI／context 输入读取抛错 | SIGKILL（-9） | 0 | 该 PID 的 OMP 日志中固定诊断；无回复 |
+
+最后一项不冒充「错误已显示给用户」：OMP 原生 TUI 使用 `pi-utils/stderr-guard` 将 fd 2 重定向到日志，故探针只在隔离 HOME/XDG 下查找该子进程 PID 的日志。真实退出状态和端点请求数仍是独立证据。探针不读取正式日志或凭据。
+
+早期新增故障 wrapper 的运行一度卡在 Bun `Resolving`，没有发出请求；这不是 fail-closed 证明。改为宿主解析后才进入有效故障路径。随后 `process.exit` 的 factory 拦截及 TUI stderr 重定向也分别被实测发现并处理；最终结果以上述保留探针为准，不以 0 请求的超时或缺日志当作通过。
+
+### 仍禁止启用原生受管入口的原因
+
+本轮证明的是**已加载、同步执行的 Paveway Guard 自身发生异常时终止当前进程**，不是「OMP 会把所有扩展都当必需」：
+
+- 普通 OMP Hook 抛错或明确加载缺失扩展时，raw OMP 仍可推理；原生探针保留这些反例。不能只做一个预检进程就开放另一个实际 TUI。
+- 受管启动器仍需要同一子进程的版本/digest/加载握手与输入准入；本轮没有新增启动器或假造 ready。TUI 不使用 RPC stdout ready 作为受管协议。
+- 安装源码 `sdk.ts:5079–5103` 显示 explicit-only 扩展不参与 settings 的自动 suspend reconciliation；因此「必须等上游」不是唯一可行结论。可继续验证固定扩展、禁止热替换的受控入口，但不能仅靠该源码分支宣布已保护。
+- 热重载/失联、内部继续、超长工具、live steering 的整体窗口、各类 Subagent、Browser/MCP 及故障后工具子进程回收尚未完成真实入口矩阵；本次 fixture 禁用工具，不扩大其结论。
+- D1/D2/D3/D6/D7 的既定安全分支不变：不共享物理 Session 接管，不开放前台 after_turn_settled，不自动重播未知投递，不宣称原生历史已进入 Git。
+
+Rollback tested: **没有新入口或 schema 切换可回滚**；旧入口仍为默认，修复后实际 PTY 与后台回归通过。0.20.1 Guard 的异常行为是有意的安全变更：异常会立即终止，不等待正常刷盘或证明 settled。若撤销此修复，将重新暴露已证实的 Guard fail-open；不能把撤销代码当作解决问题，且绝不因此重放 uncertain 请求。
+
+Commit SHA：包含本节的修复提交（最终交付中给出）。本轮未执行真实模型／Tijian／Windows→WSL 验收，未改用户数据库、Session、event.md 或私有配置。下一允许动作是继续 M0 的受管准入与缺失矩阵验证，而不是直接切换 `./paveway.sh`。
+

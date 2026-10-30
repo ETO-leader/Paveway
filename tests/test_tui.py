@@ -24,6 +24,7 @@ from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
 try:
     import pyte
+    from terminal_screen import WideScreen
 except ImportError:
     pyte = None
 
@@ -714,7 +715,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
         self.addCleanup(stop)
-        screen = pyte.Screen(120, 32)
+        screen = WideScreen(120, 32)
         stream = pyte.ByteStream(screen)
         def read_until(needle, timeout=10):
             deadline = time.monotonic() + timeout

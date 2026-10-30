@@ -1,3 +1,5 @@
+import {writeSync} from "node:fs";
+
 // OMP context hook: modifies only outbound copies, never the persisted session.
 export const TOKEN_LIMIT = 10000;
 const NOTICE = "[Runtime: older conversation or oversized content was omitted to fit the 10,000-token conversation budget. Use memory/history tools for missing details; do not guess.]";
@@ -119,16 +121,34 @@ export function windowMessages(original, count, limit = TOKEN_LIMIT) {
     return result;
 }
 
-export default async function contextWindow(pi) {
-    // Resolve through the host OMP installation, not the user's workspace.
-    let Tokenizer;
+function stopOnGuardFailure() {
+    // OMP treats ordinary extension exceptions as optional Hook failures.
+    // Do not let it send the original context after this mandatory Guard fails.
     try {
-        ({Tokenizer} = await import("@oh-my-pi/pi-agent-core"));
-    } catch {
-        ({Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1])));
+        writeSync(2, "paveway_context_failed: required context guard failed; session stopped\n");
+    } finally {
+        // OMP intercepts process.exit during extension loading. A self-signal
+        // also stops initialization failures before that loader can continue.
+        process.kill(process.pid, "SIGKILL");
     }
-    const tokenizer = new Tokenizer();
-    const count = text => tokenizer.countTokens(text, "strict");
-    pi.on("context", event => ({messages: windowMessages(event.messages, count)}));
-    process.stdout.write(JSON.stringify({type: "paveway_context_ready", tokenLimit: TOKEN_LIMIT}) + "\n");
+}
+
+export default async function contextWindow(pi) {
+    try {
+        // Resolve only through the host. A bare import may trigger Bun's
+        // auto-install from a workspace instead of reaching the fallback.
+        const {Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1]));
+        const tokenizer = new Tokenizer();
+        const count = text => tokenizer.countTokens(text, "strict");
+        pi.on("context", event => {
+            try {
+                return {messages: windowMessages(event.messages, count)};
+            } catch {
+                stopOnGuardFailure();
+            }
+        });
+        process.stdout.write(JSON.stringify({type: "paveway_context_ready", tokenLimit: TOKEN_LIMIT}) + "\n");
+    } catch {
+        stopOnGuardFailure();
+    }
 }

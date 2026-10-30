@@ -90,6 +90,32 @@ console.log(JSON.stringify(checks));
         self.assertIn("FOUND_PUBLIC_CANDIDATE_10", checks[-2]["text"])
         self.assertNotIn("PRIVATE_THOUGHTS", checks[-2]["text"])
 
+    @unittest.skipUnless(shutil.which("bun") and shutil.which("omp"), "native OMP tokenizer requires bun and omp")
+    def test_guard_failure_stops_before_inference_without_exposing_content(self):
+        module = str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))
+        host = str(Path(shutil.which("omp")).resolve())
+        script = r'''
+const {default: guard} = await import(process.argv[2]);
+// OMP's factory loader turns process.exit into a catchable exception.
+process.exit = () => {throw new Error("PRIVATE_EXIT_INTERCEPTED");};
+let context;
+await guard({on(event, handler) {
+    if (process.argv[3] === "registration") throw new Error("PRIVATE_REGISTRATION_CONTENT");
+    context = handler;
+}});
+context({get messages() {throw new Error("PRIVATE_CONTEXT_CONTENT");}});
+process.stdout.write("INFERENCE_REACHED\n");
+'''
+        for stage in ("registration", "context"):
+            with self.subTest(stage=stage):
+                process = subprocess.run([shutil.which("bun"), "-e", script, host, module, stage],
+                                         capture_output=True, text=True, timeout=40)
+                self.assertEqual(process.returncode, -9, process.stderr)
+                self.assertIn("paveway_context_failed", process.stderr)
+                self.assertNotIn("PRIVATE_", process.stderr + process.stdout)
+                self.assertNotIn("INFERENCE_REACHED", process.stdout)
+                self.assertEqual("paveway_context_ready" in process.stdout, stage == "context")
+
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for model acceptance")
 class RealContextBudgetTests(unittest.IsolatedAsyncioTestCase):

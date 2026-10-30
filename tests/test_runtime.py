@@ -415,7 +415,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(Path(self.socket_path).stat().st_mode & 0o777, 0o600)
 
     def test_restart_preserves_future_event_and_single_instance(self):
-        event = self.schedule(at=utc_text(datetime.now(timezone.utc) + timedelta(seconds=0.6)))
+        # Hold the event in the future until persistence across restart has
+        # been checked; CLI startup must not race a subsecond due time.
+        due = utc_text(datetime.now(timezone.utc) + timedelta(days=1))
+        event = self.schedule(at=due)
         other = subprocess.run([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.config_path), "--json"],
                                capture_output=True, text=True, timeout=5)
         self.assertNotEqual(other.returncode, 0)
@@ -423,7 +426,15 @@ class RuntimeTests(unittest.TestCase):
         self.stop()
         self.assertEqual(self.process.returncode, 0)
         self.start()
-        self.wait_status(event["event_id"])
+        retained = self.event(event["event_id"])
+        self.assertEqual(retained["status"], "queued")
+        self.assertEqual(retained["not_before_utc"], due)
+        self.assertEqual(retained["version"], event["version"])
+        self.assertEqual(request(self.socket_path, "runs.list"), [])
+        request(self.socket_path, "events.reschedule", {
+            "event_id": event["event_id"], "expected_version": retained["version"], "at": "now"})
+        completed = self.wait_status(event["event_id"])
+        self.assertEqual(completed["attempt"], 1)
         self.assertEqual(len(request(self.socket_path, "runs.list")), 1)
 
     def test_startup_failure_retries_with_a_bound_and_reaches_dead_letter(self):
