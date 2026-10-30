@@ -232,7 +232,7 @@ def set_enabled(config, enabled):
 
 
 def profile_content(raw):
-    return {key: raw[key] for key in ("system_prompt", "skills", "inference") if key in raw}
+    return {key: raw[key] for key in ("system_prompt", "skills", "inference", "persona", "coach") if key in raw}
 
 
 def read_profiles(repo):
@@ -244,7 +244,7 @@ def read_profiles(repo):
         validate_id(record["workflow_id"])
         if path.parent.name != record["workflow_id"] or not isinstance(record["parents"], list) or len(record["parents"]) > 128 or any(not isinstance(p, str) or not re.fullmatch(r"[0-9a-f]{64}", p) for p in record["parents"]):
             raise RuntimeContractError("Invalid profile identity or parents")
-        if not isinstance(record["content"], dict) or set(record["content"]) - {"inference"} != {"system_prompt", "skills"}:
+        if not isinstance(record["content"], dict) or set(record["content"]) - {"inference", "persona", "coach"} != {"system_prompt", "skills"}:
             raise RuntimeContractError("Invalid portable user configuration")
         if not isinstance(record["device_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", record["device_id"]) or not isinstance(record["created_at"], str) or len(record["created_at"]) > 64:
             raise RuntimeContractError("Invalid profile provenance")

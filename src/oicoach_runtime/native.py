@@ -1,5 +1,6 @@
 """Controlled native OMP entry, with separate physical frontend sessions."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -31,6 +32,11 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
     try:
         ensure_private_directory(root)
         lock = InstanceLock(root / "owner.lock")
+        from .prompt_composer import settings_digest
+        if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
+            workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
+            if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
+                raise RuntimeContractError("Profile changed during launch; no prompt was sent")
         code = _run_owned(config, config_path, workflow, lease, lock)
         return code
     finally:
@@ -49,6 +55,7 @@ def _run_owned(config, config_path, workflow, lease, lock):
     root = Path(lease["session_dir"])
     launch_id = str(uuid.uuid4())
     settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id,
+                "coach_id": lease["coach_id"],
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
                 "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled}
     private = root / (launch_id + ".json")
@@ -77,9 +84,12 @@ def _run_owned(config, config_path, workflow, lease, lock):
             argv += ["--no-" + option]
     memory = request(config.server.socket_path, "memory.recall", {"workflow_id": workflow_id, "task_id": task_id}) if workflow.memory_enabled else None
     instructions = workflow.render_parts("wake", {})[0] if workflow.instructions_in_system else ""
-    prompt_args = snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled, memory, instructions,
-                           builtin_skills=workflow.builtin_skills)
-    argv += ["--system-prompt" if item == "--append-system-prompt" else item for item in prompt_args]
+    directories = ()
+    if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
+        from .omp_config import skill_directories
+        directories = asyncio.run(skill_directories(config, str(workflow.workspace), environment))
+    argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled, memory, instructions,
+                     builtin_skills=workflow.builtin_skills, skill_directories=directories)
     overlay = root / "native.yml"
     overlay.write_text(json.dumps({"autoResume": False, "startup": {"setupWizard": False}}))
     overlay.chmod(0o600)

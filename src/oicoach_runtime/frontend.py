@@ -70,7 +70,8 @@ class Frontend:
             raise ConflictError("Native session is released or uncertain; no automatic replay")
         return record
 
-    def begin(self, workflow_id, task_id, workspace, conversation_id=None, new=False):
+    def begin(self, workflow_id, task_id, workspace, conversation_id=None, new=False, settings=None,
+              workflow_revision="", workflow_instructions=""):
         validate_id(workflow_id)
         validate_id(task_id)
         if type(new) is not bool or (new and conversation_id):
@@ -81,16 +82,22 @@ class Frontend:
         conversation_id = conversation_id or str(uuid.uuid4())
         validate_id(conversation_id)
         owner_token = secrets.token_hex(32)
+        from .prompt_composer import settings_digest, persona_digest
+        settings = settings or {"schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": []}
         with self.store.transaction() as db:
             old = self.store.metadata(PREFIX + conversation_id)
             if old and (old["workflow_id"] != workflow_id or old["task_id"] != task_id or old["workspace"] != str(workspace)):
                 raise ConflictError("Native conversation belongs to another scope or workspace")
             if old and old["status"] != "released":
                 raise ConflictError("Native conversation has an active or uncertain owner; use --new or inspect frontend status")
+            if old and old.get("persona_digest", persona_digest({})) != persona_digest(settings):
+                raise ConflictError("Persona changed; start --new (or a new task). The old conversation and original settings remain intact")
+            if old and old.get("workflow_revision", workflow_revision) != workflow_revision:
+                raise ConflictError("Workflow revision changed; start --new and preserve the old conversation")
             key = hashlib.sha256(canonical_json([workflow_id, task_id, conversation_id]).encode()).hexdigest()
             directory = self.store.config.state_dir / "native" / key
             record = {"contract_version": 1, "conversation_id": conversation_id, "workflow_id": workflow_id,
-                "coach_id": workflow_id, "task_id": task_id, "workspace": str(workspace), "binding_id": key,
+                "coach_id": settings.get("coach", {}).get("id", workflow_id), "task_id": task_id, "workspace": str(workspace), "binding_id": key,
                 "session_dir": str(directory), "session_id": old.get("session_id") if old else None,
                 "session_file": old.get("session_file") if old else None,
                 "session_files": old.get("session_files", []) if old else [],
@@ -99,6 +106,11 @@ class Frontend:
                 "parent_pid": os.getpid(), "guardian_pid": None, "guardian_identity": None,
                 "omp_pid": None, "omp_identity": None, "last_heartbeat_at": None,
                 "observation": None, "created_at": old["created_at"] if old else self.store.timestamp()}
+            record.update(configuration_digest=settings_digest(settings), persona_digest=persona_digest(settings),
+                          workflow_revision=workflow_revision,
+                          config_key="frontend-config:v1:" + conversation_id + ":" + str(record["generation"]))
+            self.store._set_metadata(db, record["config_key"], {"settings": settings,
+                "workflow_instructions": workflow_instructions, "workflow_revision": workflow_revision})
             self.save(db, record)
         return {**self.public(record), "owner_token": owner_token}
 

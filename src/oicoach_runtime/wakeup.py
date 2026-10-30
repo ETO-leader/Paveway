@@ -61,5 +61,14 @@ class Wakeup:
                    "intent": parameters["intent"], "conversation_id": record["conversation_id"],
                    "wakeup_when": semantic, "message": parameters["reason"]}
         fingerprint = hashlib.sha256(canonical_json([workflow, task, semantic, payload]).encode()).hexdigest()
-        return self.store.enqueue(workflow, task, parameters["reason"], parameters["dedupe_key"], payload,
-                                  at=due, request_identity=fingerprint)
+        event = self.store.enqueue(workflow, task, parameters["reason"], parameters["dedupe_key"], payload,
+                                   at=due, request_identity=fingerprint)
+        key = "native-wakeup-config:v1:" + event["event_id"]
+        if self.store.metadata(key) is None:
+            snapshot = self.store.metadata(record["config_key"])
+            if not snapshot:
+                raise ConflictError("Native launch snapshot is missing; inspect the queued event before retrying")
+            with self.store.transaction() as db:
+                self.store._set_metadata(db, key, {**snapshot,
+                    "binding_task_id": "native-" + hashlib.sha256(record["conversation_id"].encode()).hexdigest()})
+        return event

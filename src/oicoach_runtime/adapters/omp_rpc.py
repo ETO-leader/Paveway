@@ -78,39 +78,8 @@ class OmpRpc:
         return self.process.pid, process_identity(self.process.pid)
 
     async def _skill_directories(self, workspace, environment):
-        """Preserve native directories: OMP overlays replace list settings."""
-        process = None
-        try:
-            query_environment = dict(environment)
-            if self.config.agent.profile:
-                query_environment["OMP_PROFILE"] = self.config.agent.profile
-            async with asyncio.timeout(self.config.agent.startup_timeout_seconds):
-                process = await asyncio.create_subprocess_exec(
-                    self.config.agent.executable, "config", "get", "skills.customDirectories", "--json",
-                    cwd=workspace, env=query_environment, stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_FRAME)
-                try:
-                    await process.stdout.readexactly(MAX_FRAME + 1)
-                except asyncio.IncompleteReadError as error:
-                    data = error.partial
-                else:
-                    raise ValueError("Oversized skill configuration")
-                if await process.wait() != 0:
-                    raise ValueError("Native configuration query failed")
-                result = json.loads(data)
-                directories = result.get("value") if isinstance(result, dict) else None
-                if not isinstance(directories, list) or any(not isinstance(path, str) for path in directories):
-                    raise ValueError("Invalid native skill directories")
-                return tuple(directories)
-        except (OSError, TimeoutError, ValueError, RecursionError):
-            raise AgentError("Cannot load native OMP skill directories", code="agent_skill_config_error") from None
-        finally:
-            if process is not None and process.returncode is None:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                await process.wait()
+        from ..omp_config import skill_directories
+        return await skill_directories(self.config, workspace, environment)
 
     async def _watch_exit(self):
         # Process.wait can wait for pipes retained by orphaned tools. returncode

@@ -65,7 +65,7 @@ export default async function paveway(pi) {
                 const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
                 config.generation = owner.generation;
                 admitted = true;
-                ctx.ui.setStatus("paveway", `GPT · ${config.workflow_id}/${config.task_id} · OMP native`);
+                ctx.ui.setStatus("paveway", `GPT · ${config.coach_id}/${config.task_id} · OMP native`);
                 await wakeups.refresh(ctx);
             } catch { stop(); }
         };
@@ -95,7 +95,7 @@ export default async function paveway(pi) {
             } catch (error) { ctx.ui.notify(error.message, "error"); }
         }});
         pi.registerCommand("coach", {description: "Show the bound GPT environment", handler: async (_args, ctx) => {
-            ctx.ui.notify(`GPT · ${config.workflow_id}/${config.task_id}\nSession: ${ctx.sessionManager.getSessionId()}\nContext: OMP native`, "info");
+            ctx.ui.notify(`GPT · ${config.coach_id}/${config.task_id}\nSession: ${ctx.sessionManager.getSessionId()}\nContext: OMP native`, "info");
         }});
     } catch { stop(); }
 }

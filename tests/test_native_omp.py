@@ -79,11 +79,11 @@ class NativeOmpTests(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
-    def chat(self, body, background=False, switch=False, wakeup=False):
+    def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
-            "--workflow", "native-test"], env=self.env, stdin=slave, stdout=slave, stderr=slave)
+            "--workflow", workflow, *(["--new"] if new else [])], env=self.env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         os.set_blocking(master, False)
         output = bytearray()
@@ -234,3 +234,24 @@ class NativeOmpTests(unittest.TestCase):
         self.assertEqual(event["payload"]["message"], "NATIVE_TOOL_REMINDER")
         self.assertEqual(event["status"], "queued")
         self.assertTrue(any(any(message.get("role") == "tool" for message in body["messages"]) for body in self.server.requests))
+
+    def test_two_persona_profiles_reach_native_model_without_identity_leakage(self):
+        from oicoach_runtime.coaches import create
+        a = create(self.config, "alpha", "native-test", "ALPHA_NATIVE_PERSONA")
+        b = create(self.config, "beta", "native-test", "BETA_NATIVE_PERSONA")
+        def main_request(marker):
+            # Native auxiliary title requests use a different system prompt.
+            # Identify the main GPT request by our own Core, not provider timing
+            # or exact OMP user-message wrapper wording.
+            return next(row for row in reversed(self.server.requests)
+                        if marker in json.dumps(row["messages"]) and "Identity rule:" in json.dumps(row["messages"]))
+        first = self.chat("ALPHA_CHAT", workflow=a["runtime_workflow_id"])
+        wire = json.dumps(main_request("ALPHA_CHAT"))
+        self.assertIn("ALPHA_NATIVE_PERSONA", wire)
+        self.assertNotIn("BETA_NATIVE_PERSONA", wire)
+        self.assertNotIn("You are omp's trusted coding assistant", wire)
+        second = self.chat("BETA_CHAT", workflow=b["runtime_workflow_id"])
+        wire = json.dumps(main_request("BETA_CHAT"))
+        self.assertIn("BETA_NATIVE_PERSONA", wire)
+        self.assertNotIn("ALPHA_NATIVE_PERSONA", wire)
+        self.assertNotEqual(first["session_id"], second["session_id"])

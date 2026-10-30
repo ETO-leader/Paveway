@@ -48,6 +48,11 @@ class Runtime:
         self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
+        if command in ("coach.state.show", "coach.state.put"):
+            from .coaches import state
+            fields = ("coach_id", "key") + (("value", "expected_version") if command.endswith("put") else ())
+            arguments(raw, fields, fields)
+            return state(self.store, **raw)
         if command.startswith("wakeup."):
             from .wakeup import Wakeup
             arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
@@ -91,7 +96,9 @@ class Runtime:
             if operation == "begin":
                 arguments(raw, ("workflow_id", "task_id", "conversation_id", "new"), ("workflow_id", "task_id"))
                 workflow = self.provider.describe(raw["workflow_id"])
-                return frontend.begin(**raw, workspace=workflow.workspace)
+                instructions = workflow.render_parts("wake", {})[0] if workflow.instructions_in_system else ""
+                return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
+                                      workflow_revision=workflow.revision, workflow_instructions=instructions)
             contracts = {
                 "started": ("conversation_id", "generation", "owner_token", "guardian_pid"),
                 "attest": ("conversation_id", "generation", "owner_token", "omp_pid", "session_id", "session_file"),
@@ -262,7 +269,25 @@ class Runtime:
                 state["tool"] = tool if tool in ("read", "write", "bash", "todo", "glob", "grep") else "external-tool"
         try:
             workflow = self.provider.describe(event["workflow_id"])
-            binding = self.store.bind(event, workflow)
+            trusted = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
+            binding_event = event
+            if event["payload"].get("native_wakeup"):
+                if not trusted:
+                    raise RuntimeContractError("Native wakeup configuration evidence is missing; no prompt was sent")
+                if trusted["workflow_revision"] != workflow.revision:
+                    raise RuntimeContractError("Workflow revision changed after native scheduling; inspect the event and start a new conversation")
+                from dataclasses import replace
+                workflow = replace(workflow, customization=trusted["settings"])
+                binding_event = {**event, "task_id": trusted["binding_task_id"]}
+            binding = self.store.bind(binding_event, workflow)
+            from .prompt_composer import persona_digest
+            persona_key = "persona-binding:v1:" + binding["binding_id"]
+            original_persona = self.store.metadata(persona_key)
+            current_persona = persona_digest(workflow.customization)
+            if (original_persona is not None and original_persona != current_persona) or (original_persona is None and binding["session_file"] and workflow.customization.get("persona")):
+                raise RuntimeContractError("Persona changed; use a new task/session instead of changing identity inside this conversation")
+            with self.store.transaction() as db:
+                self.store._set_metadata(db, persona_key, current_persona)
             binding["customization"] = workflow.customization
             binding["builtin_skills"] = workflow.builtin_skills
             envelope = {
@@ -283,6 +308,8 @@ class Runtime:
                 envelope["memory"]["location"] = "system_prompt.runtime_memory_snapshot"
                 envelope["available_tools"][0]["commands"].extend(["memory", "history"])
             binding["workflow_instructions"], prompt = workflow.render_parts("wake", envelope)
+            if trusted:
+                binding["workflow_instructions"] = trusted["workflow_instructions"]
             self.agent_health = "starting"
             stage = "startup"
             pid, identity = await agent.start(binding, run_id)

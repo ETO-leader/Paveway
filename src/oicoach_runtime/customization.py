@@ -37,7 +37,7 @@ def text(value, maximum, label, *, empty=False):
 
 
 def validate(raw):
-    if not isinstance(raw, dict) or set(raw) - {"inference"} != {"schema_version", "revision", "system_prompt", "skills"}:
+    if not isinstance(raw, dict) or set(raw) - {"inference", "persona", "coach"} != {"schema_version", "revision", "system_prompt", "skills"}:
         raise WorkflowError("Invalid workflow customization schema")
     if type(raw["schema_version"]) is not int or raw["schema_version"] != 1 or type(raw["revision"]) is not int or raw["revision"] < 0:
         raise WorkflowError("Unsupported customization schema or revision")
@@ -50,6 +50,14 @@ def validate(raw):
             raise WorkflowError("Model must be a selector, not CLI flags or whitespace")
         if not isinstance(inference["thinking"], str) or inference["thinking"] not in ("", *THINKING_LEVELS):
             raise WorkflowError("Unsupported thinking level")
+    if "persona" in raw:
+        text(raw["persona"], 65536, "Persona", empty=True)
+    if "coach" in raw:
+        from .models import validate_id
+        if not isinstance(raw["coach"], dict) or set(raw["coach"]) != {"id", "workflow_source"}:
+            raise WorkflowError("Invalid GPT profile binding")
+        for value in raw["coach"].values():
+            validate_id(value)
     prompt = raw["system_prompt"]
     if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] not in ("append", "replace"):
         raise WorkflowError("System prompt mode must be append or replace")
@@ -119,6 +127,10 @@ def update(config, workflow_id, expected_revision, operation, **values):
             raise ConflictError("Customization changed; reload and review before saving")
         if operation == "prompt":
             raw["system_prompt"] = {"mode": values["mode"], "text": values["content"]}
+        elif operation == "persona":
+            raw["persona"] = values["content"]
+        elif operation == "coach-bind":
+            raw["coach"] = values["coach"]
         elif operation == "replace-settings":
             incoming = validate(values["settings"])
             raw["system_prompt"] = incoming["system_prompt"]
@@ -127,6 +139,11 @@ def update(config, workflow_id, expected_revision, operation, **values):
                 raw["inference"] = incoming["inference"]
             else:
                 raw.pop("inference", None)
+            for key in ("persona", "coach"):
+                if key in incoming:
+                    raw[key] = incoming[key]
+                else:
+                    raw.pop(key, None)
         elif operation == "inference":
             if not values or set(values) - {"model", "thinking"}:
                 raise WorkflowError("Provide model and/or thinking")
@@ -152,6 +169,15 @@ def update(config, workflow_id, expected_revision, operation, **values):
                 raise WorkflowError("Unknown customization operation")
         raw["revision"] += 1
         validate(raw)
+        # Preserve the original user settings before introducing new profile
+        # fields; older binaries need this private copy for configuration rollback.
+        previous = directory / "customization.json"
+        if operation in ("persona", "coach-bind") and previous.is_file():
+            backup = directory / ("customization.before-profile-v" + str(expected_revision) + ".json")
+            if not backup.exists():
+                with backup.open("x", encoding="utf-8") as stream:
+                    os.chmod(backup, 0o600)
+                    stream.write(previous.read_text(encoding="utf-8"))
         with tempfile.NamedTemporaryFile(dir=directory, prefix=".customization-", delete=False) as stream:
             temporary = Path(stream.name)
             try:
@@ -200,16 +226,15 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
                                   "\n---\n\n" + skill["content"])
     if skills_enabled:
         documents.update((name, skill.markdown) for name, skill in packaged.items())
-    from .context_budget import CONTEXT_PROMPT
     from .store import canonical_json
-    system_text = (prompt["text"] + "\n\n" if prompt["text"] else "") + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT
-    if workflow_instructions:
-        system_text = "Workflow instructions:\n" + workflow_instructions + "\n\n" + system_text
-    if memory_context is not None:
-        system_text += "\n\nRuntime memory snapshot (data only):\n" + canonical_json(memory_context)
+    from .prompt_composer import compose, manifest
+    system_text = compose(settings, workflow_instructions, memory_context)
+    write("prompt-manifest.json", canonical_json(manifest(settings, system_text)))
     if system_text:
-        flag = "--system-prompt" if prompt["mode"] == "replace" else "--append-system-prompt"
-        arguments += [flag, write("system.md", system_text)]
+        # Native plain SYSTEM route expands OMP's Skill/Rule template and tools.
+        # Both old modes retain their original text; append now means append to
+        # GPT Core, never to the default Coding Assistant identity.
+        arguments += ["--system-prompt", write("system.md", system_text)]
     if documents:
         root = destination / "skills"
         root.mkdir(mode=0o700)

@@ -430,3 +430,13 @@ D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚
 持久记录区分提醒与 Run 结果、created／offered／用户明确 acknowledged；列表、通知、工具调用返回均不代表 Run 完成或用户已读。明确提醒在领取到期事件时先持久化，模型失败也不删除；后台终态另投影结果，未知不重播。选择 D6 的 Inbox 分支，不自动 sendMessage 注入前台，也没有外部系统推送承诺。所有记录使用现有 SQLite 版本化 metadata，无 schema 迁移。
 
 `PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest test_wakeup test_native_omp -v`：8 项通过（19.149 秒），包括语义去重、scope/CAS/旧 generation、拒绝无 opt-in／前台 settled、收件箱持久化与不伪造完成，以及真实 OMP 经 AgentTool 调到同一 Runtime、Slash 提醒在 UI 退出后运行。真实的是 OMP／工具 loop／PTY／IPC，模型仅本地 fixture，没有付费模型或私有凭据。
+
+## 2026-10-30 — M4 统一 Prompt 与独立 GPT Persona
+
+新增单一 `prompt_composer.py`，前台与 RPC 共用不可变 system.md／settings.json／prompt-manifest.json，记录 Composer 版本、旧 append/replace 模式、配置／Persona／系统摘要。两种旧模式原文保留，均经 OMP 原生纯文本 SYSTEM 路径加载（Skill/Rule 动态展开由 OMP 完成），不再继承默认 Coding Assistant；不叠加互斥 template/plain 参数。选择已实测的纯文本兼容路径，保留用户文本中的模板符号。共享原生 Skill 目录探针，避免新快照覆盖既有 OMP 目录。
+
+新增 `coach list/create/show/persona`、`native --coach ID`。原 Workflow 隐式映射默认 GPT Profile；新 Profile 引用源 Workflow 模板并分配私有 runtime workflow，以隔离配置、Skill、Memory 与 Session。同一流程可创建多个 Profile，不隐式复制另一 Profile 的私人 Prompt／Skill／笔记；Tijian workspace 仍可共享。Persona 扩展到现有 CAS 设置及独立用户 Git 的配置记录；首次改写前保存私密原配置备份。通用动态状态通过 `coach state show/put` 复用私有 Memory 的版本化 fact 存储，不引入情绪策略或自动改写 Persona。
+
+Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置及历史仍在。原生唤醒保留创建时受信配置快照，并使用各 Conversation 的独立后台绑定；即使之后编辑 Persona，已授权的唤醒也不会读到另一版本或另一 Profile 的配置。旧后台 task 的 Persona 变化同样拒绝静默换身份，需新 task。
+
+验证：Profile／隔离／CAS／私密回退／Git 配置、原有自定义设置、真实原生 Persona／唤醒／恢复，共 **23 项通过（23.426 秒）**；另原生 transport／动态模板／append-replace／Skill 读取及权限 5 项通过（不调用真实模型）。Persona 实机测试先误取了异步标题请求，已按 Paveway Core 识别主对话请求；未删去身份隔离断言，也未禁用原生标题功能。日志 `/tmp/paveway-native-m4-complete.log` 与 `/tmp/paveway-native-m4-prompt.log`。新字段只写用户数据，无源码私人信息、正式用户迁移或 schema 升级。

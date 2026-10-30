@@ -91,10 +91,35 @@ def parser() -> argparse.ArgumentParser:
     ui.add_argument("--task", default="training")
     native = commands.add_parser("native", help="Experimental controlled OMP native TUI; legacy ui remains available")
     common(native)
-    native.add_argument("--workflow", required=True)
+    selection = native.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--workflow")
+    selection.add_argument("--coach", help="GPT profile ID; private runtime scope is resolved by Paveway")
     native.add_argument("--task", default="training")
     native.add_argument("--conversation")
     native.add_argument("--new", action="store_true")
+    coach = commands.add_parser("coach", help="Manage isolated GPT Persona profiles; updates activate on new conversations")
+    coach_operations = coach.add_subparsers(dest="operation", required=True)
+    common(coach_operations.add_parser("list"))
+    state = coach_operations.add_parser("state")
+    state_actions = state.add_subparsers(dest="state_operation", required=True)
+    for action in ("show", "put"):
+        child = state_actions.add_parser(action)
+        common(child)
+        child.add_argument("identifier")
+        child.add_argument("key")
+        if action == "put":
+            child.add_argument("--value-file", type=Path, required=True)
+            child.add_argument("--expected-version", type=int, required=True)
+    for name in ("create", "show", "persona"):
+        child = coach_operations.add_parser(name)
+        common(child)
+        child.add_argument("identifier")
+        if name == "create":
+            child.add_argument("--workflow", required=True, help="Reusable source workflow template; private settings/memory are not copied")
+            child.add_argument("--persona-file", type=Path)
+        if name == "persona":
+            child.add_argument("--content-file", type=Path, required=True)
+            child.add_argument("--expected-revision", type=int, required=True)
     frontend = commands.add_parser("frontend", help="Inspect native ownership/history; recover only after checking an interrupted session")
     operations = frontend.add_subparsers(dest="operation", required=True)
     listing = operations.add_parser("list")
@@ -448,7 +473,41 @@ def main(argv: list[str] | None = None) -> int:
         path = (args.config or (Path(os.environ["OICOACH_CONFIG"]) if os.environ.get("OICOACH_CONFIG") else default_config_path())).absolute()
         if args.command == "native":
             from .native import run
-            return run(load_config(path), path, args.workflow, args.task, args.conversation, args.new)
+            config = load_config(path)
+            workflow_id = args.workflow
+            if args.coach:
+                from .coaches import resolve
+                workflow_id = resolve(config, args.coach)["runtime_workflow_id"]
+            return run(config, path, workflow_id, args.task, args.conversation, args.new)
+        elif args.command == "coach":
+            from . import coaches, customization
+            config = load_config(path)
+            if args.operation == "list":
+                report = {"profiles": coaches.profiles(config)}
+            elif args.operation == "state":
+                raw = {"coach_id": args.identifier, "key": args.key}
+                if args.state_operation == "put":
+                    with args.value_file.open("rb") as stream:
+                        encoded = stream.read(4097)
+                    if len(encoded) > 4096:
+                        raise RuntimeContractError("GPT state value exceeds 4 KiB")
+                    raw.update(value=json.loads(encoded), expected_version=args.expected_version)
+                report = request(config.server.socket_path, "coach.state." + args.state_operation, raw)
+            elif args.operation == "create":
+                content = ""
+                if args.persona_file:
+                    with args.persona_file.open("rb") as stream:
+                        content = stream.read(65537).decode("utf-8")
+                report = coaches.create(config, args.identifier, args.workflow, content)
+            else:
+                profile = coaches.resolve(config, args.identifier)
+                if args.operation == "show":
+                    report = {**profile, **customization.show(config, profile["runtime_workflow_id"])}
+                else:
+                    with args.content_file.open("rb") as stream:
+                        content = stream.read(65537).decode("utf-8")
+                    report = customization.update(config, profile["runtime_workflow_id"], args.expected_revision,
+                                                  "persona", content=content)
         elif args.command == "frontend":
             raw = {"workflow_id": args.workflow, "task_id": args.task} if args.operation == "list" else {"conversation_id": args.conversation}
             if args.operation == "messages":

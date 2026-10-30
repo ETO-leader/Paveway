@@ -90,7 +90,7 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(settings, session, "run1", True)
-        self.assertIn("--append-system-prompt", argv)
+        self.assertIn("--system-prompt", argv)
         old_prompt = Path(argv[1]).read_text()
         self.assertEqual(old_prompt, "旧系统提示\n\n" + RUNTIME_PROMPT)
         self.assertNotIn("原生正文", old_prompt)
@@ -115,7 +115,7 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "identity-session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(settings, session, "identity", False)
-        self.assertEqual(argv[0], "--append-system-prompt")
+        self.assertEqual(argv[0], "--system-prompt")
         self.assertEqual(Path(argv[1]).read_text(), RUNTIME_PROMPT)
         self.assertEqual(event.read_bytes(), original)
         self.assertEqual(json.dumps(settings), before)
@@ -131,7 +131,7 @@ class CustomizationTests(unittest.TestCase):
         for mode in ("append", "replace"):
             settings = self.update("prompt", mode=mode, content="CUSTOM_SYSTEM")
             argv = custom.snapshot(settings, session, mode, True)
-            self.assertEqual(argv[0], "--system-prompt" if mode == "replace" else "--append-system-prompt")
+            self.assertEqual(argv[0], "--system-prompt")
             prompt = Path(argv[1]).read_text()
             self.assertEqual(prompt, "CUSTOM_SYSTEM\n\n" + RUNTIME_PROMPT)
             for category in custom.SKILL_CATEGORIES:
@@ -163,7 +163,7 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "legacy-session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(loaded, session, "legacy", True)
-        self.assertIn("--append-system-prompt", argv)
+        self.assertIn("--system-prompt", argv)
         native = Path(json.loads(Path(argv[3]).read_text())["skills"]["customDirectories"][0])
         self.assertIn("[personal skill] old", (native / "old-skill/SKILL.md").read_text())
         self.assertEqual((session / "customizations/legacy/system.md").read_text(), RUNTIME_PROMPT)

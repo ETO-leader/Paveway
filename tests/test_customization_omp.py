@@ -105,6 +105,7 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
                         prompt = json.dumps(state["systemPrompt"], ensure_ascii=False)
                         self.assertIn(marker, prompt)
                         self.assertIn(IDENTITY_PROMPT, prompt)
+                        self.assertNotIn("You are omp's trusted coding assistant", prompt)
                         self.assertIn("NATIVE_SKILL_DISCOVERY", prompt)
                         self.assertNotIn("DISABLED_DISCOVERY", prompt)
                         self.assertNotIn("DISABLED_BODY", prompt)
