@@ -56,7 +56,7 @@ fi
 # Resolve user-relative paths before changing to the project directory.
 if [[ "$config_path" != /* ]]; then config_path="$PWD/$config_path"; fi
 cd -- "$project_dir"
-python="$project_dir/.venv/bin/python"
+python="${PAVEWAY_PYTHON:-$project_dir/.venv/bin/python}"
 if [[ ! -x "$python" ]]; then
     command -v python3 >/dev/null || { printf '需要 Python 3.11+。\n' >&2; exit 1; }
     python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "需要 Python 3.11+。")'

@@ -8,12 +8,12 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from oicoach_runtime.cli import initialize
-from oicoach_runtime.config import load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.workflow_setup import create
-
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = PROJECT_DIR / "paveway.sh"
@@ -26,11 +26,15 @@ class PavewayScriptTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config_path = self.root / "config.toml"
         initialize(self.config_path, str(self.root / "state"), str(self.root / "workflows"))
-        self.config = load_config(self.config_path)
+        config = load_config(self.config_path)
+        fake_omp = Path(__file__).resolve().parent / "fake_omp.py"
+        fake_omp.chmod(0o755)
+        self.config = replace(config, agent=replace(config.agent, executable=str(fake_omp)))
+        self.config_path.write_text(config_text(self.config))
 
     def _run_script(self, args=(), input_lines=(), pty_eof=False, timeout=15):
         master, slave = pty.openpty()
-        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1")
+        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1", PAVEWAY_PYTHON=sys.executable)
         cmd = [str(SCRIPT_PATH), "--config", str(self.config_path), *args]
         proc = subprocess.Popen(
             cmd,
