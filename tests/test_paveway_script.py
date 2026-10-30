@@ -3,6 +3,7 @@
 import os
 import pty
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -53,10 +54,14 @@ class PavewayScriptTests(unittest.TestCase):
                 pass
         self.temp.cleanup()
 
-    def _run_script(self, args=(), input_lines=(), pty_eof=False, timeout=15):
+    def _run_script(self, args=(), input_lines=(), pty_eof=False, timeout=15,
+                    script_path=SCRIPT_PATH, python=sys.executable):
         master, slave = pty.openpty()
-        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1", PAVEWAY_PYTHON=sys.executable)
-        cmd = [str(SCRIPT_PATH), "--config", str(self.config_path), *args]
+        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1")
+        env.pop("PAVEWAY_PYTHON", None)
+        if python is not None:
+            env["PAVEWAY_PYTHON"] = python
+        cmd = [str(script_path), "--config", str(self.config_path), *args]
         proc = subprocess.Popen(
             cmd,
             stdin=slave,
@@ -129,6 +134,43 @@ class PavewayScriptTests(unittest.TestCase):
                 proc.wait()
 
         return proc.returncode, output.decode("utf-8", errors="replace")
+
+    def test_upgrade_bootstrap_installs_new_dependency_before_startup(self):
+        """An old editable install must not pass when the new YAML import fails."""
+        checkout = self.root / "checkout"
+        executable = checkout / ".venv/bin/python"
+        executable.parent.mkdir(parents=True)
+        (checkout / "src").symlink_to(PROJECT_DIR / "src", target_is_directory=True)
+        script = checkout / "paveway.sh"
+        shutil.copy2(SCRIPT_PATH, script)
+        installed = checkout / "install-requested"
+        # Use the actual dependency probe/imports. Only the missing module and
+        # installer are isolated; this test must not install packages or launch
+        # a second daemon. The old probe skips pip and exits with code 17.
+        executable.write_text(f'''#!{sys.executable}
+import importlib.abc
+from pathlib import Path
+import sys
+marker = Path({str(installed)!r})
+if sys.argv[1:4] == ["-m", "pip", "install"]:
+    marker.write_text("install")
+    raise SystemExit(0)
+if sys.argv[1] == "-c" and sys.argv[2].startswith("import oicoach_runtime"):
+    sys.path.insert(0, {str(PROJECT_DIR / 'src')!r})
+    class MissingYaml(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "yaml":
+                raise ModuleNotFoundError("simulated old environment missing PyYAML")
+    sys.meta_path.insert(0, MissingYaml())
+    exec(sys.argv[2])
+else:
+    raise SystemExit(0 if marker.exists() else 17)
+''')
+        executable.chmod(0o755)
+        code, out = self._run_script(script_path=script, python=None)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(installed.exists())
+        self.assertIn("正在安装 Paveway 依赖", out)
 
     def test_first_launch_no_workflow_interactive_creates_id(self):
         """1. 首次启动无 Workflow，输入 oi-coach，实际创建该 ID。"""

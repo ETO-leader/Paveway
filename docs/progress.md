@@ -401,3 +401,10 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 新增真实 OMP 模板展开的无模型验证：动态工具／Skill 索引、禁用权限、正文按需读取和身份替换。隔离原生检查共 5 项通过；不等于统一 Prompt Composer／Persona 迁移已实现。完整 M0 的 Guard 四种故障均无模型请求且 fail-stop，但辅助路径仍使完整 D4 BLOCKED。
 
 依据契约 D4 保留旧入口，M1–M6 不提前验收；未修改生产 schema、用户数据、OMP／Tijian 上游或默认启动器。Windows Tijian MCP、真实模型、Browser／Subagent 未测试。复现命令、日志、失败样例与回退边界见 [本机复验记录](verification/omp-m0-wsl-2026-10-30.md)。
+
+
+## 2026-10-30 — M0 范围变更：取消固定 10k 限制
+
+用户在原生重构期间明确回复「取消 10k limit」，取代先前固定 Guard 门槛。后台不再加载预算扩展，只验证原生 RPC ready/protocol；prompt 不再宣称 10k 裁剪，记忆快照去掉 token 上限，仅保留 64 KiB IPC 字节边界。用户自定义 prompt、Skill、既存 event.md 和历史原文均未改写。旧预算算法仅保留历史探针，不进入默认路径。
+
+D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚点；D6 采用持久 Inbox、不自动注入；D7 原生索引必须完成才切默认入口。这些分支不变。另修复启动器遗漏 PyYAML 检查造成旧环境升级失败的实际问题。定向验证 41 项，40 通过、1 opt-in 跳过（6.375 秒），包含真实 fake-daemon 完成与旧 CLI/UI 启动。无 schema／正式数据变化。后续逐阶段新增显式原生入口。

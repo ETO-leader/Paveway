@@ -6,9 +6,7 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用�
 
 当前版本 **0.20.1**：运行框架 M0–M4、Tijian 原生 stdio MCP 接入、首次启动交互式 Workflow 创建、可编辑的 coach workflow、systemd user 部署、回复读取、L2 长期笔记、L3 历史检索、支持自定义系统提示词/User Skill 的终端 UI，以及独立 Git 多设备配置与历史同步已实现。
 
-0.20.1 修复 Paveway Context Guard 初始化／裁剪异常被 OMP 吞掉后继续推理的问题：已加载的 Guard 发生异常时同步报告固定诊断并终止当前进程，后台按原有证据规则保留不确定结果，不自动重放。10k 裁剪算法不变。另修复重启回归测试的到期竞态和 PTY 测试解码器的宽字符覆写问题。**这不是 OMP 原生入口重构完成的发布**：同一子进程握手与缺失扩展拒绝已在隔离探针中验证，但原生 `/rename` 仍能绕过 context Guard 调用模型，完整 D4 仍未通过，默认保持旧 TUI/RPC；详见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
-
-2026-10-30 在 WSL2／OMP 18.10.4 重新验证：`/compact soft` 也能把普通请求已裁掉的输入送入辅助模型请求；原生入口继续关闭。已增加手动压缩探针和原生系统模板动态工具／Skill 权限验证，运行方式、结果及后续阶段限制见 [WSL2 复验记录](docs/verification/omp-m0-wsl-2026-10-30.md)。
+用户于 2026-10-30 明确取消固定 10k 限制：对话窗口与压缩改由 OMP 原生管理；Paveway 不再加载固定预算 Guard，也不再要求它的就绪帧。记忆快照仅受 64 KiB IPC 字节边界约束，超出的笔记仍可检索。原生入口重构分阶段进行，旧 TUI/RPC 保留；历史调查见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
 
 ## 能做什么
 
@@ -334,7 +332,7 @@ Tijian 的 outcome=uncertain 是另一层：模型正常收到工具错误时，
 
 当前任务仍通过独立 OMP session 恢复上下文（L1）。长期笔记（L2）支持用户偏好、事实、摘要和待验证推测；历史（L3）支持搜索既有输入/回复及只读查询原生 OMP 会话文字。无需 embedding 服务或额外 MCP，不修改 OMP 全局记忆设置。
 
-新建 coach workflow 默认开启记忆注入；旧 workflow 不自动覆盖，需在 manifest 顶层加入 `memory_enabled = true` 并合并新版 coach 记忆说明。修改模板时提升 workflow version，并使用新 task，原任务绑定的旧 revision 保留。共享笔记跨本 workflow 的 task 使用，带 --task 的笔记只注入该任务。每轮记忆快照最多 **10,000 tokens**，最近对话也独立限制为 **10,000 tokens**（o200k_base，按 JSON 文本计数）。记忆快照注入系统 prompt；事件 memory 字段仅保留预算、截断状态和位置，不再重复携带 notes。完整会话、记忆总库和 Git 历史仍保留，遗漏内容按需检索；单轮输入过大也可能被截短。系统规则、Skill 目录和工具定义另计，因此这不是整个 API 请求的 20k 上限。
+新建 coach workflow 默认开启记忆注入；旧 workflow 不自动覆盖，需在 manifest 顶层加入 `memory_enabled = true` 并合并新版 coach 记忆说明。修改模板时提升 workflow version，并使用新 task，原任务绑定的旧 revision 保留。共享笔记跨本 workflow 的 task 使用，带 --task 的笔记只注入该任务。记忆快照受 **64 KiB** 传输字节边界约束，最近对话不再由 Paveway 施加固定 token 上限，使用 OMP 原生模型窗口与压缩。记忆快照注入系统 prompt；事件 memory 字段仅保留截断状态和位置。完整会话、记忆总库和 Git 历史保留，遗漏内容按需检索。
 
 ```bash
 # 共享偏好；新建默认 expected-version=0。

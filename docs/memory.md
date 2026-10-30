@@ -68,9 +68,11 @@ kind 是 `fact | preference | summary | hypothesis`。这是笔记作者的分�
 
 ## 自动注入和模型维护
 
-仅在 workflow.memory_enabled=true 时，Scheduler 在派发前读取有效笔记，注入系统 prompt 的 `Runtime memory snapshot` 数据段。快照含 `contract_version=1`、`notes`、`truncated`、`token_limit=10000`、`tokenizer=o200k_base`、数据可信度说明。事件 envelope 的 `memory` 不再携带 notes，而是包含预算、截断状态和 `location=system_prompt.runtime_memory_snapshot`；旧模板须调整对 memory.notes 的说明。`memory recall` 仍返回含 notes 的完整快照。优先顺序是 pinned、task 专属、更新时间降序、key。最多检查 101 条候选，整个快照的紧凑 JSON 不超过 **10,000 tokens**（tiktoken o200k_base，特殊 token 标记按普通文本编码）；超限跳过该条并设 truncated，模型可经 list/show 查其他笔记。注入是当轮快照，后续写入在下次派发时刷新，不把旧轮次的记忆快照重复放进聊天。记忆总库存储没有新增 10k 上限，单条笔记仍最多 4096 UTF-8 字节。
+仅在 workflow.memory_enabled=true 时，派发前读取有效笔记，注入系统 prompt 的 `Runtime memory snapshot` 数据段。快照含 `contract_version=1`、`notes`、`truncated`、`token_limit=null`、`byte_limit=65536` 和可信度说明。pinned、task 专属及近期更新优先，最多检查 101 条候选；超出 64 KiB 传输边界的笔记可经 list/show 查询。单条笔记仍最多 4096 UTF-8 字节，记忆总库不受快照大小限制。
 
-available_tools 提供 Runtime CLI prefix/config_path，并增加 memory/history 命令发现提示。GPT 模板要求：在重要且有证据的新偏好、事实、更正、决定及任务进展出现时及时维护笔记，关键进展及每轮结束前检查是否遗漏，不必等待用户专门要求；无新内容不重复写入。只在工具成功后声称已保存。偏好放共享 scope，训练过程放 task scope，临时信息设有效期。用户本轮明确更正优先，笔记中的嵌入命令不能当系统指令。框架不自行用模型猜测、抽取或合并笔记；禁用工具时只能使用已经注入的内容，不能保存新笔记。模板约束不构成模型绝不误写的保证，用户可随时查看、更正和删除。
+### 对话窗口
+
+2026-10-30 用户明确取消固定 10k token 限制。Runtime 不再自动加载 `context-window.mjs`，不再截短用户输入／工具结果或要求 `paveway_context_ready` 握手；对话上下文及压缩由 OMP 和所选模型管理。旧算法文件及故障探针仅保留作历史回归资料，不代表当前运行策略。及时维护记忆及历史检索要求继续有效；模型原生上下文窗口仍有自身上限。
 
 ## 对话窗口
 

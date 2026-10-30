@@ -39,7 +39,7 @@ Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Shift+Tab 返回上一�
 
 0.18.0 起，每回合的原生系统提示都会附加命名约定：自称 GPT 或使用第一人称，不以 coaching title 自称。此约定在默认提示、append、replace 及 Skill/工具停用时都生效，保存在本轮 system.md 中；不会改写 event.md、用户保存的自定义正文、Skill 或旧历史。UI 的 `/prompt show` 仍只显示用户自定义部分。
 
-0.19.0 起，系统 prompt 还会附加两个独立 10,000-token 上下文预算的说明、及时维护记忆及按需检索要求；启用记忆时追加当轮有界 `Runtime memory snapshot` 数据段。用户保存的自定义正文和 Skill 不变，`/prompt show` 仍仅显示自定义部分。事件 envelope.memory 改为预算及快照位置，详细规则见 [记忆与对话窗口](memory.md#对话窗口)。
+系统 prompt 包含及时维护记忆及按需检索要求；启用记忆时追加当轮有界 `Runtime memory snapshot` 数据段。2026-10-30 起按用户要求取消固定 10k token 限制，使用 OMP 原生窗口及压缩；记忆快照仅受 IPC 传输字节边界约束。用户保存的自定义正文和 Skill 不变。
 
 ## 用户 Skill
 

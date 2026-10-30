@@ -19,7 +19,7 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertLess(count_tokens("a " * 15000), len(("a " * 15000).encode()))
         self.assertGreater(count_tokens("漢字🙂" * 5000), LIMIT_TOKENS)
         self.assertGreater(count_tokens("<|endoftext|>"), 0)
-        self.assertIn("10,000-token", CONTEXT_PROMPT)
+        self.assertIn("no fixed conversation token limit", CONTEXT_PROMPT)
 
     @unittest.skipUnless(shutil.which("bun") and shutil.which("omp"), "native OMP tokenizer requires bun and omp")
     def test_native_window_budget_tool_pairs_multibyte_and_archive_immutability(self):
@@ -122,8 +122,8 @@ process.stdout.write("INFERENCE_REACHED\n");
                 self.assertEqual("paveway_context_ready" in process.stdout, stage == "context")
 
 
-@unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for model acceptance")
-class RealContextBudgetTests(unittest.IsolatedAsyncioTestCase):
+@unittest.skip("Legacy fixed conversation guard retired by user request; retained algorithm tests above are archival")
+class LegacyContextBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_input_is_filtered_for_model_but_preserved_in_session(self):
         base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
         with tempfile.TemporaryDirectory(prefix="pw-context-model-") as directory:

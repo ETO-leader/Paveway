@@ -114,17 +114,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.event(original["event_id"])["status"], "uncertain")
         self.assertEqual(len((self.root / "fake-starts.jsonl").read_text().splitlines()), 2)
 
-    def test_missing_context_guard_never_dispatches_prompt(self):
+    def test_native_context_no_longer_requires_fixed_budget_extension(self):
         (self.root / "fake-mode").write_text("missing-context-guard")
         event = self.schedule()
-        self.wait_status(event["event_id"], ("dead_letter",))
+        self.wait_status(event["event_id"])
         runs = request(self.socket_path, "runs.list")
-        self.assertTrue(runs)
-        for run in runs:
-            self.assertEqual(run["error_code"], "agent_context_guard_missing")
-            self.assertIsNone(run["dispatch_intent_at"])
-        for session in (self.config.state_dir / "sessions").glob("*/session.json"):
-            self.assertEqual(json.loads(session.read_text())["prompts"], [])
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "succeeded")
+        self.assertIsNotNone(runs[0]["dispatch_intent_at"])
 
     def test_upcoming_cli_reports_due_time_and_filters_scope(self):
         due = utc_text(datetime.now(timezone.utc) + timedelta(minutes=10))
