@@ -48,6 +48,33 @@ class Runtime:
         self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
+        if command.startswith("frontend."):
+            from .frontend import Frontend
+            frontend = Frontend(self.store)
+            operation = command.removeprefix("frontend.")
+            if operation == "begin":
+                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new"), ("workflow_id", "task_id"))
+                workflow = self.provider.describe(raw["workflow_id"])
+                return frontend.begin(**raw, workspace=workflow.workspace)
+            contracts = {
+                "started": ("conversation_id", "generation", "owner_token", "guardian_pid"),
+                "attest": ("conversation_id", "generation", "owner_token", "omp_pid", "session_id", "session_file"),
+                "observe": ("conversation_id", "generation", "owner_token", "phase"),
+                "finish": ("conversation_id", "generation", "owner_token", "exit_code"),
+                "show": ("conversation_id",), "recover": ("conversation_id",),
+                "messages": ("conversation_id", "query", "offset"),
+            }
+            if operation == "list":
+                arguments(raw, ("workflow_id", "task_id"))
+                return [frontend.public(row) for row in frontend.records(**raw)][:100]
+            if operation not in contracts:
+                raise RuntimeContractError("Unknown frontend operation")
+            arguments(raw, contracts[operation], ("conversation_id",) if operation == "messages" else contracts[operation])
+            if operation == "show":
+                return frontend.public(frontend.get(**raw))
+            if operation == "messages":
+                return frontend.messages(**raw)
+            return getattr(frontend, operation)(**raw)
         if command == "sync.request":
             arguments(raw, ())
             from . import git_sync
@@ -407,6 +434,8 @@ class Runtime:
             self.store = Store(self.config)
             stack.callback(self.store.close)
             self.store.reconcile()
+            from .frontend import Frontend
+            Frontend(self.store).reconcile()
             if socket_path.exists() or socket_path.is_symlink():
                 info = socket_path.lstat()
                 if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():

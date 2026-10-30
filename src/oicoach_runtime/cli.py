@@ -93,6 +93,21 @@ def parser() -> argparse.ArgumentParser:
     common(native)
     native.add_argument("--workflow", required=True)
     native.add_argument("--task", default="training")
+    native.add_argument("--conversation")
+    native.add_argument("--new", action="store_true")
+    frontend = commands.add_parser("frontend", help="Inspect native ownership/history; recover only after checking an interrupted session")
+    operations = frontend.add_subparsers(dest="operation", required=True)
+    listing = operations.add_parser("list")
+    common(listing)
+    listing.add_argument("--workflow")
+    listing.add_argument("--task")
+    for name in ("show", "messages", "recover"):
+        child = operations.add_parser(name)
+        common(child)
+        child.add_argument("conversation")
+        if name == "messages":
+            child.add_argument("--query", default="")
+            child.add_argument("--offset", type=int, default=0)
     service = commands.add_parser("service", help="Render, install and manage owned systemd user units")
     service_commands = service.add_subparsers(dest="operation", required=True)
     for name in ("render", "install", "status", "logs", "start", "stop", "restart", "enable", "disable", "uninstall"):
@@ -420,7 +435,12 @@ def main(argv: list[str] | None = None) -> int:
         path = (args.config or (Path(os.environ["OICOACH_CONFIG"]) if os.environ.get("OICOACH_CONFIG") else default_config_path())).absolute()
         if args.command == "native":
             from .native import run
-            return run(load_config(path), path, args.workflow, args.task)
+            return run(load_config(path), path, args.workflow, args.task, args.conversation, args.new)
+        elif args.command == "frontend":
+            raw = {"workflow_id": args.workflow, "task_id": args.task} if args.operation == "list" else {"conversation_id": args.conversation}
+            if args.operation == "messages":
+                raw.update(query=args.query, offset=args.offset)
+            report = {"api_version": 1, "result": request(load_config(path).server.socket_path, "frontend." + args.operation, raw)}
         elif args.command == "ui":
             if args.json:
                 raise RuntimeContractError("The terminal UI is interactive; use the individual CLI commands for JSON")

@@ -49,7 +49,7 @@ export default async function paveway(pi) {
         if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
-        pi.on("session_start", async (_event, ctx) => {
+        const sessionReady = async (_event, ctx) => {
             try {
                 if (!ctx.hasUI) stop();
                 await runtimeRequest(config.socket_path, "status");
@@ -59,10 +59,26 @@ export default async function paveway(pi) {
                 writeSync(descriptor, frame);
                 const ack = Buffer.alloc(1);
                 if (readSync(descriptor, ack, 0, 1, null) !== 1 || ack[0] !== 65) stop();
+                const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
+                config.generation = owner.generation;
                 admitted = true;
                 ctx.ui.setStatus("paveway", `GPT · ${config.workflow_id}/${config.task_id} · OMP native`);
             } catch { stop(); }
-        });
+        };
+        pi.on("session_start", sessionReady);
+        pi.on("session_switch", sessionReady);
+        const bound = () => ({conversation_id: config.conversation_id, generation: config.generation, owner_token: config.owner_token});
+        for (const phase of ["agent_start", "agent_end", "session_shutdown"]) {
+            pi.on(phase, async () => {
+                if (!admitted) return;
+                try { await runtimeRequest(config.socket_path, "frontend.observe", {...bound(), phase}); }
+                catch { /* Unknown observation is not a completion or retry. */ }
+            });
+        }
+        const heartbeat = setInterval(() => {
+            if (admitted) runtimeRequest(config.socket_path, "frontend.observe", {...bound(), phase: "heartbeat"}).catch(() => {});
+        }, 10000);
+        heartbeat.unref();
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
             if (!admitted) stop();
             try {

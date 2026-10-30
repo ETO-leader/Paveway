@@ -79,18 +79,34 @@ class NativeOmpTests(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
-    def test_native_chat_preserves_long_input_and_exit_keeps_daemon(self):
+    def chat(self, body, background=False, switch=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
             "--workflow", "native-test"], env=self.env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
+        os.set_blocking(master, False)
         output = bytearray()
 
-        def until(text):
+        def send(data):
+            pending = bytearray(data)
+            deadline = time.monotonic() + 25
+            while pending and time.monotonic() < deadline:
+                readable, writable, _ = select.select([master], [master], [], 0.1)
+                if readable:
+                    chunk = os.read(master, 65536)
+                    output.extend(chunk)
+                    if b"\x1b[6n" in chunk:
+                        pending[:0] = b"\x1b[1;1R"
+                if writable:
+                    count = os.write(master, pending[:4096])
+                    del pending[:count]
+            self.assertFalse(pending, "fixture input was not consumed")
+
+        def until(text, requests=0, predicate=lambda: True):
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
-                if text.encode() in output:
+                if text.encode() in output and len(self.server.requests) >= requests and predicate():
                     return
                 if select.select([master], [], [], 0.1)[0]:
                     try:
@@ -104,10 +120,29 @@ class NativeOmpTests(unittest.TestCase):
 
         try:
             until("OMP native")
-            body = "NATIVE_HEAD " + "漢字 filler " * 6000 + " NATIVE_MIDDLE " + "漢字 filler " * 6000 + " NATIVE_TAIL"
-            os.write(master, b"\x1b[200~" + body.encode() + b"\x1b[201~\r")
-            until("M0_REPLY")
-            os.write(master, b"/exit\r")
+            if background:
+                with self.assertRaises(RuntimeContractError):
+                    request(self.config.server.socket_path, "frontend.begin", {"workflow_id": "native-test", "task_id": "training"})
+                event = request(self.config.server.socket_path, "schedule", {"workflow_id": "native-test", "task_id": "training",
+                    "reason": "independent background", "dedupe_key": "native-background", "at": "now"})
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    state = request(self.config.server.socket_path, "events.show", {"event_id": event["event_id"]})
+                    if state["status"] == "succeeded": break
+                    time.sleep(0.05)
+                self.assertEqual(state["status"], "succeeded")
+                self.assertTrue(list((self.config.state_dir / "sessions").glob("*/*.jsonl")))
+            baseline = len(self.server.requests)
+            send(b"\x1b[200~" + body.encode() + b"\x1b[201~\r")
+            until("M0_REPLY", requests=baseline + 1)
+            if switch:
+                before = request(self.config.server.socket_path, "frontend.list")[0]
+                send(b"/new\r")
+                until("OMP native", predicate=lambda: request(self.config.server.socket_path, "frontend.list")[0]["generation"] > before["generation"])
+                baseline = len(self.server.requests)
+                send(b"AFTER_NATIVE_NEW\r")
+                until("M0_REPLY", requests=baseline + 1)
+            send(b"/exit\r")
             deadline = time.monotonic() + 10
             while process.poll() is None and time.monotonic() < deadline:
                 if select.select([master], [], [], 0.1)[0]:
@@ -115,11 +150,14 @@ class NativeOmpTests(unittest.TestCase):
                     except OSError: break
             process.wait(timeout=5)
             self.assertEqual(process.returncode, 0, output.decode(errors="replace")[-2000:])
-            self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
             archives = list((self.config.state_dir / "native").rglob("*.jsonl"))
             self.assertTrue(any(body in path.read_text() for path in archives))
             self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
             self.assertNotIn(b"paveway_context_ready", output)
+            records = request(self.config.server.socket_path, "frontend.list")
+            self.assertEqual(records[0]["status"], "released")
+            self.assertNotIn("token_hash", records[0])
+            return records[0]
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -128,3 +166,36 @@ class NativeOmpTests(unittest.TestCase):
                     process.kill()
                     process.wait()
             os.close(master)
+
+    def test_native_chat_preserves_long_input_and_exit_keeps_daemon(self):
+        body = "NATIVE_HEAD " + "漢字 filler " * 6000 + " NATIVE_MIDDLE " + "漢字 filler " * 6000 + " NATIVE_TAIL"
+        self.chat(body, background=True)
+        self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
+
+    def test_native_resume_keeps_identity_and_readonly_archive(self):
+        first = self.chat("FIRST_NATIVE_MESSAGE")
+        second = self.chat("SECOND_NATIVE_MESSAGE")
+        self.assertEqual(first["session_id"], second["session_id"])
+        self.assertEqual(first["conversation_id"], second["conversation_id"])
+        self.assertGreater(second["generation"], first["generation"])
+        archive = request(self.config.server.socket_path, "frontend.messages", {"conversation_id": second["conversation_id"]})
+        self.assertTrue(any("FIRST_NATIVE_MESSAGE" in row["text"] for row in archive["messages"]))
+        self.assertTrue(any("SECOND_NATIVE_MESSAGE" in row["text"] for row in archive["messages"]))
+        from oicoach_runtime import git_sync
+        self.assertEqual(git_sync.cycle(self.config)["state"], "ok")
+        repository = Path(git_sync.settings(self.config)["repository"])
+        exports = [json.loads(path.read_text()) for path in repository.glob("devices/*/sessions/*.json")]
+        native = [row for row in exports if row.get("source") == "omp_native_session"]
+        self.assertEqual(len(native), 1)
+        text = json.dumps(native)
+        self.assertIn("FIRST_NATIVE_MESSAGE", text)
+        self.assertIn("SECOND_NATIVE_MESSAGE", text)
+        self.assertNotIn("owner_token", text)
+        self.assertNotIn("token_hash", text)
+
+    def test_native_new_session_keeps_both_sources_and_fences_old_generation(self):
+        record = self.chat("BEFORE_NATIVE_NEW", switch=True)
+        self.assertEqual(record["session_count"], 2)
+        archive = request(self.config.server.socket_path, "frontend.messages", {"conversation_id": record["conversation_id"]})
+        self.assertTrue(any("BEFORE_NATIVE_NEW" in row["text"] for row in archive["messages"]))
+        self.assertTrue(any("AFTER_NATIVE_NEW" in row["text"] for row in archive["messages"]))

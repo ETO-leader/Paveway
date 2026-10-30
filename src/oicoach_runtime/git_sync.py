@@ -397,12 +397,32 @@ def export_history(config, repo, device):
                 if fresh.execute("SELECT 1 FROM runs WHERE binding_id=? AND status IN ('leased','running')", (binding["binding_id"],)).fetchone():
                     continue
             write_json(repo / "devices" / device / "sessions" / (binding["binding_id"] + ".json"), archive)
+        # Only read text from attested native sessions after the owner exits.
+        # Never archive capability tokens, private launch JSON or raw tool logs.
+        for row in db.execute("SELECT value FROM runtime_metadata WHERE key LIKE 'frontend:v1:%'"):
+            record = json.loads(row[0])
+            if record["status"] != "released":
+                continue
+            for source in record.get("session_files", []):
+                binding = {**record, **source, "binding_id": hashlib.sha256(
+                    canonical([record["conversation_id"], source["session_id"]])).hexdigest()}
+                try:
+                    archive = export_session(config, binding, device, root=Path(record["session_dir"]))
+                except (OSError, RuntimeContractError):
+                    continue
+                with sqlite3.connect(config.database_path.as_uri() + "?mode=ro", uri=True) as fresh:
+                    current = fresh.execute("SELECT value FROM runtime_metadata WHERE key=?",
+                        ("frontend:v1:" + record["conversation_id"],)).fetchone()
+                    if not current or json.loads(current[0])["status"] != "released" or json.loads(current[0])["generation"] != record["generation"]:
+                        continue
+                archive.update(source="omp_native_session", conversation_id=record["conversation_id"])
+                write_json(repo / "devices" / device / "sessions" / (binding["binding_id"] + ".json"), archive)
     return len(rows)
 
 
-def export_session(config, binding, device):
+def export_session(config, binding, device, *, root=None):
     path = Path(binding["session_file"])
-    root = config.state_dir / "sessions" / binding["binding_id"]
+    root = root or config.state_dir / "sessions" / binding["binding_id"]
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
         raise ConflictError("Native archive escaped its assigned task")
     messages = []

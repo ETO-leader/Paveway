@@ -414,3 +414,11 @@ D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚
 新增 `oicoach-runtime native --workflow ID [--task ID]`、原生 OMP 薄扩展及透明 PTY supervisor。精确 trusted-extension、私密配置、nonce／源码摘要／实际 guardian 子 PID／Session 目录核验完成后才转送用户输入。提供只读 `/paveway status` 和 `/coach`，无自研聊天渲染器；当前每次建立独立前台目录，不接管后台 Session，旧 ui/CLI/RPC 保留默认。
 
 `PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest test_native_omp -v`：真实 OMP 18.10.4、原生 PTY 与本地 provider fixture，1 项通过（2.889 秒）。超长输入中段确实进入 provider，原文保存；native /exit 为 0，daemon 仍 running，无旧 Guard ready 输出。没有使用私人模型凭据，Browser／Subagent／真实 Tijian 未验收。M2 的注册／恢复／归档与 M3 的工具尚未在本提交实现，故不切默认入口。
+
+## 2026-10-30 — M2 前台登记、恢复与只读归档
+
+前台所有权以版本化 `frontend:v1:` 记录存于现有 SQLite runtime_metadata（沿用项目控制工作记录方式，无 schema 迁移）。新增 generation／owner capability 校验、guardian 与 OMP PID/启动身份、原生目录继承 flock、生命周期观测及显式恢复。agent_end 只记 observed_loop_only，不作为 settled；daemon 重启转 uncertain，心跳不释放所有权，活进程或锁阻止接管。不占背景 Run 槽，不共享前后台物理 Session。
+
+原生入口支持 `--conversation`／`--new`，默认接续当前 workflow/task 最近的已释放对话；原生 /new 在受管目录中重新登记并提升 generation。`frontend list/show/messages/recover` 提供诊断、分页文字检索和显式恢复；原文和 parent_id／分支来源保留。已退出的登记 Session 以现有文字过滤政策进入独立用户 Git，未配置 remote 仍只本地维护，不归档 capability、启动配置或原始工具日志。
+
+验证：4 项所有权／CAS／活进程／锁／unknown 不重播单元通过；真实 OMP 本地 fixture 验证长文本、TUI 在线时后台 RPC 独立执行、第二 owner 拒绝、顺序恢复同一前台 Session 及独立 Git 导出，合计 6 项通过（8.901 秒）；另原生 /new 的双来源归档／generation 场景 1 项通过（2.804 秒）。最初 PTY 大写入阻塞已定位为测试端不同时读屏，改用非阻塞双向驱动；未改应用成功判断。没有正式用户数据库／Session 迁移，也没有把前台 loop end 标为严格完成。

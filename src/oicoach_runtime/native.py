@@ -14,19 +14,44 @@ from .errors import RuntimeContractError
 from .ipc import request
 from .models import validate_id
 from .native_terminal import run_terminal
+from .processes import InstanceLock
 from .proxy import child_environment
 from .workflows import WorkflowProvider
 
 
-def run(config, config_path, workflow_id, task_id="training"):
+def run(config, config_path, workflow_id, task_id="training", conversation_id=None, new=False):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
+    lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
+                    "conversation_id": conversation_id, "new": new})
+    root = Path(lease["session_dir"])
+    lock = None
+    code = None
+    try:
+        ensure_private_directory(root)
+        lock = InstanceLock(root / "owner.lock")
+        code = _run_owned(config, config_path, workflow, lease, lock)
+        return code
+    finally:
+        if lock:
+            lock.close()
+        try:
+            current = request(config.server.socket_path, "frontend.show", {"conversation_id": lease["conversation_id"]})
+            request(config.server.socket_path, "frontend.finish", {"conversation_id": lease["conversation_id"],
+                "generation": current["generation"], "owner_token": lease["owner_token"], "exit_code": code})
+        except RuntimeContractError:
+            pass  # An outage or stale owner is never treated as completion.
+
+
+def _run_owned(config, config_path, workflow, lease, lock):
+    workflow_id, task_id = lease["workflow_id"], lease["task_id"]
+    root = Path(lease["session_dir"])
     launch_id = str(uuid.uuid4())
-    root = config.state_dir / "native" / launch_id
-    ensure_private_directory(root)
-    settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id}
-    private = root / "native.json"
+    settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id,
+                "conversation_id": lease["conversation_id"], "generation": lease["generation"],
+                "owner_token": lease["owner_token"]}
+    private = root / (launch_id + ".json")
     private.write_text(json.dumps(settings), encoding="utf-8")
     private.chmod(0o600)
     extension = Path(str(files("oicoach_runtime").joinpath("bundled/paveway-native.mjs")))
@@ -35,6 +60,11 @@ def run(config, config_path, workflow_id, task_id="training"):
     environment = dict(child_environment(config_path), PAVEWAY_NATIVE_DATA=str(private), PAVEWAY_NATIVE_NONCE=nonce)
     argv = [config.agent.executable, "--cwd", str(workflow.workspace), "--session-dir", str(root),
             "--no-extensions", "--trusted-extension", str(extension)]
+    if lease["session_file"]:
+        path = Path(lease["session_file"])
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise RuntimeContractError("Native session is missing or unsafe; use --new, preserving the old conversation")
+        argv += ["--resume", str(path)]
     if config.agent.profile:
         argv += ["--profile", config.agent.profile]
     inference = workflow.customization.get("inference", {})
@@ -66,5 +96,15 @@ def run(config, config_path, workflow_id, task_id="training"):
         session_file = Path(frame.get("sessionFile") or "")
         if not session_file.is_absolute() or not session_file.resolve().is_relative_to(root.resolve()) or not frame.get("sessionId"):
             raise RuntimeContractError("Native OMP session escaped its dedicated directory")
+        observed = request(config.server.socket_path, "frontend.attest", {**owner(), "omp_pid": pid,
+            "session_id": frame["sessionId"], "session_file": str(session_file)})
+        settings["generation"] = observed["generation"]
 
-    return run_terminal(argv, environment, ready=ready, timeout=config.agent.startup_timeout_seconds)
+    def owner():
+        return {key: settings[key] for key in ("conversation_id", "generation", "owner_token")}
+
+    def started(process):
+        request(config.server.socket_path, "frontend.started", {**owner(), "guardian_pid": process.pid})
+
+    return run_terminal(argv, environment, ready=ready, started=started,
+                        timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))

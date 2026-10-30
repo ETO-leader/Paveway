@@ -20,7 +20,7 @@ from .errors import RuntimeContractError
 from .processes import enable_subreaper
 
 
-def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process: None):
+def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process: None, lock_fds=()):
     """Input is forwarded only after this owned child's validated attestation."""
     if not os.isatty(0) or not os.isatty(1):
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
@@ -28,7 +28,8 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
     master, slave = pty.openpty()
     channel, inherited = socket.socketpair()
     descriptor = inherited.fileno()
-    environment = dict(environment, PAVEWAY_NATIVE_FD=str(descriptor), OICOACH_LOCK_FDS=str(descriptor))
+    inherited_fds = (descriptor, *lock_fds)
+    environment = dict(environment, PAVEWAY_NATIVE_FD=str(descriptor), OICOACH_LOCK_FDS=",".join(map(str, inherited_fds)))
     process = None
     original = termios.tcgetattr(0)
     previous_signals = {}
@@ -44,7 +45,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
         resize()
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *argv],
             stdin=slave, stdout=slave, stderr=slave, env=environment, start_new_session=True,
-            pass_fds=(descriptor,))
+            pass_fds=inherited_fds)
         os.close(slave)
         slave = None
         inherited.close()
