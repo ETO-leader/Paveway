@@ -327,3 +327,28 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 用户授权更新 event.md：默认模板及本机 test01 均加入重要信息及时维护、关键进展和每轮结束前检查的要求，已有提示已私密备份。本机 workflow revision 保持原绑定，个人自定义 prompt/Skill 不变。记忆快照从事件移至系统 prompt，以 o200k_base 将完整 JSON 限于 10,000 tokens；事件只携带预算及位置。独立 OMP context hook 将每次请求的对话副本限制为 10,000 tokens，按完整轮次/工具交换裁剪，极大单次输入保留首尾并告知模型；磁盘历史及记忆总库不删。必需守卫未就绪时在派发前拒绝，不静默失效。
 
 验证：69 个不同用例通过，包括记忆/迁移 7、定制 8、Runtime 42（旧 prompt 精确断言修正后定向通过）、OMP 验证 6、原生定制 2、真实模型记忆 1、上下文窗口 3。真实模型在超大输入中看不到被裁掉的随机识别码，但完整识别码仍保留于原生 session。原生 OMP 18.10.4；Python 新增 tiktoken，离线先预热编码表。不是整个模型 API 请求的 20k 总预算，系统/工具定义与 provider 封装另计。
+
+## 2026-10-30 — 0.20.0 原生 Tijian MCP 接入、提示词重构与启动流程优化
+
+根据上游 Tijian 原生 stdio MCP Server（`tijian-mcp`，基线 `90e2c75`）发布，Paveway 完成原生接入并彻底移除旧 Python 桥接器：
+
+1. **移除旧 Python 桥接器**：删除 `tijian_catalog.py`（工具映射与 Schema）、`tijian_mcp.py`（Python MCP server）及 `tijian.py`（JSON CLI 适配器）。从 `config.py` 中删除 `TijianConfig`，从调度器 `available_tools` 注入中移除旧 CLI 前缀与命令，从 `pyproject.toml` 移除可选依赖 `.[tijian]`。Paveway 不再在 Python 中自行定义或组装 17 个工具的 Schema，所有工具定义、输入输出契约及权限约束均以运行中原生 `tijian-mcp` 实际暴露的 `tools/list` 为准。
+2. **原生 MCP 配置与冲突防御**：保留并重构 `workflow connect-tijian` 命令，直接写入 workflow workspace 的 `.mcp.json`。支持默认推荐的 `--read-only` 与显式的 `--read-write`（参数严格互斥）。增加 `disabledServers` 冲突防御：若已有配置的禁用列表包含 `tijian`，明确拒绝并报错 `ConflictError`，原配置文件字节完全不变；保留其他已禁用服务与第三方 MCP Server，配置过程具备原子性、幂等性与 0600 权限保护。
+3. **VJudge 认证独立解耦**：将 VJudge HTTPS 登录会话管理从旧 `tijian` 命令组解耦为独立的 `vjudge auth [status|test|login|cookie|clear]` CLI 命令，终端 UI 同步支持 `/vjudge` 与 `/tijian` 双入口。保留用户名/密码隐藏输入与私密文件导入机制，会话文件保存在与 Tijian 兼容的共享 `vjudge_session.json` 中。
+4. **重写 coach.md 与 Skill/MCP 文档注入**：
+   - 重构 `bundled/coach.md`：清除所有旧 CLI 调用协议（`tijian tools`、`tijian call`、`argv_prefix`、`problem_add/refetch` 及 JSON CLI 返回字段假设），保留教学策略、训练安排原则，以及公开赛题研究的停止条件（最多 6 次检索、3 类赛事各取 1 题）。
+   - 更新内置 `paveway-tijian` Skill：作为业务编排层指导 Agent 能力选择，明确标注文档、待办与分类目录的原生 MCP 尚未实现；严格区分同步题面确保（`tijian_problem_ensure`）与异步 AI Ensure（译文/摘要 `tijian_problem_content_ensure`、向量 `tijian_problem_embedding_ensure`）及 Job 跟踪机制。
+   - 重写 `docs/tijian.md`：详细阐述原生 stdio MCP 架构、`tijian-mcp` 构建获取、Paveway 配置流程、只读/读写权限、WSL2 与 Windows Desktop 数据边界以及 VJudge 会话管理。
+5. **首次启动流程重构（`paveway.sh`）**：
+   - 移除自动生成默认 `gpt` Workflow 的硬编码行为。
+   - 首次启动无 Workflow 时在交互终端主动提示输入名称（ID），严格经 `validate_id()` 校验，空输入要求重新输入，遇到 EOF/Ctrl+C 安全退出。
+   - 支持通过 `./paveway.sh --workflow NAME` 非交互指定；已有 Workflow 时直接进入现有选择流程，已有旧版 `gpt` 保持原样不被破坏。
+6. **修复 OMP 18.13.3 Context Guard 就绪时序不兼容**：
+   - 针对 OMP 18.13.3 真实环境中 RPC `ready` 早于扩展 `paveway_context_ready` 发送的时序，重构 `OmpRpc.ready()`，分别独立追踪两项就绪信号，消除顺序假设；严格校验 Token 限制（10000）与协议版本。
+   - 修复 `context-window.mjs` 在 Bun 单文件打包环境中的模块导入路径（增加直接 `@oh-my-pi/pi-agent-core` 导入回退）。
+   - 增强 `smoke.py verify-omp` 诊断错误分类，细化 `agent_context_guard_missing`、`agent_context_guard_invalid`、`agent_rpc_ready_missing`、`agent_rpc_timeout` 等安全诊断。
+   - 扩充 `fake_omp.py` 与 `test_omp_verification.py`，全面覆盖两种 Ready 顺序及各种故障模式；真实 OMP 18.13.3 的 `verify-omp` 无模型诊断通过。
+
+测试与 CI：新增 `test_native_mcp.py` 与 `test_paveway_script.py`，更新 `test_setup.py`、`test_vjudge_auth.py`、`test_runtime.py`、`test_foundation.py`。修复 GitHub Actions CI 中多 Python 版本的并发锁与错误处理问题，全量测试在 Python 3.11、3.12、3.13 矩阵均全部通过。
+
+**完成了首次与 Tijian 的实测联动。**
