@@ -352,3 +352,15 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 测试与 CI：新增 `test_native_mcp.py` 与 `test_paveway_script.py`，更新 `test_setup.py`、`test_vjudge_auth.py`、`test_runtime.py`、`test_foundation.py`。修复 GitHub Actions CI 中多 Python 版本的并发锁与错误处理问题，全量测试在 Python 3.11、3.12、3.13 矩阵均全部通过。
 
 **完成了首次与 Tijian 的实测联动。**
+
+## 2026-10-30 — OMP 原生重构 M0 门槛
+
+依据用户提供的 Implementation Contract／Native Refactor Plan，从 `main` 的 `35cf9a911c9df90598f664d215ea74cf29f6faa9` 开始验证，安装版本为 OMP 18.12.6。旧基线 266 项运行完成：252 通过、14 跳过，214.220 秒；原生 RPC transport、append/replace、Skill 发现与 `skill://` 正文读取、禁用权限 4 项通过。
+
+新增 `examples/verify_omp_m0.py`，在临时 HOME／XDG／workspace／Session 内运行真实 OMP RPC 和原生 PTY；provider 仅为本机 HTTP fixture，不使用凭据或付费模型。实际观察到 context Hook 抛错后，RPC 与原生 TUI 仍发送请求并显示回复；显式指定不存在的扩展也没有阻止推理。正常 Guard 对照能裁剪副本且保留 Session 原文。保留探针运行 33.54 秒，退出码 2：`d4=BLOCKED`、`controls_passed=true`。
+
+**按 D4 停止 M1–M6，不新增或默认启用受管原生 TUI。** 未修改 Runtime／队列／schema／用户 Prompt、event.md、用户数据或上游 OMP；旧 TUI、CLI、RPC 保持原状。原生 Skill 测试删除上游截断索引中“必须出现完整描述”的措辞断言，保留真正的发现、权限与全文读取检查。
+
+完整 D1–D7 状态、失败样例、源码证据、复现命令、回退边界和最小上游 API 缺口见 [M0 兼容性记录](verification/omp-m0-compatibility.md)。没有把 loopback fixture 视为真实模型、Browser、Subagent、Tijian 或 Windows→WSL 验收；未通过的交接、settled、投递与新历史同步能力不开放。
+
+最终同一全量回归运行 186.130 秒：250 通过、14 跳过、1 failure、1 error，**不是全绿**。未修改的重启测试在预定 0.6 秒到期前未能保证停机，事件被领取后以 `blocked/daemon_shutdown` 结束；另一项旧 UI PTY 测试在 pyte 渲染空字符单元时抛出 `IndexError`。保留失败日志与具体位置，不重跑掩盖、不修改这些断言；完整 M0 验收也未通过。此次交付是可复现调查与安全停止记录，不是完成了原生重构的发布。

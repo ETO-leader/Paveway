@@ -92,7 +92,6 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
                     await adapter.ready()
                     prompt = json.dumps((await adapter.state())["systemPrompt"], ensure_ascii=False)
                     self.assertIn(builtin.name, prompt)
-                    self.assertIn(builtin.description, prompt)
                     self.assertIn("BUILTIN_USER_NATIVE_INDEX", prompt)
                     self.assertIn("AMBIENT_NATIVE_INDEX", prompt)
                     self.assertNotIn(json.dumps(builtin.body.strip(), ensure_ascii=False)[1:-1], prompt)
