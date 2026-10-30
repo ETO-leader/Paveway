@@ -392,3 +392,12 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 完整回归 **271 项，257 通过、14 跳过，132.408 秒，无失败**，日志 `artifact://37`；隔离环境中原生 RPC transport、append/replace、Skill 全文读取及权限 4 项也通过。所有模型请求仅到本地 fixture，没有真实模型费用，未验收 Browser/Tijian 或 Windows→WSL。
 
 当前按 D4 保留旧 TUI/CLI/RPC，不安装尚不能覆盖辅助推理的应用启动器。要保留完整原生能力，需要让标题及其他 side-request 路径也经过受信 mandatory 请求边界；不能只补启动握手、拦截命令字符串或静默删掉原生能力来达标。最小上游接口建议、未实测的 compaction/tree/live/child 路径、回退边界与完整矩阵见 [M0 验证记录](verification/omp-m0-compatibility.md) 第三轮小节。
+## 2026-10-30 — M0 WSL2 复验、手动压缩与系统模板
+
+已 fast-forward 到 `b6013df4827c4ff54651619ed8d869fd5b379cf1`，按两份重构设计／实施契约继续；实际环境为 WSL2、Python 3.12.3、OMP **18.10.4**，与上轮 18.12.6 分别记录。安装新版项目依赖后，旧基线 271 项中 257 通过、14 跳过；新增检查后的最终回归 **272 项，257 通过、15 跳过，106.207 秒，无失败**。
+
+扩展原生准入探针，加入 `/compact soft` 超长中文反例、版本记录、bracketed paste 和完整原文保留检查。普通请求已裁掉的中段标记重新进入压缩辅助请求：1 次 context 授权却产生 3 次模型请求；`/rename` 旁路在本机也复现。短输入不能压缩、尾部空白被 composer 清理的两次无效／失败实验已保留说明，未删除断言冒充通过。
+
+新增真实 OMP 模板展开的无模型验证：动态工具／Skill 索引、禁用权限、正文按需读取和身份替换。隔离原生检查共 5 项通过；不等于统一 Prompt Composer／Persona 迁移已实现。完整 M0 的 Guard 四种故障均无模型请求且 fail-stop，但辅助路径仍使完整 D4 BLOCKED。
+
+依据契约 D4 保留旧入口，M1–M6 不提前验收；未修改生产 schema、用户数据、OMP／Tijian 上游或默认启动器。Windows Tijian MCP、真实模型、Browser／Subagent 未测试。复现命令、日志、失败样例与回退边界见 [本机复验记录](verification/omp-m0-wsl-2026-10-30.md)。

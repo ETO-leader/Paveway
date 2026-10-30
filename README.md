@@ -8,6 +8,8 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用�
 
 0.20.1 修复 Paveway Context Guard 初始化／裁剪异常被 OMP 吞掉后继续推理的问题：已加载的 Guard 发生异常时同步报告固定诊断并终止当前进程，后台按原有证据规则保留不确定结果，不自动重放。10k 裁剪算法不变。另修复重启回归测试的到期竞态和 PTY 测试解码器的宽字符覆写问题。**这不是 OMP 原生入口重构完成的发布**：同一子进程握手与缺失扩展拒绝已在隔离探针中验证，但原生 `/rename` 仍能绕过 context Guard 调用模型，完整 D4 仍未通过，默认保持旧 TUI/RPC；详见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
 
+2026-10-30 在 WSL2／OMP 18.10.4 重新验证：`/compact soft` 也能把普通请求已裁掉的输入送入辅助模型请求；原生入口继续关闭。已增加手动压缩探针和原生系统模板动态工具／Skill 权限验证，运行方式、结果及后续阶段限制见 [WSL2 复验记录](docs/verification/omp-m0-wsl-2026-10-30.md)。
+
 ## 能做什么
 
 | 能力 | 当前行为 |

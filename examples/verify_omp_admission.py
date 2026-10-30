@@ -35,7 +35,11 @@ from oicoach_runtime.processes import enable_subreaper
 
 CASES = ("normal", "missing-entry", "missing-guard", "factory-error", "wrong-digest",
          "foreign-handshake", "wrong-version", "no-handshake", "deny-context", "stall-context",
-         "ipc-close", "guard-error", "rename")
+         "ipc-close", "guard-error", "rename", "compact")
+
+# These are counterexamples, not certified safe native features. Keep a normal
+# guarded request as a control before invoking each independent native path.
+SIDE_COMMANDS = {"rename": b"/rename\r", "compact": b"/compact soft\r"}
 
 
 def sha(path):
@@ -86,6 +90,15 @@ class AdmissionProbe:
             guard.unlink()
         if case == "missing-entry":
             entry.unlink()
+        restrictions = self.restrictions
+        if case == "compact":
+            # A short single turn legitimately has nothing to compact. Seed a
+            # real oversized native turn, keeping automatic compaction disabled.
+            # The small retained tail makes the manual soft path exercisable.
+            settings = json.loads(self.restrictions.read_text())
+            settings["compaction"]["keepRecentTokens"] = 128
+            restrictions = root / "compact-restrictions.yml"
+            restrictions.write_text(json.dumps(settings))
         nonce = secrets.token_hex(32)
         control, inherited = socket.socketpair()
         control.setblocking(False)
@@ -98,7 +111,7 @@ class AdmissionProbe:
         # The existing guardian retains/passes this control descriptor exactly
         # as it retains/passes runtime lock descriptors. No queue slot is used.
         argv = [*self.base.argv("gate-" + case, []), "--trusted-extension", str(entry),
-                "--config", str(self.restrictions), "--no-lsp", "--no-prewalk", "--thinking", "off"]
+                "--config", str(restrictions), "--no-lsp", "--no-prewalk", "--thinking", "off"]
         before = len(self.base.server.requests)
         guardian = None
         selector = selectors.DefaultSelector()
@@ -117,11 +130,14 @@ class AdmissionProbe:
         released = False
         rejected = None
         quit_sent = False
-        rename_sent = False
+        side_command_sent = False
         timed_out = False
         baseline_requests = None
         baseline_grants = None
         message = "Investigate the Paveway native admission boundary and preserve verified evidence."
+        if case == "compact":
+            message += (" 漢字 filler " * 6000 + " M0_COMPACTION_MIDDLE " +
+                        " 漢字 filler " * 6000 + " M0_COMPACTION_TAIL")
         try:
             guardian = subprocess.Popen([sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *argv],
                 stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True,
@@ -194,7 +210,14 @@ class AdmissionProbe:
                                     control.close()
                                 # User bytes are queued from the beginning but
                                 # forwarded only after this child's final ack.
-                                terminal_out.extend(message.encode() + b"\r")
+                                # Bracketed paste avoids treating the large fixture
+                                # as thousands of independent composer keypresses.
+                                # Keep the established key-input path for short
+                                # controls instead of testing paste batching there.
+                                if case == "compact":
+                                    terminal_out.extend(b"\x1b[200~" + message.encode() + b"\x1b[201~\r")
+                                else:
+                                    terminal_out.extend(message.encode() + b"\r")
                                 released = True
                     else:
                         if events & selectors.EVENT_READ:
@@ -228,11 +251,11 @@ class AdmissionProbe:
                     pass
                 requests = len(self.base.server.requests) - before
                 visible = "\n".join(screen.display)
-                if case in ("normal", "rename") and requests >= 1 and "M0_REPLY" in visible:
-                    if case == "rename" and not rename_sent:
+                if (case == "normal" or case in SIDE_COMMANDS) and requests >= 1 and "M0_REPLY" in visible:
+                    if case in SIDE_COMMANDS and not side_command_sent:
                         baseline_requests, baseline_grants = requests, grants
-                        terminal_out.extend(b"/rename\r")
-                        rename_sent = True
+                        terminal_out.extend(SIDE_COMMANDS[case])
+                        side_command_sent = True
                     elif not quit_sent and (case == "normal" or requests > baseline_requests):
                         terminal_out.extend(b"/exit\r")
                         quit_sent = True
@@ -265,14 +288,27 @@ class AdmissionProbe:
             admission_failed=b"paveway_admission_failed" in raw + diagnostics,
             native_reply="M0_REPLY" in "\n".join(screen.display),
             screen="\n".join(line.rstrip() for line in screen.display).strip())
-        if case == "rename":
+        if case in SIDE_COMMANDS:
             result.update(baseline_requests=baseline_requests, baseline_grants=baseline_grants,
                 unguarded_side_request=(baseline_requests is not None and requests > baseline_requests and grants == baseline_grants))
+        if case == "compact":
+            wires = [json.dumps(row.get("messages", []), ensure_ascii=False)
+                     for row in self.base.server.requests[before:]]
+            result.update(guarded_input_omitted=bool(wires) and "M0_COMPACTION_MIDDLE" not in wires[0]
+                          and "older conversation or oversized content was omitted" in wires[0],
+                          side_request_contains_omitted_input=any("M0_COMPACTION_MIDDLE" in wire for wire in wires[1:]),
+                          request_message_chars=[len(wire) for wire in wires],
+                          original_input_retained=any(message in path.read_text(encoding="utf-8")
+                              for path in root.rglob("*.jsonl")))
         if case == "normal":
             result["passed"] = (released and grants >= 1 and requests == grants and guardian.returncode == 0
                                 and not timed_out and result["native_reply"] and not result["rpc_ready_on_tui"])
-        elif case == "rename":
-            result["passed"] = result["unguarded_side_request"] and not timed_out
+        elif case in SIDE_COMMANDS:
+            result["passed"] = (released and result["unguarded_side_request"] and
+                baseline_requests == baseline_grants == 1 and guardian.returncode == 0 and not timed_out)
+            if case == "compact":
+                result["passed"] = (result["passed"] and result["guarded_input_omitted"] and
+                    result["side_request_contains_omitted_input"] and result["original_input_retained"])
         elif case == "stall-context":
             result["passed"] = (released and input_bytes > 0 and contexts == 1 and grants == requests == 0
                                 and timed_out and guardian.returncode == -9)
@@ -289,7 +325,7 @@ class AdmissionProbe:
             result["passed"] = (requests == 0 and guardian.returncode != 0 and
                 ((case == "no-handshake" and timed_out and input_bytes == 0) or not timed_out) and
                 not released and input_bytes == 0 and contexts == grants == 0)
-        if result["passed"] and case not in ("normal", "rename"):
+        if result["passed"] and case != "normal" and case not in SIDE_COMMANDS:
             del result["screen"]
         emit("native-admission", **result)
         return result
@@ -311,7 +347,11 @@ def main():
         thread.start()
         try:
             probe = AdmissionProbe(Probe(Path(directory), executable, server))
-            cases = arguments.cases or [case for case in CASES if not arguments.admission_only or case != "rename"]
+            version = subprocess.run([executable, "--version"], env=probe.base.env,
+                capture_output=True, text=True, check=True, timeout=30)
+            emit("environment", omp=version.stdout.strip(), platform=sys.platform,
+                 provider="loopback fixture; no external model or credentials")
+            cases = arguments.cases or [case for case in CASES if not arguments.admission_only or case not in SIDE_COMMANDS]
             results = [probe.run(case) for case in cases]
             passed = all(result["passed"] for result in results)
             bypass = any(result.get("unguarded_side_request") for result in results)

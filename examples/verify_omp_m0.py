@@ -261,6 +261,7 @@ class Probe:
         env = dict(self.env, OICOACH_TEST_REAL_OMP_CONFIG=str(config),
                    PYTHONPATH=os.pathsep.join(str(project / name) for name in ("src", "tests")))
         checks = ["test_omp_verification.RealTransportTests.test_real_omp_transport",
+                  "test_customization_omp.RealCustomizationTests.test_native_template_expands_dynamic_capabilities_without_model",
                   "test_customization_omp.RealCustomizationTests.test_native_system_prompt_append_replace_and_skill_discovery_without_model",
                   "test_customization_omp.RealCustomizationTests.test_native_builtin_and_user_skills_read_without_model",
                   "test_customization_omp.RealCustomizationTests.test_disabled_tools_or_skills_do_not_inject_a_fallback_body"]

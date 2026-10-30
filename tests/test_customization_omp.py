@@ -19,6 +19,65 @@ from oicoach_runtime.proxy import child_environment
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for native customization acceptance")
 class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_template_expands_dynamic_capabilities_without_model(self):
+        """M0 D5: inspect OMP's own template expansion, not a fake renderer."""
+        base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
+        with tempfile.TemporaryDirectory(prefix="pw-template-native-") as directory:
+            root = Path(directory)
+            skill = root / "skills" / "template-probe"
+            skill.mkdir(parents=True, mode=0o700)
+            (skill / "SKILL.md").write_text("---\nname: template-probe\n"
+                "description: M0_TEMPLATE_SKILL_INDEX\n---\nM0_TEMPLATE_SKILL_PRIVATE_BODY\n")
+            template = root / "system.hbs"
+            template.write_text("You are GPT. M0_TEMPLATE_IDENTITY\n"
+                "{{#each toolInfo}}M0_TOOL_{{name}}\n{{/each}}"
+                "{{#each skills}}M0_SKILL_{{name}}: {{description}}\n{{/each}}")
+            overlay = root / "config.yml"
+            overlay.write_text(json.dumps({"skills": {"customDirectories": [str(skill.parent)]},
+                "startup": {"setupWizard": False}, "autoResume": False}))
+            for enabled in (True, False):
+                with self.subTest(capabilities_enabled=enabled):
+                    argv = [base.agent.executable, "--cwd", str(root), "--session-dir", str(root / str(enabled)),
+                        "--mode", "rpc", "--no-ui", "--no-title", "--no-extensions", "--no-rules",
+                        "--system-prompt-template", str(template), "--config", str(overlay)]
+                    argv += ["--tools", "read"] if enabled else ["--no-tools", "--no-skills"]
+                    if base.agent.profile:
+                        argv += ["--profile", base.agent.profile]
+                    process = await asyncio.create_subprocess_exec(*argv, cwd=root, env=child_environment(None),
+                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE, limit=1048576)
+                    stderr = asyncio.create_task(process.stderr.read())
+                    try:
+                        async with asyncio.timeout(40):
+                            async def frame_until(predicate):
+                                while line := await process.stdout.readline():
+                                    frame = json.loads(line)
+                                    if predicate(frame):
+                                        return frame
+                                self.fail("native template probe closed before state was available")
+                            await frame_until(lambda frame: frame.get("type") == "ready")
+                            process.stdin.write(b'{"type":"get_state","id":"template-state"}\n')
+                            await process.stdin.drain()
+                            response = await frame_until(lambda frame: frame.get("id") == "template-state")
+                            self.assertTrue(response.get("success"))
+                            prompt = json.dumps(response["data"]["systemPrompt"], ensure_ascii=False)
+                            self.assertIn("M0_TEMPLATE_IDENTITY", prompt)
+                            self.assertNotIn("You are omp's trusted coding assistant", prompt)
+                            self.assertNotIn("M0_TEMPLATE_SKILL_PRIVATE_BODY", prompt)
+                            self.assertNotIn("M0_TOOL_bash", prompt)
+                            self.assertNotIn("{{#", prompt)
+                            for marker in ("M0_TOOL_read", "M0_SKILL_template-probe", "M0_TEMPLATE_SKILL_INDEX"):
+                                self.assertEqual(marker in prompt, enabled, marker)
+                    finally:
+                        if process.returncode is None:
+                            process.terminate()
+                        try:
+                            await asyncio.wait_for(process.wait(), 5)
+                        except TimeoutError:
+                            process.kill()
+                            await process.wait()
+                        await stderr
+
     async def test_native_system_prompt_append_replace_and_skill_discovery_without_model(self):
         base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
         with tempfile.TemporaryDirectory(prefix="pw-custom-native-") as directory:
