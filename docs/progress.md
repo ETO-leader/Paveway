@@ -440,3 +440,13 @@ D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚
 Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置及历史仍在。原生唤醒保留创建时受信配置快照，并使用各 Conversation 的独立后台绑定；即使之后编辑 Persona，已授权的唤醒也不会读到另一版本或另一 Profile 的配置。旧后台 task 的 Persona 变化同样拒绝静默换身份，需新 task。
 
 验证：Profile／隔离／CAS／私密回退／Git 配置、原有自定义设置、真实原生 Persona／唤醒／恢复，共 **23 项通过（23.426 秒）**；另原生 transport／动态模板／append-replace／Skill 读取及权限 5 项通过（不调用真实模型）。Persona 实机测试先误取了异步标题请求，已按 Paveway Core 识别主对话请求；未删去身份隔离断言，也未禁用原生标题功能。日志 `/tmp/paveway-native-m4-complete.log` 与 `/tmp/paveway-native-m4-prompt.log`。新字段只写用户数据，无源码私人信息、正式用户迁移或 schema 升级。
+
+## 2026-10-30 — M5 原生管理菜单与本机兼容修复
+
+新增 `/paveway` 原生选择／编辑／确认菜单，接入 Prompt、三类 Skills、Persona、Profile、事件、恢复、Memory、历史、专用 Git、VJudge、MCP、服务及 worker 管理。编辑值通过私密文件进入既有 CLI，不发送聊天；失败保留未提交正文。Profile／新对话／原管理界面切换均先退出并释放当前原生进程，再由受管父进程进入目标；旧 UI 退出可回到原 Conversation。`paveway.sh --native/--legacy-ui` 保留显式入口和回退。
+
+实测 OMP 18.10.4 的 `ui.input({secret:true})` 不遮罩，已改用宿主实际 masked Input，输入前验证遮罩能力；密码取消测试同时扫描 PTY 和隔离文件，不出现测试秘密。子 Agent 事件共享扩展宿主，主会话登记及主能力现只接受 `ctx.agent.kind=main`，防止子会话误触发切换。原生 Memory／历史 AgentTool 使用已登记 owner/generation 绑定 scope；不与 OMP Memory 混用。持久化后可通过 `sync sessions` 发现跨设备文字归档，主模型／thinking 选择在唤醒前冻结为可信事件快照。
+
+本机发现另一个旧接入缺陷：当前 OMP 原生发现路径为 `workspace/.omp/mcp.json`，不是根 `.mcp.json`；显式 connect-tijian 改用原生路径，首次可导入旧根配置但保留原文件，拒绝目录 symlink／配置冲突。当前版本 MCP 工具可挂载为 `xd://` 设备，经原生 write 调用，不能因 provider function 列表没有同名项而断言没连接；真实 OMP + 本地 stdio MCP 端到端已通过。上游 Tijian／OMP 未修改。
+
+基础完整回归 295 项，267 通过、28 条件跳过（100.093 秒）；本轮新增 MCP 路径／兼容导入／scope 单元验证 26 项通过（1.024 秒）。原生聊天、登录遮罩、编辑菜单、恢复、Profile 与旧管理 UI 往返均用实际 OMP 与本地 provider 测试；Browser／Subagent／MCP 与故障注入的最终统一验收继续在 M6 记录，不把早期失败计为通过。没有正式用户配置部署、真实模型费用或 Windows Tijian 实机验收。

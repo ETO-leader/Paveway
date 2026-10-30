@@ -8,6 +8,8 @@ Paveway 是运行在现有 OMP Coding Agent 上的 OI GPT框架：持久化用�
 
 用户于 2026-10-30 明确取消固定 10k 限制：对话窗口与压缩改由 OMP 原生管理；Paveway 不再加载固定预算 Guard，也不再要求它的就绪帧。记忆快照仅受 64 KiB IPC 字节边界约束，超出的笔记仍可检索。原生入口重构分阶段进行，旧 TUI/RPC 保留；历史调查见 [M0 兼容性记录](docs/verification/omp-m0-compatibility.md)。
 
+原生 OMP 入口及专属管理菜单见 [原生 UI 使用说明](docs/native-ui.md)：`./paveway.sh --native`，`/paveway` 管理配置、Skills、Persona、记忆、历史、Git 与登录；`/wakeup` 排程，`/inbox` 查看持久消息。`--legacy-ui` 可回到原管理界面。
+
 ## 能做什么
 
 | 能力 | 当前行为 |

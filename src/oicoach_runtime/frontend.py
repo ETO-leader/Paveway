@@ -43,7 +43,8 @@ class Frontend:
         import json
         records = [json.loads(row[0]) for row in rows]
         return sorted((row for row in records if (workflow_id is None or row["workflow_id"] == workflow_id)
-                       and (task_id is None or row["task_id"] == task_id)), key=lambda row: row["updated_at"], reverse=True)
+                       and (task_id is None or row["task_id"] == task_id)),
+                      key=lambda row: row.get("last_opened_at", row["created_at"]), reverse=True)
 
     @staticmethod
     def public(record):
@@ -71,7 +72,7 @@ class Frontend:
         return record
 
     def begin(self, workflow_id, task_id, workspace, conversation_id=None, new=False, settings=None,
-              workflow_revision="", workflow_instructions=""):
+              workflow_revision="", workflow_instructions="", inference_preference=None):
         validate_id(workflow_id)
         validate_id(task_id)
         if type(new) is not bool or (new and conversation_id):
@@ -106,8 +107,12 @@ class Frontend:
                 "parent_pid": os.getpid(), "guardian_pid": None, "guardian_identity": None,
                 "omp_pid": None, "omp_identity": None, "last_heartbeat_at": None,
                 "observation": None, "created_at": old["created_at"] if old else self.store.timestamp()}
+            record["background_task_id"] = "native-" + hashlib.sha256(conversation_id.encode()).hexdigest()
             record.update(configuration_digest=settings_digest(settings), persona_digest=persona_digest(settings),
                           workflow_revision=workflow_revision,
+                          inference_preference=inference_preference,
+                          inference_changed=old is None or old.get("inference_preference") != inference_preference,
+                          last_opened_at=self.store.timestamp(),
                           config_key="frontend-config:v1:" + conversation_id + ":" + str(record["generation"]))
             self.store._set_metadata(db, record["config_key"], {"settings": settings,
                 "workflow_instructions": workflow_instructions, "workflow_revision": workflow_revision})
@@ -165,6 +170,25 @@ class Frontend:
             self.save(db, record)
         return self.public(record)
 
+    def inference(self, conversation_id, generation, owner_token, model, thinking):
+        from .customization import validate
+        from .prompt_composer import settings_digest
+        with self.store.transaction() as db:
+            record = self.authenticate(conversation_id, generation, owner_token)
+            if not alive(record.get("omp_pid"), record.get("omp_identity")):
+                raise ConflictError("Native owner is no longer alive")
+            snapshot = self.store.metadata(record["config_key"])
+            wanted = {"model": model, "thinking": thinking}
+            if snapshot["settings"].get("inference") != wanted:
+                settings = {**snapshot["settings"], "inference": wanted}
+                validate(settings)
+                record["inference_revision"] = record.get("inference_revision", 0) + 1
+                key = f"frontend-config:v1:{conversation_id}:{generation}:inference:{record['inference_revision']}"
+                self.store._set_metadata(db, key, {**snapshot, "settings": settings})
+                record.update(config_key=key, configuration_digest=settings_digest(settings))
+                self.save(db, record)
+        return self.public(record)
+
     def finish(self, conversation_id, generation, owner_token, exit_code):
         if exit_code is not None and type(exit_code) is not int:
             raise RuntimeContractError("Native exit code must be an integer or unknown")
@@ -197,6 +221,8 @@ class Frontend:
         lock = InstanceLock(Path(record["session_dir"]) / "owner.lock")
         try:
             if record["session_file"]:
+                if not Path(record["session_file"]).is_file():
+                    raise ConflictError("Native Session was not persisted or is missing; preserve this record and start --new")
                 self.archive(record)
             with self.store.transaction() as db:
                 fresh = self.get(conversation_id)
@@ -226,8 +252,10 @@ class Frontend:
                             if query.lower() in message["text"].lower())
         selected = []
         for message in messages[offset:offset + 20]:
-            excerpt, truncated = clip(message["text"], 2048)
-            selected.append({**message, "text": excerpt, "truncated": truncated})
+            position = message["text"].lower().find(query.lower()) if query else 0
+            start = max(0, position - 80)
+            excerpt, truncated = clip(message["text"][start:], 2048)
+            selected.append({**message, "text": excerpt, "truncated": truncated or start > 0})
         return {"conversation_id": conversation_id, "messages": selected, "has_more": len(messages) > offset + 20,
                 "archive_mode": "all_branches", "source": "omp_native_session"}
 

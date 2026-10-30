@@ -26,7 +26,7 @@ Paveway
 ```
 
 ### Paveway 的职责
-- **配置 MCP Server**：通过 `oicoach-runtime workflow connect-tijian` 安全写入 workflow workspace 的 `.mcp.json`。
+- **配置 MCP Server**：通过 `oicoach-runtime workflow connect-tijian` 安全写入 workflow workspace 的 `.omp/mcp.json`。
 - **业务指导与编排**：内置 `paveway-tijian` Skill 为教练 Agent 提供业务认知、能力选择与跨工具工作流策略。
 - **VJudge 会话维护**：通过 `vjudge auth` CLI 及终端 UI 管理与 Tijian 兼容的共享 VJudge 登录 Cookie。
 
@@ -82,7 +82,7 @@ oicoach-runtime workflow connect-tijian coach \
 - **默认只读**：省略模式标志时，默认采用 `--read-only`，限制 MCP 进程只暴露和允许只读能力。
 - **互斥标志**：`--read-only` 与 `--read-write` 严格互斥，不能同时提供。
 - **明确路径**：`--executable` 必须为有效且具备可执行权限的路径，绝不隐式回退到旧 CLI。
-- **合并配置**：写入对应 workflow workspace 下的 `.mcp.json`，保留已有其他 MCP Server 与 `disabledServers`。
+- **合并配置**：写入对应 workflow workspace 下的 `.omp/mcp.json`，保留已有其他 MCP Server 与 `disabledServers`。
 - **幂等与冲突检测**：相同配置重复执行保持幂等；若存在不同定义的 `tijian` 配置则安全报错（`ConflictError`），原文件严格保持不变。
 - **原子性与安全权限**：通过临时文件原子替换，拒绝 symlink，文件权限保持 `0600`。
 
@@ -108,7 +108,7 @@ oicoach-runtime workflow connect-tijian coach \
 ### 配置成功 vs 实际连接成功
 - `workflow connect-tijian` 返回 `availability: "configured_not_verified"`，仅表示 `.mcp.json` 配置文件已正确写入。
 - **配置成功不代表 MCP 进程已经成功启动或连接**。
-- 启动与连接由 OMP 在派发回合时负责：OMP 读取 workspace 的 `.mcp.json`，通过 stdio 启动 `tijian-mcp` 子进程并完成 MCP 初始化握手。
+- 启动与连接由 OMP 在派发回合时负责：OMP 读取 workspace 的 `.omp/mcp.json`，通过 stdio 启动 `tijian-mcp` 子进程并完成 MCP 初始化握手。
 
 ### 检查 OMP 是否发现工具
 可以通过以下方式确认工具已被发现：

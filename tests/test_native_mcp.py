@@ -82,6 +82,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         self.config = load_config(self.config_path)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir(mode=0o700)
+        (self.workspace / ".omp").mkdir(mode=0o700)
         create(self.config, "coach", self.workspace)
         self.fake_mcp = self.root / "fake_tijian_mcp.py"
         self.fake_mcp.write_text(FAKE_MCP_SERVER_CODE)
@@ -91,7 +92,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         report = connect_tijian(self.config, "coach", self.fake_mcp)
         self.assertEqual(report["availability"], "configured_not_verified")
         self.assertTrue(report["read_only"])
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         self.assertTrue(mcp_path.is_file())
         self.assertEqual(mcp_path.stat().st_mode & 0o777, 0o600)
         data = json.loads(mcp_path.read_text())
@@ -102,13 +103,13 @@ class NativeMcpConfigurationTests(unittest.TestCase):
     def test_explicit_read_write_configuration_omits_read_only_flag(self):
         report = connect_tijian(self.config, "coach", self.fake_mcp, read_only=False)
         self.assertFalse(report["read_only"])
-        data = json.loads((self.workspace / ".mcp.json").read_text())
+        data = json.loads((self.workspace / ".omp/mcp.json").read_text())
         server = data["mcpServers"]["tijian"]
         self.assertEqual(server["command"], str(self.fake_mcp.resolve()))
         self.assertEqual(server["args"], [])
 
     def test_merges_with_existing_servers_and_disabled_servers(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         initial = {
             "mcpServers": {
                 "git": {"command": "/usr/bin/git", "args": ["status"]}
@@ -123,7 +124,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         self.assertIn("tijian", data["mcpServers"])
 
     def test_disabled_servers_containing_tijian_raises_conflict_and_preserves_file(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         initial = {
             "mcpServers": {},
             "disabledServers": ["tijian", "other"]
@@ -136,7 +137,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         self.assertEqual(mcp_path.read_bytes(), original_bytes)
 
     def test_disabled_servers_containing_other_allows_tijian_and_preserves_disabled_list(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         initial = {
             "mcpServers": {},
             "disabledServers": ["other"]
@@ -152,12 +153,30 @@ class NativeMcpConfigurationTests(unittest.TestCase):
 
     def test_idempotent_when_called_repeatedly_with_same_config(self):
         connect_tijian(self.config, "coach", self.fake_mcp)
-        first_content = (self.workspace / ".mcp.json").read_bytes()
+        first_content = (self.workspace / ".omp/mcp.json").read_bytes()
         connect_tijian(self.config, "coach", self.fake_mcp)
-        self.assertEqual((self.workspace / ".mcp.json").read_bytes(), first_content)
+        self.assertEqual((self.workspace / ".omp/mcp.json").read_bytes(), first_content)
+
+    def test_explicit_connect_imports_legacy_config_without_rewriting_it(self):
+        legacy = self.workspace / ".mcp.json"
+        original = json.dumps({"mcpServers": {"other": {"command": "/fixture/other"}}}).encode()
+        legacy.write_bytes(original)
+        report = connect_tijian(self.config, "coach", self.fake_mcp)
+        self.assertTrue(report["legacy_imported"])
+        self.assertEqual(legacy.read_bytes(), original)
+        native = json.loads((self.workspace / ".omp/mcp.json").read_text())
+        self.assertIn("other", native["mcpServers"])
+        self.assertIn("tijian", native["mcpServers"])
+
+    def test_refuses_symlink_native_directory(self):
+        directory = self.workspace / ".omp"
+        directory.rmdir()
+        directory.symlink_to(self.config.workflow_root, target_is_directory=True)
+        with self.assertRaises(ConflictError):
+            connect_tijian(self.config, "coach", self.fake_mcp)
 
     def test_raises_conflict_when_existing_tijian_differs_and_preserves_file(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         existing = {"mcpServers": {"tijian": {"command": "/different/tijian-mcp", "args": []}}}
         mcp_path.write_text(json.dumps(existing))
         original_bytes = mcp_path.read_bytes()
@@ -176,7 +195,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
             connect_tijian(self.config, "coach", non_exec)
 
     def test_rejects_symlink_mcp_config_without_modifying(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         mcp_path.symlink_to(self.config_path)
         before = self.config_path.read_bytes()
         with self.assertRaises(ConflictError):
@@ -184,7 +203,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
         self.assertEqual(self.config_path.read_bytes(), before)
 
     def test_rejects_malformed_existing_json_without_modifying(self):
-        mcp_path = self.workspace / ".mcp.json"
+        mcp_path = self.workspace / ".omp/mcp.json"
         mcp_path.write_text("{not: valid json}")
         with self.assertRaises(WorkflowError):
             connect_tijian(self.config, "coach", self.fake_mcp)
@@ -199,7 +218,7 @@ class NativeMcpConfigurationTests(unittest.TestCase):
             "--json"
         ])
         self.assertEqual(code, 0)
-        data = json.loads((self.workspace / ".mcp.json").read_text())
+        data = json.loads((self.workspace / ".omp/mcp.json").read_text())
         self.assertEqual(data["mcpServers"]["tijian"]["args"], ["--read-only"])
 
         # Mutually exclusive flags rejected
@@ -222,6 +241,7 @@ class StdioMcpProtocolBoundaryTests(unittest.TestCase):
         self.config = load_config(self.config_path)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir(mode=0o700)
+        (self.workspace / ".omp").mkdir(mode=0o700)
         create(self.config, "coach", self.workspace)
         self.fake_mcp = self.root / "fake_tijian_mcp.py"
         self.fake_mcp.write_text(FAKE_MCP_SERVER_CODE)
@@ -260,7 +280,7 @@ class StdioMcpProtocolBoundaryTests(unittest.TestCase):
 
     def test_configured_read_only_mcp_server_exposes_only_read_tools(self):
         connect_tijian(self.config, "coach", self.fake_mcp, read_only=True)
-        mcp_config = json.loads((self.workspace / ".mcp.json").read_text())
+        mcp_config = json.loads((self.workspace / ".omp/mcp.json").read_text())
         server = mcp_config["mcpServers"]["tijian"]
         tools = self._interact(server["command"], server["args"])
         self.assertIn("tijian_problem_get", tools)
@@ -268,7 +288,7 @@ class StdioMcpProtocolBoundaryTests(unittest.TestCase):
 
     def test_configured_read_write_mcp_server_exposes_write_tools(self):
         connect_tijian(self.config, "coach", self.fake_mcp, read_only=False)
-        mcp_config = json.loads((self.workspace / ".mcp.json").read_text())
+        mcp_config = json.loads((self.workspace / ".omp/mcp.json").read_text())
         server = mcp_config["mcpServers"]["tijian"]
         tools = self._interact(server["command"], server["args"])
         self.assertIn("tijian_problem_get", tools)

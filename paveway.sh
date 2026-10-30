@@ -6,22 +6,33 @@ umask 077
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 config_path="$project_dir/.runtime/config.toml"
 requested_workflow=""
+requested_coach=""
+ui_entry="${PAVEWAY_UI:-legacy}"
 ui_args=()
 
 usage() {
     cat <<'EOF'
-用法：./paveway.sh [--config PATH] [--workflow ID] [--task ID]
+用法：./paveway.sh [--native|--legacy-ui] [--config PATH] [--workflow ID|--coach ID] [--task ID]
 
 检查/安装本地 .venv，初始化缺少的配置，启动 Runtime 并进入终端 UI。
 默认使用项目 .runtime/config.toml；已有设置、会话和活动请求继续沿用。
 首次启动且无 Workflow 时，将提示输入第一个 Workflow 的名称（或使用 --workflow 预先指定）。
 退出 UI 不会停止后台 Runtime。OMP 需要事先安装并完成模型认证。
+--native 打开 OMP 原生界面；--legacy-ui 保留原管理界面。
 EOF
 }
 
 while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
+        --native) ui_entry="native"; shift ;;
+        --legacy-ui) ui_entry="legacy"; shift ;;
+        --coach)
+            if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
+                printf '缺少 %s 的值。\n' "$1" >&2; exit 2
+            fi
+            requested_coach="$2"
+            shift 2 ;;
         --config)
             if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
                 printf '缺少 %s 的值。\n' "$1" >&2
@@ -47,6 +58,12 @@ while (($#)); do
         *) printf '未知参数：%s；使用 --help 查看用法。\n' "$1" >&2; exit 2 ;;
     esac
 done
+if [[ "$ui_entry" != "native" && "$ui_entry" != "legacy" ]]; then
+    printf 'PAVEWAY_UI 必须为 native 或 legacy。\n' >&2; exit 2
+fi
+if [[ -n "$requested_coach" && -n "$requested_workflow" ]]; then
+    printf '%s\n' '--coach 与 --workflow 不可同时使用。' >&2; exit 2
+fi
 
 if [[ ! -t 0 || ! -t 1 ]]; then
     printf 'Paveway UI 需要交互终端，请在终端中运行此脚本。\n' >&2
@@ -94,11 +111,17 @@ from oicoach_runtime.workflow_setup import create
 path = Path(sys.argv[1]).absolute()
 requested_workflow = sys.argv[2] if len(sys.argv) > 2 else ""
 workflow_file = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+requested_coach = sys.argv[4] if len(sys.argv) > 4 else ""
 
 try:
     if not path.exists():
         initialize(path, str(path.parent / "state"), str(path.parent / "workflows"))
     config = load_config(path)
+    if requested_coach:
+        from oicoach_runtime.coaches import resolve
+        requested_workflow = resolve(config, requested_coach)["runtime_workflow_id"]
+        if workflow_file:
+            workflow_file.write_text(requested_workflow, encoding="utf-8")
     if not shutil.which(config.agent.executable):
         raise RuntimeContractError("找不到配置的 OMP；请安装 OMP 或修改配置中的 agent.executable。")
 
@@ -177,7 +200,7 @@ except OSError:
     sys.exit(1)
 PY
 )"
-"$python" -c "$python_code" "$config_path" "$requested_workflow" "$workflow_file"
+"$python" -c "$python_code" "$config_path" "$requested_workflow" "$workflow_file" "$requested_coach"
 
 if [[ -z "$requested_workflow" && -s "$workflow_file" ]]; then
     created_id="$(cat "$workflow_file")"
@@ -190,4 +213,7 @@ if [[ "${PAVEWAY_PROBE_STARTUP_ONLY:-0}" == "1" ]]; then
     exit 0
 fi
 
+if [[ "$ui_entry" == "native" ]]; then
+    exec "$python" -m oicoach_runtime native --config "$config_path" "${ui_args[@]}"
+fi
 exec "$python" -m oicoach_runtime ui --config "$config_path" "${ui_args[@]}"

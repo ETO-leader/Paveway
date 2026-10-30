@@ -48,6 +48,37 @@ class Runtime:
         self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
+        if command.startswith("native_memory.") or command == "native_history.search":
+            from .frontend import Frontend, alive
+            arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
+                      ("conversation_id", "generation", "owner_token", "parameters"))
+            owner = {key: raw[key] for key in ("conversation_id", "generation", "owner_token")}
+            record = Frontend(self.store).authenticate(**owner)
+            if not alive(record.get("omp_pid"), record.get("omp_identity")) or not isinstance(raw["parameters"], dict):
+                raise ConflictError("Native owner is unavailable or parameters are invalid")
+            values = dict(raw["parameters"])
+            if command == "native_history.search":
+                arguments(values, ("source", "query", "offset"), ("source",))
+                source = values.pop("source")
+                if source == "native":
+                    return Frontend(self.store).messages(record["conversation_id"], **values)
+                if source == "background":
+                    return History(self.store).search(record["workflow_id"], record["task_id"], **values)
+                raise RuntimeContractError("Unknown history source")
+            if not self.provider.describe(record["workflow_id"]).memory_enabled:
+                raise RuntimeContractError("Paveway memory tools are disabled in this workflow")
+            operation = command.removeprefix("native_memory.")
+            contracts = {"list": (("scope", "query", "offset"), ()), "show": (("scope", "key"), ("key",)),
+                "put": (("scope", "key", "title", "content", "expected_version", "kind", "pinned"), ("key", "title", "content", "expected_version")),
+                "delete": (("scope", "key", "expected_version"), ("key", "expected_version"))}
+            if operation not in contracts:
+                raise RuntimeContractError("Unknown native memory operation")
+            arguments(values, *contracts[operation])
+            scope = values.pop("scope", "profile")
+            if scope not in ("profile", "task"):
+                raise RuntimeContractError("Choose profile or task memory scope")
+            return getattr(Memory(self.store), operation)(record["workflow_id"],
+                task_id=record["task_id"] if scope == "task" else None, **values)
         if command in ("coach.state.show", "coach.state.put"):
             from .coaches import state
             fields = ("coach_id", "key") + (("value", "expected_version") if command.endswith("put") else ())
@@ -98,11 +129,14 @@ class Runtime:
                 workflow = self.provider.describe(raw["workflow_id"])
                 instructions = workflow.render_parts("wake", {})[0] if workflow.instructions_in_system else ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
-                                      workflow_revision=workflow.revision, workflow_instructions=instructions)
+                                      workflow_revision=workflow.revision, workflow_instructions=instructions,
+                                      inference_preference={key: workflow.customization.get("inference", {}).get(key) or getattr(self.config.agent, key)
+                                                            for key in ("model", "thinking")})
             contracts = {
                 "started": ("conversation_id", "generation", "owner_token", "guardian_pid"),
                 "attest": ("conversation_id", "generation", "owner_token", "omp_pid", "session_id", "session_file"),
                 "observe": ("conversation_id", "generation", "owner_token", "phase"),
+                "inference": ("conversation_id", "generation", "owner_token", "model", "thinking"),
                 "finish": ("conversation_id", "generation", "owner_token", "exit_code"),
                 "show": ("conversation_id",), "recover": ("conversation_id",),
                 "messages": ("conversation_id", "query", "offset"),
@@ -131,7 +165,9 @@ class Runtime:
             arguments(raw, ())
             supervisor = self.store.status()
             health = "degraded" if supervisor["supervisor"]["phase"] in ("backoff", "open") else self.agent_health
-            return {"daemon": "running", "milestone": "M4", "agent_health": health, **supervisor}
+            from . import __version__
+            return {"daemon": "running", "runtime_version": __version__, "native_protocol_version": 1,
+                    "milestone": "M4", "agent_health": health, **supervisor}
         if command == "schedule":
             arguments(raw, ("workflow_id", "task_id", "reason", "dedupe_key", "payload", "at", "after_turn", "run_id"),
                       ("workflow_id", "task_id", "reason", "dedupe_key"))
@@ -406,7 +442,8 @@ class Runtime:
             event = self.store.claim_due(self.owner)
             if event:
                 Inbox(self.store).due(event)
-                self.active_scope = (event["workflow_id"], event["task_id"])
+                native = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
+                self.active_scope = (event["workflow_id"], native["binding_task_id"] if native else event["task_id"])
                 self.active_dispatch = asyncio.create_task(self.dispatch_event(event))
                 try:
                     await asyncio.shield(self.active_dispatch)

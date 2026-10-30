@@ -5,7 +5,7 @@ import hashlib
 from .context_budget import CONTEXT_PROMPT
 from .store import canonical_json
 
-VERSION = 1
+VERSION = 2
 
 
 def settings_digest(settings):

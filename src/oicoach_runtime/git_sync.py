@@ -612,3 +612,29 @@ def messages(config, device, session, query="", offset=0):
     page = [{**m, "text": m["text"][:4096], "truncated": len(m["text"]) > 4096} for m in selected[offset:offset + 20]]
     return {"api_version": 1, "archive_mode": "all_branches", "messages": page,
             "has_more": len(selected) > offset + 20, "offset": offset}
+
+
+def sessions(config, workflow=None, offset=0):
+    """Discover both RPC and native-TUI text archives without importing sessions."""
+    if workflow is not None:
+        validate_id(workflow)
+    if type(offset) is not int or not 0 <= offset <= 1000000:
+        raise RuntimeContractError("Invalid archive offset")
+    values = settings(config)
+    if not values:
+        raise RuntimeContractError("Sync is not configured")
+    repository = owned_repository(config, values)
+    rows = []
+    for path in repository.glob("devices/*/sessions/*.json"):
+        item = read_json(path)
+        device, session = path.parent.parent.name, path.stem
+        if not re.fullmatch(r"[0-9a-f]{32}", device) or not re.fullmatch(r"[0-9a-f]{64}", session) or \
+                not isinstance(item, dict) or item.get("device_id") != device or item.get("binding_id") != session or not isinstance(item.get("messages"), list):
+            raise RuntimeContractError("Invalid native text archive identity")
+        validate_id(item.get("workflow_id"))
+        validate_id(item.get("task_id"))
+        if workflow is None or workflow == item["workflow_id"]:
+            rows.append({"device_id": device, "session": session, "workflow_id": item["workflow_id"],
+                "task_id": item["task_id"], "source": item.get("source", "omp_rpc"), "message_count": len(item["messages"])})
+    rows.sort(key=lambda row: (row["workflow_id"], row["task_id"], row["device_id"], row["session"]))
+    return {"api_version": 1, "records": rows[offset:offset + 20], "has_more": len(rows) > offset + 20, "offset": offset}

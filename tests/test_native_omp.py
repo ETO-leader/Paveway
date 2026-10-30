@@ -27,7 +27,7 @@ from oicoach_runtime.workflow_setup import create
 
 @unittest.skipUnless(os.environ.get("PAVEWAY_TEST_NATIVE") == "1" and shutil.which("omp"),
                      "set PAVEWAY_TEST_NATIVE=1 for isolated native OMP/PTY fixture tests")
-class NativeOmpTests(unittest.TestCase):
+class NativeFixture(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
         from verify_omp_m0 import Probe, Provider
@@ -79,7 +79,7 @@ class NativeOmpTests(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
-    def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False):
+    def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False, evidence=lambda: True):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
@@ -116,7 +116,9 @@ class NativeOmpTests(unittest.TestCase):
                     output.extend(chunk)
                     if b"\x1b[6n" in chunk:
                         os.write(master, b"\x1b[1;1R")
-            self.fail("native UI did not reach expected fixture state: " + output.decode(errors="replace")[-3000:])
+            tools = [message.get("content") for body in self.server.requests for message in body["messages"] if message.get("role") == "tool"]
+            self.fail("native UI did not reach expected fixture state: " + output.decode(errors="replace")[-1800:] +
+                "\nFixture tool evidence: " + json.dumps(tools, ensure_ascii=False)[-2000:])
 
         try:
             until("OMP native")
@@ -133,8 +135,10 @@ class NativeOmpTests(unittest.TestCase):
                 self.assertEqual(state["status"], "succeeded")
                 self.assertTrue(list((self.config.state_dir / "sessions").glob("*/*.jsonl")))
             baseline = len(self.server.requests)
+            conversation = request(self.config.server.socket_path, "frontend.list")[0]["conversation_id"]
             send(b"\x1b[200~" + body.encode() + b"\x1b[201~\r")
-            until("M0_REPLY", requests=baseline + 1)
+            until("M0_REPLY", requests=baseline + 1, predicate=lambda:
+                request(self.config.server.socket_path, "frontend.show", {"conversation_id": conversation})["status"] == "idle" and evidence())
             if wakeup:
                 send(b"/wakeup in 1s TEST_NATIVE_TIMER\r")
                 until("native_wakeup")
@@ -170,6 +174,9 @@ class NativeOmpTests(unittest.TestCase):
                     process.wait()
             os.close(master)
 
+
+
+class NativeOmpTests(NativeFixture):
     def test_native_chat_preserves_long_input_and_exit_keeps_daemon(self):
         body = "NATIVE_HEAD " + "漢字 filler " * 6000 + " NATIVE_MIDDLE " + "漢字 filler " * 6000 + " NATIVE_TAIL"
         self.chat(body, background=True)

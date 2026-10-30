@@ -40,6 +40,8 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
 
     def resize(*_):
         fcntl.ioctl(master, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
+        if process is not None and process.poll() is None:
+            os.killpg(process.pid, signal.SIGWINCH)
 
     try:
         resize()
@@ -82,7 +84,13 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                         line, _, remainder = frames.partition(b"\n")
                         if remainder:
                             raise RuntimeContractError("Unexpected native attestation data")
-                        ready(json.loads(line), process)
+                        try:
+                            frame = json.loads(line)
+                        except (ValueError, UnicodeError):
+                            raise RuntimeContractError("Invalid native attestation; no automatic retry") from None
+                        if not isinstance(frame, dict):
+                            raise RuntimeContractError("Invalid native attestation object")
+                        ready(frame, process)
                         channel.sendall(b"A")
                         frames.clear()
                         if not admitted:
@@ -121,6 +129,8 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
             selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0), "terminal")
             if process.poll() is not None:
                 return process.returncode
+    except KeyboardInterrupt:
+        return 130
     finally:
         selector.close()
         termios.tcsetattr(0, termios.TCSADRAIN, original)

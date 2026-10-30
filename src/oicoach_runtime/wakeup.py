@@ -70,5 +70,5 @@ class Wakeup:
                 raise ConflictError("Native launch snapshot is missing; inspect the queued event before retrying")
             with self.store.transaction() as db:
                 self.store._set_metadata(db, key, {**snapshot,
-                    "binding_task_id": "native-" + hashlib.sha256(record["conversation_id"].encode()).hexdigest()})
+                    "binding_task_id": record["background_task_id"]})
         return event

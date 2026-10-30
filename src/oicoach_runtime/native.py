@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import secrets
+import stat
+import sys
 import uuid
 from importlib.resources import files
 from pathlib import Path
@@ -21,6 +23,29 @@ from .workflows import WorkflowProvider
 
 
 def run(config, config_path, workflow_id, task_id="training", conversation_id=None, new=False):
+    if not os.isatty(0) or not os.isatty(1):
+        raise RuntimeContractError("OMP native UI requires an interactive terminal")
+    from .proxy import synchronize
+    synchronize(config_path)
+    while True:
+        code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new)
+        if code or not action:
+            return code
+        if action["kind"] == "profile":
+            from .coaches import resolve
+            workflow_id = resolve(config, action["coach_id"])["runtime_workflow_id"]
+            conversation_id, new = None, False
+        elif action["kind"] == "new":
+            conversation_id, new = None, True
+        elif action["kind"] == "legacy":
+            from .tui import run as run_ui
+            run_ui(config_path, workflow=workflow_id, task=task_id)
+            conversation_id, new = action["conversation_id"], False
+        else:
+            conversation_id, new = action["conversation_id"], False
+
+
+def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
@@ -37,8 +62,10 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
             workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
             if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
                 raise RuntimeContractError("Profile changed during launch; no prompt was sent")
-        code = _run_owned(config, config_path, workflow, lease, lock)
-        return code
+        code, action = _run_owned(config, config_path, workflow, lease, lock)
+        if action and action["kind"] in ("resume", "legacy"):
+            action["conversation_id"] = lease["conversation_id"]
+        return code, action
     finally:
         if lock:
             lock.close()
@@ -54,16 +81,21 @@ def _run_owned(config, config_path, workflow, lease, lock):
     workflow_id, task_id = lease["workflow_id"], lease["task_id"]
     root = Path(lease["session_dir"])
     launch_id = str(uuid.uuid4())
+    nonce = secrets.token_hex(32)
+    switch_path = root / ("switch-" + launch_id + ".json")
     settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id,
                 "coach_id": lease["coach_id"],
+                "background_task_id": lease["background_task_id"],
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
-                "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled}
+                "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled,
+                "memory_enabled": workflow.memory_enabled,
+                "cli_prefix": [sys.executable, "-m", "oicoach_runtime"], "config_path": str(config_path),
+                "switch_path": str(switch_path)}
     private = root / (launch_id + ".json")
     private.write_text(json.dumps(settings), encoding="utf-8")
     private.chmod(0o600)
     extension = Path(str(files("oicoach_runtime").joinpath("bundled/paveway-native.mjs")))
     digest = hashlib.sha256(extension.read_bytes()).hexdigest()
-    nonce = secrets.token_hex(32)
     environment = dict(child_environment(config_path), PAVEWAY_NATIVE_DATA=str(private), PAVEWAY_NATIVE_NONCE=nonce)
     argv = [config.agent.executable, "--cwd", str(workflow.workspace), "--session-dir", str(root),
             "--no-extensions", "--trusted-extension", str(extension)]
@@ -75,10 +107,11 @@ def _run_owned(config, config_path, workflow, lease, lock):
     if config.agent.profile:
         argv += ["--profile", config.agent.profile]
     inference = workflow.customization.get("inference", {})
-    for option in ("model", "thinking"):
-        value = inference.get(option) or getattr(config.agent, option)
-        if value:
-            argv += ["--" + option, value]
+    if not lease["session_file"] or lease["inference_changed"]:
+        for option in ("model", "thinking"):
+            value = inference.get(option) or getattr(config.agent, option)
+            if value:
+                argv += ["--" + option, value]
     for option in ("tools", "skills", "rules"):
         if not getattr(config.agent, option + "_enabled"):
             argv += ["--no-" + option]
@@ -97,10 +130,13 @@ def _run_owned(config, config_path, workflow, lease, lock):
 
     def ready(frame, guardian):
         pid = frame.get("pid")
-        if (frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or frame.get("extensionDigest") != digest or
+        if (type(frame.get("apiVersion")) is not int or frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or frame.get("extensionDigest") != digest or
                 frame.get("contextPolicy") != "omp-native" or type(pid) is not int):
             raise RuntimeContractError("Native OMP integration identity mismatch")
-        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            raise RuntimeContractError("Native OMP exited before admission") from None
         if int(stat[1]) != guardian.pid:
             raise RuntimeContractError("Native OMP is not the owned guardian child")
         session_file = Path(frame.get("sessionFile") or "")
@@ -116,5 +152,18 @@ def _run_owned(config, config_path, workflow, lease, lock):
     def started(process):
         request(config.server.socket_path, "frontend.started", {**owner(), "guardian_pid": process.pid})
 
-    return run_terminal(argv, environment, ready=ready, started=started,
+    code = run_terminal(argv, environment, ready=ready, started=started,
                         timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))
+    action = None
+    if code == 0 and switch_path.exists():
+        info = switch_path.lstat()
+        if switch_path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 4096:
+            raise RuntimeContractError("Native switch request is not private")
+        action = json.loads(switch_path.read_text())
+        switch_path.unlink()
+        if action.pop("nonce", None) != nonce or action.get("kind") not in ("new", "profile", "resume", "legacy") or \
+                set(action) != ({"kind", "coach_id"} if action.get("kind") == "profile" else {"kind"}):
+            raise RuntimeContractError("Native switch request identity mismatch")
+        if "coach_id" in action:
+            validate_id(action["coach_id"])
+    return code, action

@@ -1,7 +1,10 @@
 import {randomUUID} from "node:crypto";
 
-export function registerWakeups(pi, config, bound, request) {
-    const call = (operation, parameters) => request(config.socket_path, "wakeup." + operation, {...bound(), parameters});
+export function registerWakeups(pi, config, bound, request, captureInference) {
+    const call = async (operation, parameters, ctx) => {
+        if (operation === "schedule" && ctx) await captureInference(ctx);
+        return request(config.socket_path, "wakeup." + operation, {...bound(), parameters});
+    };
     const inboxCall = (operation, parameters = {}) => request(config.socket_path, "inbox.bound-" + operation, {...bound(), parameters});
     const z = pi.zod;
     const when = z.union([
@@ -21,8 +24,9 @@ export function registerWakeups(pi, config, bound, request) {
                 "Schedule only an explicit user reminder or existing opt-in. after_now starts at Runtime receipt; native after_turn_settled is unavailable. Never create an autonomous loop. Reuse the same dedupe_key for an uncertain identical request; inspect list before retrying. Scheduling is not delivery or user-seen evidence." :
                 "Manage current bound workflow/task wakeups; mutations require the event CAS version. Do not supply another scope.",
             parameters, approval: operation === "list" ? "read" : "write", loadMode: "essential",
-            async execute(_id, args) {
-                try { return {content: [{type: "text", text: JSON.stringify(await call(operation, args))}]}; }
+            async execute(_id, args, _signal, _update, ctx) {
+                if (ctx?.agent?.kind !== "main") return {content: [{type: "text", text: "Only the main GPT may use its managed wakeup capability"}], isError: true};
+                try { return {content: [{type: "text", text: JSON.stringify(await call(operation, args, ctx))}]}; }
                 catch (error) { return {content: [{type: "text", text: error.message}], isError: true}; }
             }});
     }
@@ -42,8 +46,10 @@ export function registerWakeups(pi, config, bound, request) {
     let context;
     let upcoming = [];
     let unread = 0;
+    let unavailable = false;
     const status = () => {
         if (!context) return;
+        if (unavailable) return context.ui.setStatus("paveway-wakeup", "Runtime unavailable or owner uncertain · no automatic replay");
         const event = upcoming.find(row => row.not_before_utc);
         const timing = event ? `${new Date(event.not_before_utc).toLocaleString()} · ` +
             (event.status === "running" ? "executing" : `${Math.max(0, Math.ceil((Date.parse(event.not_before_utc) - Date.now()) / 1000))}s`) : "none";
@@ -51,10 +57,13 @@ export function registerWakeups(pi, config, bound, request) {
     };
     const refresh = async ctx => {
         context = ctx || context;
-        upcoming = await call("list", {});
-        const inbox = await inboxCall("list");
-        unread = inbox.unacknowledged;
-        status();
+        try {
+            upcoming = await call("list", {});
+            const inbox = await inboxCall("list");
+            unread = inbox.unacknowledged;
+            unavailable = false;
+            status();
+        } catch (error) { unavailable = true; status(); throw error; }
     };
     const clock = setInterval(status, 1000);
     clock.unref();
@@ -76,7 +85,7 @@ export function registerWakeups(pi, config, bound, request) {
                         timing = {kind: "after_now", seconds: Number(duration[1]) * {s: 1, m: 60, h: 3600, d: 86400}[duration[2]]};
                     } else timing = {kind: "at", at: parseAt(value || "")};
                     result = await call("schedule", {when: timing, reason: parts.slice(2).join(" "),
-                        dedupe_key: "native-user-" + randomUUID(), intent: "reminder", authorized_by_user: true});
+                        dedupe_key: "native-user-" + randomUUID(), intent: "reminder", authorized_by_user: true}, ctx);
                 } else throw new Error("/wakeup in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME");
                 ctx.ui.notify(JSON.stringify(result, null, 2), "info");
                 await refresh(ctx);

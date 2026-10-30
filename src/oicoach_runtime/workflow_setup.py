@@ -58,14 +58,21 @@ def connect_tijian(config, workflow_id, executable, *, read_only=True):
     executable_path = Path(executable).expanduser().resolve()
     if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
         raise WorkflowError(f"tijian-mcp executable not found or not executable: {executable_path}")
-    path = workflow.workspace / ".mcp.json"
-    if path.is_symlink():
+    directory = workflow.workspace / ".omp"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if directory.is_symlink() or not directory.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ConflictError("OMP configuration directory must be owned and not writable by others or a symlink")
+    path = directory / "mcp.json"
+    legacy = workflow.workspace / ".mcp.json"
+    source = legacy if not path.exists() and not path.is_symlink() and legacy.exists() else path
+    if path.is_symlink() or source.is_symlink():
         raise ConflictError("Refusing to modify a symlink MCP configuration")
     original = None
-    if path.exists():
-        if not path.is_file() or path.stat().st_size > 65536:
+    if source.exists():
+        if not source.is_file() or source.stat().st_size > 65536:
             raise WorkflowError("Existing MCP configuration must be a JSON file at most 64 KiB")
-        original = path.read_bytes()
+        original = source.read_bytes()
     try:
         raw = json.loads(original) if original is not None else {}
         if not isinstance(raw, dict) or not isinstance(raw.get("mcpServers", {}), dict):
@@ -86,14 +93,16 @@ def connect_tijian(config, workflow_id, executable, *, read_only=True):
     encoded = (json.dumps(raw, ensure_ascii=False, indent=2) + "\n").encode()
     if len(encoded) > 65536:
         raise WorkflowError("Merged MCP configuration exceeds 64 KiB")
-    with tempfile.NamedTemporaryFile(dir=workflow.workspace, prefix=".paveway-mcp-", delete=False) as stream:
+    with tempfile.NamedTemporaryFile(dir=directory, prefix=".paveway-mcp-", delete=False) as stream:
         temporary = Path(stream.name)
         try:
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
             temporary.chmod(0o600)
-            if original is None:
+            if source != path and (source.is_symlink() or source.read_bytes() != original):
+                raise ConflictError("Legacy MCP configuration changed concurrently; review before connecting")
+            if original is None or source != path:
                 try:
                     os.link(temporary, path)
                 except FileExistsError:
@@ -105,4 +114,5 @@ def connect_tijian(config, workflow_id, executable, *, read_only=True):
         finally:
             temporary.unlink(missing_ok=True)
     path.chmod(0o600)
-    return {"api_version": 1, "path": str(path), "server": "tijian", "availability": "configured_not_verified", "read_only": read_only}
+    return {"api_version": 1, "path": str(path), "server": "tijian", "availability": "configured_not_verified",
+            "read_only": read_only, "legacy_imported": source != path}

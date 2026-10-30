@@ -1,8 +1,10 @@
 // Thin native OMP extension. Runtime remains the owner of durable operations.
 import {createHash, randomUUID} from "node:crypto";
-import {lstatSync, readFileSync, readSync, writeSync} from "node:fs";
+import {lstatSync, readFileSync, readSync, writeFileSync, writeSync} from "node:fs";
 import {createConnection} from "node:net";
 import {registerWakeups} from "./paveway-wakeup.mjs";
+import {registerManagement} from "./paveway-management.mjs";
+import {registerMemory} from "./paveway-memory.mjs";
 
 function stop() {
     try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
@@ -50,10 +52,24 @@ export default async function paveway(pi) {
         if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
+        const management = registerManagement(pi, config, (ctx, action) => {
+            if (!ctx.isIdle()) return ctx.ui.notify("Wait for the current activity before switching/restarting", "warning");
+            writeFileSync(config.switch_path, JSON.stringify({nonce, ...action}), {mode: 0o600, flag: "wx"});
+            ctx.shutdown();
+        });
         const bound = () => ({conversation_id: config.conversation_id, generation: config.generation, owner_token: config.owner_token});
-        const wakeups = registerWakeups(pi, config, bound, runtimeRequest);
+        const captureInference = async ctx => {
+            if (ctx?.agent?.kind !== "main") throw new Error("Subagents cannot use the main GPT's managed capability; return the request to GPT");
+            if (ctx?.model) await runtimeRequest(config.socket_path, "frontend.inference", {...bound(),
+                model: ctx.model.provider + "/" + ctx.model.id, thinking: pi.getThinkingLevel() || ""});
+        };
+        const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference);
+        registerMemory(pi, config, bound, runtimeRequest);
         const sessionReady = async (_event, ctx) => {
             try {
+                // OMP emits spawned-session hooks in the same extension host.
+                // A child is neither a main-session switch nor a TUI failure.
+                if (ctx.agent?.kind !== "main") return;
                 if (!ctx.hasUI) stop();
                 await runtimeRequest(config.socket_path, "status");
                 const frame = Buffer.from(JSON.stringify({apiVersion: 1, nonce, pid: process.pid,
@@ -72,8 +88,8 @@ export default async function paveway(pi) {
         pi.on("session_start", sessionReady);
         pi.on("session_switch", sessionReady);
         for (const phase of ["agent_start", "agent_end", "session_shutdown"]) {
-            pi.on(phase, async () => {
-                if (!admitted) return;
+            pi.on(phase, async (_event, ctx) => {
+                if (!admitted || ctx.agent?.kind !== "main") return;
                 try { await runtimeRequest(config.socket_path, "frontend.observe", {...bound(), phase}); }
                 catch { /* Unknown observation is not a completion or retry. */ }
             });
@@ -87,9 +103,10 @@ export default async function paveway(pi) {
             if (!admitted) stop();
             try {
                 if (args.trim() && args.trim() !== "status") {
-                    ctx.ui.notify("/paveway status · /coach · Runtime CLI remains available", "info");
+                    await management.run(args, ctx);
                     return;
                 }
+                if (!args.trim()) return management.run("", ctx);
                 const status = await runtimeRequest(config.socket_path, "status");
                 ctx.ui.notify(JSON.stringify(status, null, 2), "info");
             } catch (error) { ctx.ui.notify(error.message, "error"); }

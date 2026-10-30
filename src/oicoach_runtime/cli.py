@@ -91,10 +91,10 @@ def parser() -> argparse.ArgumentParser:
     ui.add_argument("--task", default="training")
     native = commands.add_parser("native", help="Experimental controlled OMP native TUI; legacy ui remains available")
     common(native)
-    selection = native.add_mutually_exclusive_group(required=True)
+    selection = native.add_mutually_exclusive_group()
     selection.add_argument("--workflow")
     selection.add_argument("--coach", help="GPT profile ID; private runtime scope is resolved by Paveway")
-    native.add_argument("--task", default="training")
+    native.add_argument("--task")
     native.add_argument("--conversation")
     native.add_argument("--new", action="store_true")
     coach = commands.add_parser("coach", help="Manage isolated GPT Persona profiles; updates activate on new conversations")
@@ -184,7 +184,9 @@ def parser() -> argparse.ArgumentParser:
                 if action.startswith("skill-"):
                     operation.add_argument("--name", required=True)
                 if action == "skill-put":
-                    operation.add_argument("--description", required=True)
+                    description = operation.add_mutually_exclusive_group(required=True)
+                    description.add_argument("--description")
+                    description.add_argument("--description-file", type=Path)
                     from .customization import SKILL_CATEGORIES
                     operation.add_argument("--category", choices=SKILL_CATEGORIES, default=None)
                 if action in ("prompt", "skill-put"):
@@ -204,7 +206,7 @@ def parser() -> argparse.ArgumentParser:
                               help="Configure native tijian-mcp in read-write mode (explicitly removes --read-only)")
     sync = commands.add_parser("sync", help="Independent Git storage for user settings and archived history")
     sync_commands = sync.add_subparsers(dest="operation", required=True)
-    for name in ("setup", "remote", "status", "now", "run", "pause", "resume", "conflicts", "resolve", "bind", "history", "show", "messages"):
+    for name in ("setup", "remote", "status", "now", "run", "pause", "resume", "conflicts", "resolve", "bind", "history", "sessions", "show", "messages"):
         child = sync_commands.add_parser(name)
         common(child)
         if name == "remote":
@@ -222,8 +224,9 @@ def parser() -> argparse.ArgumentParser:
             choice.add_argument("--keep-local", action="store_true")
         if name == "bind":
             child.add_argument("--workspace", type=Path, required=True)
-        if name == "history":
-            child.add_argument("--query", default="")
+        if name in ("history", "sessions"):
+            if name == "history":
+                child.add_argument("--query", default="")
             child.add_argument("--workflow")
             child.add_argument("--offset", type=int, default=0)
         if name in ("show", "messages"):
@@ -474,11 +477,35 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "native":
             from .native import run
             config = load_config(path)
+            if not sys.stdin.isatty() or not sys.stdout.isatty():
+                raise RuntimeContractError("OMP native UI requires an interactive terminal")
+            state = request(config.server.socket_path, "status")
+            if state.get("native_protocol_version") != 1:
+                raise RuntimeContractError("Restart the Runtime in an idle state before using this native UI version; existing requests were not interrupted")
+            previous = request(config.server.socket_path, "frontend.list")
+            previous.sort(key=lambda row: row.get("last_opened_at", row["created_at"]), reverse=True)
             workflow_id = args.workflow
             if args.coach:
                 from .coaches import resolve
                 workflow_id = resolve(config, args.coach)["runtime_workflow_id"]
-            return run(config, path, workflow_id, args.task, args.conversation, args.new)
+            if workflow_id is None:
+                from .coaches import profiles
+                rows = profiles(config)
+                if not rows:
+                    raise RuntimeContractError("Create a workflow/profile before launching native OMP")
+                if len(rows) == 1:
+                    workflow_id = rows[0]["runtime_workflow_id"]
+                elif previous and any(row["runtime_workflow_id"] == previous[0]["workflow_id"] for row in rows):
+                    workflow_id = previous[0]["workflow_id"]
+                else:
+                    from prompt_toolkit.shortcuts import radiolist_dialog
+                    workflow_id = radiolist_dialog(title="GPT profiles", text="Select a profile (arrows / Enter)",
+                        values=[(row["runtime_workflow_id"], row["coach_id"]) for row in rows]).run()
+                    if workflow_id is None:
+                        return 0
+            recent = next((row for row in previous if row["workflow_id"] == workflow_id), None)
+            task = args.task or (recent["task_id"] if recent else "training")
+            return run(config, path, workflow_id, task, args.conversation, args.new)
         elif args.command == "coach":
             from . import coaches, customization
             config = load_config(path)
@@ -588,6 +615,8 @@ def main(argv: list[str] | None = None) -> int:
                 report = create(config, args.workflow, args.workspace)
             elif args.operation == "history":
                 report = git_sync.history(config, args.query, args.workflow, args.offset)
+            elif args.operation == "sessions":
+                report = git_sync.sessions(config, args.workflow, args.offset)
             elif args.operation == "messages":
                 report = git_sync.messages(config, args.device, args.session, args.query, args.offset)
             else:
@@ -617,7 +646,11 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         values["name"] = args.name
                         if args.customize_operation == "skill-put":
-                            values["description"] = args.description
+                            description = args.description
+                            if args.description_file:
+                                with args.description_file.open("rb") as stream:
+                                    description = stream.read(65537).decode("utf-8")
+                            values["description"] = description
                             values["category"] = args.category
                     report = customization.update(config, args.identifier, args.expected_revision, args.customize_operation, **values)
             elif args.operation == "models":
