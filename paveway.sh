@@ -56,18 +56,21 @@ fi
 # Resolve user-relative paths before changing to the project directory.
 if [[ "$config_path" != /* ]]; then config_path="$PWD/$config_path"; fi
 cd -- "$project_dir"
-python="${PAVEWAY_PYTHON:-$project_dir/.venv/bin/python}"
-if [[ ! -x "$python" ]]; then
-    command -v python3 >/dev/null || { printf '需要 Python 3.11+。\n' >&2; exit 1; }
-    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "需要 Python 3.11+。")'
-    printf '正在建立项目 .venv…\n'
-    python3 -m venv "$project_dir/.venv"
+if [[ -z "${PAVEWAY_PYTHON:-}" ]]; then
+    python="$project_dir/.venv/bin/python"
+    if [[ ! -x "$python" ]]; then
+        command -v python3 >/dev/null || { printf '需要 Python 3.11+。\n' >&2; exit 1; }
+        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "需要 Python 3.11+。")'
+        printf '正在建立项目 .venv…\n'
+        python3 -m venv "$project_dir/.venv"
+    fi
+    if ! "$python" -c 'import oicoach_runtime, prompt_toolkit, tiktoken; from pathlib import Path; assert Path(oicoach_runtime.__file__).resolve().parent == Path("src/oicoach_runtime").resolve()' 2>/dev/null; then
+        printf '正在安装 Paveway 依赖…\n'
+        "$python" -m pip install -e .
+    fi
+else
+    python="$PAVEWAY_PYTHON"
 fi
-if ! "$python" -c 'import oicoach_runtime, prompt_toolkit, tiktoken; from pathlib import Path; assert Path(oicoach_runtime.__file__).resolve().parent == Path("src/oicoach_runtime").resolve()' 2>/dev/null; then
-    printf '正在安装 Paveway 依赖…\n'
-    "$python" -m pip install -e .
-fi
-
 workflow_file="$(mktemp -t paveway-workflow-XXXXXX)"
 trap 'rm -f "$workflow_file"' EXIT
 
