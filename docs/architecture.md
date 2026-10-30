@@ -4,7 +4,7 @@
 
 ## 已實作
 
-Python 3.11+、Linux；調度核心與 Tijian CLI 適配僅用標準庫，終端編輯器依賴 prompt_toolkit，MCP bridge 使用可選 SDK。`oicoach-runtime` 入口位於 `src/oicoach_runtime/cli.py`，提供初始化、診斷、常駐服務、排程與恢復管理。
+Python 3.11+、Linux；终端编辑器依赖 prompt_toolkit，上下文预算使用 tiktoken，内置 Skill 的标准 YAML frontmatter 由 PyYAML 安全解析，MCP bridge 使用可选 SDK。`oicoach-runtime` 入口位於 `src/oicoach_runtime/cli.py`，提供初始化、診斷、常駐服務、排程與恢復管理。
 
 | 組件 | 責任 |
 | --- | --- |
@@ -26,6 +26,7 @@ Python 3.11+、Linux；調度核心與 Tijian CLI 適配僅用標準庫，終端
 | `memory.py` | 通用 scoped 筆記/CAS/有效期/有界注入；只讀查詢既有 run 與 OMP 原文，不包含 OI 記憶提煉策略 |
 | `git_sync.py` | 独立用户数据 Git 仓库、配置版本图/CAS 导入、按设备文字归档与后台同步，不恢复活动队列 |
 | `customization.py` | workflow 范圍系統提示詞/用戶 Skill 的 CAS、私密保存與每輪 OMP 原生輸入快照 |
+| `builtin_skills.py`、`bundled/skills/*/SKILL.md` | 包资源发现与校验；workflow 显式声明的第一方 Skill 复用同一快照/OMP 原生发现链路 |
 | `tui.py`、`ui_client.py` | 對話記錄/常駐編輯器/slash 選單；背景執行公開 CLI 子進程，不直接讀寫 DB、不接管 daemon 生命週期 |
 
 fake OMP 持續驗證故障與競態；本機 OMP 18.10.4 另通過真實模型回合、兩次喚醒續聊與跨 task 隔離。verify-omp 可在每個環境重現。0.7.0 只新增 memory_notes 表，DB 升級到 v2；既有 queue/run/session/output 不刪除或重播。
@@ -85,4 +86,4 @@ Runtime 與 guardian 都使用 Linux subreaper；OMP root 在 guardian 死亡時
 
 0.11.1 在独立同步任务首次运行时初始化默认本地仓库；仓库身份在 Runtime/state_dir 层级，全部 workflow/task 共用，不按对话创建仓库。无 remote 不发起网络操作，已有配置（包括暂停）不被初始化覆盖。初始化失败只记录同步状态并退避，不阻止队列服务。
 
-0.12.0 将用户 Skill 分为 OI Introduce、user information、personal skill。UI `/skills` 按三类管理，`/skills category NAME` 可移动分类；全部已启用正文每轮同时加入原生系统上下文，append/replace 都生效，停用项除外。旧记录默认 personal skill，按原文读取，保持 Git 内容寻址历史有效。
+用户 Skill 分为 OI Introduce、user information、personal skill；旧记录默认 personal skill，按原文读取，保持 Git 内容寻址历史有效。用户 Skill 与 workflow 声明的内置 Skill 合并到每轮私密快照，经 OMP 原生索引按需读取，不预先注入全文。包资源不进入用户 CRUD 或分类；固定教学规则与 MCP 工具契约不迁入 Runtime 注册逻辑。详见 [自定义与内置 Skill](customization.md)。

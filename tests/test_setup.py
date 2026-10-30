@@ -1,16 +1,19 @@
 import json
+import io
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import redirect_stdout
+from dataclasses import FrozenInstanceError
 
-from oicoach_runtime.cli import initialize
+from oicoach_runtime.cli import initialize, main
 from oicoach_runtime.config import config_text, load_config
-from oicoach_runtime.errors import ConflictError, RuntimeContractError
+from oicoach_runtime.errors import ConflictError, RuntimeContractError, WorkflowError
 from oicoach_runtime import service
-from oicoach_runtime.workflow_setup import create, connect_tijian
-from oicoach_runtime.workflows import WorkflowProvider
+from oicoach_runtime.workflow_setup import create, connect_tijian, describe
+from oicoach_runtime.workflows import Workflow, WorkflowProvider
 from dataclasses import replace
 
 
@@ -36,6 +39,72 @@ class SetupTests(unittest.TestCase):
             self.assertEqual((directory / "event.md").stat().st_mode & 0o777, 0o600)
             with self.assertRaises(ConflictError):
                 create(self.config, template, self.workspace, template)
+
+    def test_builtin_skill_defaults_are_explicit_and_independent_of_tijian(self):
+        self.assertFalse(self.config.tijian.enabled)
+        for template, names in (("coach", ["paveway-tijian"]), ("example", [])):
+            with self.subTest(template=template):
+                created = create(self.config, template, self.workspace, template)
+                workflow = WorkflowProvider(self.config.workflow_root).describe(template)
+                self.assertEqual(workflow.builtin_skills, tuple(names))
+                self.assertEqual(created["workflow"]["builtin_skills"], names)
+                self.assertEqual(describe(workflow)["builtin_skills"], names)
+                with self.assertRaises(FrozenInstanceError):
+                    workflow.builtin_skills = ()
+        positional = Workflow("legacy", "1", self.workspace, "per_task", {}, False, {}, False)
+        self.assertEqual(positional.builtin_skills, ())
+
+    def test_legacy_manifest_and_event_bytes_remain_untouched(self):
+        for template in ("coach", "example"):
+            created = create(self.config, template, self.workspace, template)
+            directory = Path(created["path"])
+            manifest = directory / "workflow.toml"
+            event = directory / "event.md"
+            original_manifest = manifest.read_bytes().replace(b'builtin_skills = ["paveway-tijian"]\n', b"")
+            manifest.write_bytes(original_manifest)
+            original_event = event.read_bytes()
+            for enabled in (False, True):
+                with self.subTest(template=template, tijian_enabled=enabled):
+                    config = replace(self.config, tijian=replace(self.config.tijian, enabled=enabled))
+                    workflow = WorkflowProvider(config.workflow_root).describe(template)
+                    self.assertEqual(workflow.builtin_skills, ())
+                    self.assertEqual(describe(workflow)["builtin_skills"], [])
+                    self.assertEqual(manifest.read_bytes(), original_manifest)
+                    self.assertEqual(event.read_bytes(), original_event)
+
+    def test_builtin_skill_manifest_validation_rejects_invalid_declarations(self):
+        created = create(self.config, "invalid", self.workspace, "example")
+        manifest = Path(created["path"]) / "workflow.toml"
+        original = manifest.read_text()
+        declarations = (
+            '"paveway-tijian"', 'true', '1', '{}',
+            '[1]', '[true]', '[{}]', '[["paveway-tijian"]]',
+            '[""]', '["../paveway-tijian"]', '["bad name"]',
+            '["not-a-registered-skill"]', '["paveway-tijian", "paveway-tijian"]',
+        )
+        for value in declarations:
+            with self.subTest(value=value):
+                manifest.write_text(original + f"builtin_skills = {value}\n")
+                with self.assertRaisesRegex(WorkflowError, "(?i)(builtin|skill)"):
+                    WorkflowProvider(self.config.workflow_root).describe("invalid")
+
+    def test_builtin_skills_are_workflow_scoped_and_cli_diagnostics_report_names(self):
+        create(self.config, "coach", self.workspace)
+        example = create(self.config, "example", self.workspace, "example")
+        example_manifest = Path(example["path"]) / "workflow.toml"
+        example_manifest.write_text(example_manifest.read_text() + "builtin_skills = []\n")
+        provider = WorkflowProvider(self.config.workflow_root)
+        self.assertEqual(provider.describe("coach").builtin_skills, ("paveway-tijian",))
+        self.assertEqual(provider.describe("example").builtin_skills, ())
+        for operation in (["show", "coach"], ["list"]):
+            with self.subTest(operation=operation), redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(["workflow", *operation, "--config", str(self.path), "--json"]), 0)
+                report = json.loads(output.getvalue())
+                if operation[0] == "show":
+                    self.assertEqual(report["workflow"]["builtin_skills"], ["paveway-tijian"])
+                else:
+                    by_id = {item["id"]: item["builtin_skills"] for item in report["workflows"]}
+                    self.assertEqual(by_id, {"coach": ["paveway-tijian"], "example": []})
 
     def test_invalid_workflows_do_not_overwrite_or_escape(self):
         for identifier, workspace in (("../escape", self.workspace), ("missing", self.root / "missing")):

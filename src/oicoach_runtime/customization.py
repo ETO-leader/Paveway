@@ -1,4 +1,4 @@
-"""Workflow-scoped user settings and immutable inputs for native OMP loading."""
+"""Workflow user settings and unified immutable inputs for native OMP loading."""
 
 import fcntl
 import json
@@ -166,9 +166,15 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions=""):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions="", *, builtin_skills=(), skill_directories=()):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
+    from .builtin_skills import resolve
+    packaged = resolve(list(builtin_skills))
+    conflicts = packaged.keys() & {skill["name"] for skill in settings["skills"]}
+    if conflicts:
+        raise ConflictError("Built-in and user Skill names conflict: " + ", ".join(sorted(conflicts)) +
+                            "; edit the workflow declaration or explicitly resolve the user Skill")
     from .models import validate_id
     from .config import ensure_private_directory
     validate_id(run_id)
@@ -186,6 +192,14 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     arguments = []
     prompt = settings["system_prompt"]
     active = [s for s in settings["skills"] if s["enabled"]] if skills_enabled else []
+    documents = {}
+    for skill in sorted(active, key=lambda s: (list(SKILL_CATEGORIES).index(skill_category(s)), s["name"])):
+        description = "[" + SKILL_CATEGORIES[skill_category(skill)] + "] " + skill["description"]
+        documents[skill["name"]] = ("---\nname: " + json.dumps(skill["name"]) +
+                                  "\ndescription: " + json.dumps(description, ensure_ascii=False) +
+                                  "\n---\n\n" + skill["content"])
+    if skills_enabled:
+        documents.update((name, skill.markdown) for name, skill in packaged.items())
     from .context_budget import CONTEXT_PROMPT
     from .store import canonical_json
     system_text = (prompt["text"] + "\n\n" if prompt["text"] else "") + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT
@@ -196,15 +210,14 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     if system_text:
         flag = "--system-prompt" if prompt["mode"] == "replace" else "--append-system-prompt"
         arguments += [flag, write("system.md", system_text)]
-    if active:
+    if documents:
         root = destination / "skills"
         root.mkdir(mode=0o700)
-        # OMP advertises metadata and reads the body through skill:// on demand.
-        # Keep category in that metadata without duplicating the native catalog.
-        for skill in sorted(active, key=lambda s: (list(SKILL_CATEGORIES).index(skill_category(s)), s["name"])):
-            (root / skill["name"]).mkdir(mode=0o700)
-            description = "[" + SKILL_CATEGORIES[skill_category(skill)] + "] " + skill["description"]
-            write("skills/" + skill["name"] + "/SKILL.md", "---\nname: " + json.dumps(skill["name"]) +
-                  "\ndescription: " + json.dumps(description, ensure_ascii=False) + "\n---\n\n" + skill["content"])
-        arguments += ["--config", write("omp.yml", json.dumps({"skills": {"customDirectories": [str(root)]}}))]
+        # One snapshot and native discovery path for both sources. Bodies are
+        # copied before spawn, never embedded in the system prompt.
+        for name, markdown in documents.items():
+            (root / name).mkdir(mode=0o700)
+            write("skills/" + name + "/SKILL.md", markdown)
+        directories = list(dict.fromkeys([*skill_directories, str(root)]))
+        arguments += ["--config", write("omp.yml", json.dumps({"skills": {"customDirectories": directories}}))]
     return arguments

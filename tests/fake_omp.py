@@ -29,6 +29,9 @@ def main():
     if "--help" in sys.argv:
         print("--cwd --session-dir --resume --mode --no-ui --profile")
         return
+    if sys.argv[1:] == ["config", "get", "skills.customDirectories", "--json"]:
+        print(json.dumps({"key": "skills.customDirectories", "value": []}))
+        return
     if "models" in sys.argv:
         print(json.dumps({"models": [{"selector": "fake/coach", "name": "Fake Coach", "reasoning": True,
                                       "thinking": ["low", "medium", "high"]},

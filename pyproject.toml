@@ -9,7 +9,7 @@ description = "Durable, workflow-independent OI agent runtime infrastructure"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
-dependencies = ["prompt-toolkit>=3.0.52,<4", "tiktoken>=0.8,<1"]
+dependencies = ["prompt-toolkit>=3.0.52,<4", "tiktoken>=0.8,<1", "PyYAML>=6,<7"]
 
 [project.optional-dependencies]
 tijian = ["mcp>=1.28,<2"]
@@ -22,4 +22,4 @@ oicoach-runtime = "oicoach_runtime.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs"]
+oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs", "bundled/skills/*/SKILL.md"]

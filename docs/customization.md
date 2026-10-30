@@ -1,4 +1,4 @@
-# UI 自定义系统提示词与用户 Skill（0.19.0）
+# 系统提示词、用户 Skill 与 Built-in Skills
 
 在已选择 workflow 的 UI 中输入 `/prompt` 或 `/skills`，用方向键和 Enter 操作。设置保存在 `workflow_root/<ID>/customization.json`，权限 0600，与记忆、coach 模板和 OMP 全局配置分别管理。关闭 UI 或重启 daemon 后仍然保留；同一个 workflow 下所有 task 共用，其他 workflow 不受影响。
 
@@ -72,9 +72,38 @@ Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Shift+Tab 返回上一�
 
 每项正文写为私密原生 `SKILL.md`（name/description frontmatter），description 加上分类标签，设置中的原始描述保持不变。经本轮专用 `--config` overlay 的 `skills.customDirectories` 接入 OMP，由原生提示构建器生成索引与读取指引；Runtime 不重复生成另一份全文或目录提示。UI 的 `/skills` 是管理入口，不是 OMP 原生 `/skill:` 的直接转发。
 
-OMP 原有的项目/用户 Skill 发现机制仍存在。本轮额外 customDirectories 数组由该 workflow 的启用 Skill 目录提供；不会持久修改用户原有设置文件。其他 OMP 配置（包括 Skill 过滤或全局禁用）仍可能限制发现。
+OMP 原有的项目/用户 Skill 发现机制仍存在。OMP overlay 会替换数组，因此在需要注册 Paveway Skill 时，启动链路先用同一 workspace/profile/环境执行无模型调用的 `omp config get skills.customDirectories --json`，再将本轮目录追加到已有目录，生成私密 overlay。查询失败明确阻止启动，不以空目录覆盖配置。其他原生 Skill 设置、过滤器和发现开关不被改写，也不持久修改 OMP 设置。
 
-Runtime 的 `agent.skills_enabled=false` 会阻止三类原生 Skill 注册；`agent.tools_enabled=false` 时无法按需读取正文，OMP 会在没有可用 Skill 读取工具时隐藏原生索引，正文也不会作为替代注入系统提示。UI 会提示，不会自动打开权限。Skill 是同 UID 用户明确配置的可信指令，不自动安装插件、执行附带脚本或下载依赖。当前只管理单份 Markdown 正文，不导入外部 Skill 包的脚本/资源目录。
+Runtime 的 `agent.skills_enabled=false` 会阻止所有 Paveway 管理的 Skill（内置与三类用户 Skill）注册，并传递 OMP 原生 `--no-skills`；用户配置仍保留。`agent.tools_enabled=false` 时无法按需读取正文，OMP 会在没有可用 Skill 读取工具时隐藏原生索引，正文也不会作为替代注入系统提示。UI 会提示，不会自动打开权限。Skill 是同 UID 用户或项目发布者提供的可信指令，不自动安装插件、执行附带脚本或下载依赖。当前只管理单份 Markdown 正文，不导入外部 Skill 包的脚本/资源目录。
+
+## 第一方 Built-in Skills
+
+内置 Skill 由 Paveway 仓库维护并随 wheel 发布；不存入 `customization.json`，不属于三种用户分类，也不计入 32 项用户 Skill 上限。`/skills` 和 `workflow customize skill-*` 只管理用户记录，不能修改或删除包资源。两种来源复用同一个 `customization.snapshot()`、本轮私密目录和 OMP 原生发现链路，没有第二套生命周期。
+
+在 `workflow_root/<ID>/workflow.toml` 顶层显式启用：
+
+```toml
+builtin_skills = ["paveway-tijian"]
+```
+
+省略等同 `[]`，未声明的内置 Skill 不进入该 workflow。新建 coach 默认声明 `paveway-tijian`，新建 example 不声明；升级不会自动改动已有 workflow manifest 或 `event.md`。已有 coach 需要管理员显式添加字段；与 `[tijian].enabled`、MCP 是否连接无关。`workflow show/list` 返回声明名称以供诊断。未知、非法或重复名称会拒绝加载。
+
+官方资源名称使用 `paveway-` 命名空间。用户 Skill 名称规则不变；若声明的内置 Skill 与已有用户记录同名（包括停用记录），派发前明确报冲突，不覆盖、不自动重命名、不迁移或删除用户数据。需要用户显式解决记录或调整声明。全局停用不会绕过 manifest 校验或隐瞒名称冲突。
+
+### 添加下一份内置 Skill
+
+1. 新建 `src/oicoach_runtime/bundled/skills/paveway-<name>/SKILL.md`，目录名为不超过 64 字符的小写字母/数字与短横线名称。
+2. 使用标准 YAML frontmatter：`name` 必须与目录名一致，`description` 为非空字符串；其后写非空 Markdown 正文。文件为 UTF-8、无 NUL，最多 64 KiB。不需要单独配置名称、版本或正文注册项。
+3. `builtin_skills.registry()` 使用 `importlib.resources` 枚举 wheel 内目录，以 PyYAML 安全读取 frontmatter，并拒绝重复键、非法目录名、缺失/无效资源及重复注册。不依赖 cwd、Git checkout 或可编辑安装。
+4. 在需要的 workflow 中声明名称；只有希望改变**新建** workflow 默认值时才修改创建模板。保留已有 workflow 和用户数据。
+5. 运行相关测试、真实 wheel 安装及无模型 OMP 验收。`pyproject.toml` 已包含 `bundled/skills/*/SKILL.md`；当前不支持附带脚本或其他资源文件，新增资源类型须显式扩展打包与快照行为。
+
+后续修改正文只需更新这份 `SKILL.md` 并发布新版 Paveway，无须改注册逻辑。资源在派发前读取并完整复制到本轮 0700/0600 快照，之后的用户编辑、声明变化或软件资源升级不改变该副本；下次派发使用届时的软件资源。恢复既有会话仍遵守原 session/revision、dispatch 和 uncertain 约束，不因升级自动重发任务。历史中已读取的正文不被清除。
+
+OMP 只将名称、description 和原生读取指引放进系统上下文；Agent 使用 `read` 读取 `skill://paveway-tijian` 时才取得正文。Runtime 不生成第二份索引、不预先拼接正文，关闭工具时也不全文降级注入。
+
+`coach.md` 仍负责 workflow 的固定教学规则；Tijian Skill 负责业务知识、能力选择及跨工具工作流；当前 MCP Server 的工具说明与 Schema 才是具体 API 契约。Skill 的声明不意味着 Tijian 已连接，不注册 MCP 工具，不把工具目录或 Schema 硬编码进 Runtime。安全、身份和记忆执行约束仍在 Runtime/System Prompt 中，而非依赖按需读取才能生效。
+
 
 ## 生效、并发与历史
 
@@ -110,8 +139,14 @@ oicoach-runtime workflow customize skill-disable coach --name training-review \
 ```bash
 .venv/bin/python -m unittest discover -s tests -p test_customization.py -v
 .venv/bin/python -m unittest discover -s tests -p test_tui.py -v
-OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" \
-  .venv/bin/python -m unittest discover -s tests -p test_customization_omp.py -v
+OICOACH_TEST_REAL_OMP_CONFIG=/absolute/test-config.toml PYTHONPATH=src:tests \
+  .venv/bin/python -m unittest \
+    test_customization_omp.RealCustomizationTests.test_native_builtin_and_user_skills_read_without_model \
+    test_customization_omp.RealCustomizationTests.test_native_system_prompt_append_replace_and_skill_discovery_without_model \
+    test_customization_omp.RealCustomizationTests.test_disabled_tools_or_skills_do_not_inject_a_fallback_body -v
+.venv/bin/python -m unittest discover -s tests -p test_builtin_skills.py -v
 ```
 
-原生验收读取 OMP RPC get_state.systemPrompt，核对 append/replace 中三类名称与分类描述可发现、正文标识不在系统提示中、停用项不出现；模型验收只在系统提示词和 Skill 正文分别放随机标识，普通用户请求不提供标识，要求模型实际读取目标 Skill 的工具结果并回覆，且不读取无关 Skill 正文，并接续同一会话验证下一轮替换生效。无模型凭证的主回归仍覆盖 CAS、范围隔离、快照、同 task 下一轮、权限以及实际 PTY 全流程。
+上述原生验收不发送 prompt，不调用模型 API：从真实 OMP RPC `get_state.systemPrompt` 检查内置/用户/已有外部目录的索引及权限，再用同一快照配置启动真实 `omp read skill://paveway-tijian:raw` 取得完整正文，同时确认 RPC 会话没有消息。读取发生在单独的原生 CLI 进程，不冒充 RPC 内部模型工具调用。测试配置应选择可正常加载现有 context guard 的 OMP 安装，且在隔离用户目录时显式指定可识别的 `agent.model`（只用于启动，不发送模型请求）。独立 ELF 的包依赖解析若不能满足现有 guard，可使用官方 npm 发行包和 Bun 验证，不跳过或伪造 guard。
+
+内置资源的 wheel 验收使用 `pip wheel --no-deps --wheel-dir /tmp/paveway-wheels .` 构建真实 wheel，再设置 `PAVEWAY_TEST_WHEEL=/absolute/oicoach_runtime-...whl` 运行 `test_builtin_skills.py`；测试会创建无可编辑源码的新 venv、安装 wheel 及依赖，在仓库外通过隔离 Python 读取并快照资源。原生内置 Skill 验收见 `test_customization_omp.py` 中无需模型的方法；不要为验证基础设施运行其中的模型付费测试。

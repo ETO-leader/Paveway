@@ -201,6 +201,7 @@ class Runtime:
             workflow = self.provider.describe(event["workflow_id"])
             binding = self.store.bind(event, workflow)
             binding["customization"] = workflow.customization
+            binding["builtin_skills"] = workflow.builtin_skills
             envelope = {
                 "event_id": event["event_id"], "run_id": run_id, "workflow_id": event["workflow_id"],
                 "task_id": event["task_id"], "dedupe_key": event["dedupe_key"],
@@ -352,6 +353,8 @@ class Runtime:
                 raise ConflictError("Bound workflow or workspace changed")
             if binding["session_file"] and not Path(binding["session_file"]).is_file():
                 raise ConflictError("Bound session is missing; restart cannot create a replacement")
+            binding["customization"] = workflow.customization
+            binding["builtin_skills"] = workflow.builtin_skills
             await adapter.start(binding, job["restart_id"])
             await adapter.ready()
             state = await adapter.state()

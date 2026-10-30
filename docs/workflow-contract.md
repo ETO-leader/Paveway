@@ -21,6 +21,20 @@ recovery_prompt = "prompts/recovery.md"
 
 欄位必須完整，不接受未知欄位。ID 遵循 CLI ASCII ID 規則，須與目錄名一致；version 為非空字串、最多 128 字元。workspace 必須是存在的絕對目錄。v1 只接受 `per_task`，其他 session 策略需未來明確實作，不能無聲 fallback。
 
+## 内置 Skill 的显式声明
+
+v1 另接受可选顶层 `builtin_skills`，省略等同 `[]`。例如：
+
+```toml
+builtin_skills = ["paveway-tijian"]
+```
+
+它必须是已注册内置 Skill 名称的数组；非数组、非字符串、非法名称、未知名称和重复名称均明确拒绝，不忽略、不猜测。加载后名称保存为不可变 tuple，`workflow create/show/list` 的诊断 JSON 以数组列出。声明仅属于当前 workflow，不影响其他 workflow。
+
+新建 coach 显式声明 `["paveway-tijian"]`；example 不声明，保持空列表。此默认值不依赖 `[tijian].enabled`：启用集成不会自动授予 Skill，Skill 声明也不代表 MCP、凭据或题库已经可用。内置 Skill 随 Paveway 打包，由派发时的私密快照加载；用户 Skill 仍由独立的 `customization.json` 管理，不把内置内容复制进去。
+
+既有 workflow 不自动迁移，加载、升级及查看均不改写 `workflow.toml` 或 `event.md`。为旧 coach 启用时，管理员应显式添加上述字段并提升 manifest `version`，使用新 task/session；不要修改旧 task 的绑定来绕过 revision 检查，也不要自动重发旧事件。已有会话继续遵守 workspace/revision/session 身份校验和 uncertain 的人工处理规则。无需改动旧 `event.md`；仅启用 `[tijian]` 仍不会启用此 Skill。
+
 prompt 路徑相對於該 workflow 目錄；拒絕絕對路徑、`..`、缺檔及逃出目錄的 symlink。manifest 和每份模板限 64 KiB。workflow 本身不可透過 symlink 逃出 registry。配置與 workflow 是同 UID 的可信管理者提供；不接受從事件 payload 安裝模板。
 
 模板使用 Python `string.Template` 的受限資料替換，**唯一允許且必須包含的變數是 `${event_json}`**，字面 `$` 寫 `$$`。不支援 eval、執行程式或遞迴替換；payload 裡的 `${...}` 不會再次展開。
@@ -50,7 +64,7 @@ dispatcher 提供此 v1 envelope：
 
 真實 OMP 可能在第一輪前就回報尚未落盤的 session 路徑。僅在明確人工重試、該 session 從未有 dispatch intent 且檔案不存在時，Runtime 允許清除暫定 file/ID 後重新建立；曾送出過 prompt 或已有成功歷史的 session 不適用此例外。模型回合必須在 session 落盤、完全 settled、進程正常退出後才成功；持久化錯誤或非零退出保留 uncertain。
 
-OMP 的 profile、工具權限、MCP、Skill 配置由外部管理。啟用 `[tijian]` 時 envelope 的 available_tools 額外提供 Tijian CLI prefix/config、read_only 和 configured_not_verified 標記；可用 tools/doctor/call 發現及執行接口，不預先宣稱 MCP／題庫可用。`tijian mcp-config` 可生成待合併至 workflow workspace/.mcp.json 的 stdio server 配置，`examples/prepare_tijian.py` 可建立全新範例 workspace。詳見 [Tijian 適配](tijian.md)。
+OMP 的 profile、工具权限和 MCP 配置由外部管理；Skill 可来自上述显式内置声明或用户自定义设置。啟用 `[tijian]` 時 envelope 的 available_tools 額外提供 Tijian CLI prefix/config、read_only 和 configured_not_verified 標記；可用 tools/doctor/call 發現及執行接口，不預先宣稱 MCP／題庫可用。`tijian mcp-config` 可生成待合併至 workflow workspace/.mcp.json 的 stdio server 配置，`examples/prepare_tijian.py` 可建立全新範例 workspace。詳見 [Tijian 適配](tijian.md)。
 
 更換 Tijian 操作或 schema 集中在 integrations/tijian_catalog.py，不需要改本 manifest 或排程語義。Runtime 事件和 Tijian 計畫獨立；工具回報 uncertain 不會自動重播業務操作。版本不相容時明確拒絕，不能偷偷改用其他題庫／workflow。
 

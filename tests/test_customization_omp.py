@@ -1,5 +1,6 @@
 """Opt-in: prove custom settings reach native OMP, rather than the user envelope."""
 
+import asyncio
 import json
 import os
 import tempfile
@@ -7,10 +8,13 @@ import unittest
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from oicoach_runtime.adapters.omp_rpc import OmpRpc
+from oicoach_runtime.builtin_skills import registry
 from oicoach_runtime.config import load_config
 from oicoach_runtime.customization import IDENTITY_PROMPT
+from oicoach_runtime.proxy import child_environment
 
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "set OICOACH_TEST_REAL_OMP_CONFIG for native customization acceptance")
@@ -53,6 +57,76 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
                     finally:
                         await adapter.stop()
 
+    async def test_native_builtin_and_user_skills_read_without_model(self):
+        """Only boot, inspect, and invoke `omp read`; never submit a prompt."""
+        base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
+        builtin = registry()["paveway-tijian"]
+        with tempfile.TemporaryDirectory(prefix="pw-builtin-native-") as directory:
+            root = Path(directory)
+            session = root / "sessions"
+            session.mkdir(mode=0o700)
+            config = replace(base, agent=replace(base.agent, tools_enabled=True, skills_enabled=True,
+                extensions_enabled=False, rules_enabled=False, startup_timeout_seconds=30,
+                ack_timeout_seconds=20, graceful_stop_seconds=1))
+            # This earlier overlay must survive the generated snapshot's array.
+            ambient = root / "ambient-skills" / "ambient-native-probe"
+            ambient.mkdir(parents=True, mode=0o700)
+            (ambient / "SKILL.md").write_text(
+                "---\nname: ambient-native-probe\ndescription: AMBIENT_NATIVE_INDEX\n---\nAMBIENT_NATIVE_BODY\n",
+                encoding="utf-8")
+            overlay = root / "ambient.yml"
+            overlay.write_text(json.dumps({"skills": {"customDirectories": [str(ambient.parent)]}}),
+                               encoding="utf-8")
+            prior_overlays = os.pathsep.join(filter(None, (os.environ.get("PI_CONFIG_FILES"), str(overlay))))
+            settings = {"schema_version": 1, "revision": 1,
+                "system_prompt": {"mode": "append", "text": "BUILTIN_NATIVE_SYSTEM"},
+                "skills": [{"name": "builtin-user-probe", "description": "BUILTIN_USER_NATIVE_INDEX",
+                            "content": "BUILTIN_USER_NATIVE_BODY", "enabled": True},
+                           {"name": "builtin-disabled-probe", "description": "BUILTIN_DISABLED_NATIVE_INDEX",
+                            "content": "BUILTIN_DISABLED_NATIVE_BODY", "enabled": False}]}
+            adapter = OmpRpc(config)
+            with patch.dict(os.environ, {"PI_CONFIG_FILES": prior_overlays}):
+                try:
+                    await adapter.start({"workspace": str(root), "session_dir": str(session), "session_file": None,
+                        "customization": settings, "builtin_skills": ("paveway-tijian",)}, "native-builtin")
+                    await adapter.ready()
+                    prompt = json.dumps((await adapter.state())["systemPrompt"], ensure_ascii=False)
+                    self.assertIn(builtin.name, prompt)
+                    self.assertIn(builtin.description, prompt)
+                    self.assertIn("BUILTIN_USER_NATIVE_INDEX", prompt)
+                    self.assertIn("AMBIENT_NATIVE_INDEX", prompt)
+                    self.assertNotIn(json.dumps(builtin.body.strip(), ensure_ascii=False)[1:-1], prompt)
+                    self.assertNotIn("BUILTIN_USER_NATIVE_BODY", prompt)
+                    self.assertNotIn("AMBIENT_NATIVE_BODY", prompt)
+                    self.assertNotIn("BUILTIN_DISABLED_NATIVE_INDEX", prompt)
+                    self.assertNotIn("BUILTIN_DISABLED_NATIVE_BODY", prompt)
+                    # `read` is OMP's real native tool entry point, not a model
+                    # prompt or a filesystem read pretending to be native.
+                    snapshot = session / "customizations" / "native-builtin"
+                    environment = child_environment(None)
+                    environment["PI_CONFIG_FILES"] = prior_overlays + os.pathsep + str(snapshot / "omp.yml")
+                    if config.agent.profile:
+                        environment["OMP_PROFILE"] = config.agent.profile
+                    for name, expected in (
+                        (builtin.name, builtin.markdown),
+                        ("builtin-user-probe", (snapshot / "skills" / "builtin-user-probe" / "SKILL.md").read_text(encoding="utf-8")),
+                    ):
+                        process = await asyncio.create_subprocess_exec(
+                            config.agent.executable, "read", "skill://" + name + ":raw",
+                            cwd=root, env=environment, stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        try:
+                            stdout, stderr = await asyncio.wait_for(process.communicate(), 30)
+                        finally:
+                            if process.returncode is None:
+                                process.kill()
+                                await process.wait()
+                        self.assertEqual(process.returncode, 0, stderr.decode(errors="replace"))
+                        self.assertIn(expected, stdout.decode("utf-8"))
+                    self.assertEqual((await adapter.command("get_messages"))["messages"], [])
+                finally:
+                    await adapter.stop()
+
     async def test_disabled_tools_or_skills_do_not_inject_a_fallback_body(self):
         base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))
         with tempfile.TemporaryDirectory(prefix="pw-custom-permissions-") as directory:
@@ -70,12 +144,15 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
                     adapter = OmpRpc(config)
                     try:
                         await adapter.start({"workspace": str(root), "session_dir": str(session), "session_file": None,
-                                             "customization": settings}, "permission-probe")
+                                             "customization": settings, "builtin_skills": ("paveway-tijian",)}, "permission-probe")
                         await adapter.ready()
-                        prompt = json.dumps((await adapter.state())["systemPrompt"])
+                        prompt = json.dumps((await adapter.state())["systemPrompt"], ensure_ascii=False)
                         self.assertIn("CUSTOM_ONLY", prompt)
                         self.assertNotIn("PERMISSION_SKILL_BODY", prompt)
                         self.assertNotIn("PERMISSION_SKILL_INDEX", prompt)
+                        builtin = registry()["paveway-tijian"]
+                        self.assertNotIn(builtin.name, prompt)
+                        self.assertNotIn(json.dumps(builtin.body.strip(), ensure_ascii=False)[1:-1], prompt)
                     finally:
                         await adapter.stop()
 

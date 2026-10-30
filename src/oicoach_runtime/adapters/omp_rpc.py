@@ -35,6 +35,11 @@ class OmpRpc:
         self.exit_event.clear()
         self.stop_task = None
         agent = self.config.agent
+        from ..proxy import child_environment
+        environment = dict(child_environment(self.config_path), OICOACH_RUN_ID=run_id,
+                           OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
+        if self.config_path:
+            environment["OICOACH_CONFIG"] = str(self.config_path)
         argv = [agent.executable, "--cwd", binding["workspace"], "--session-dir", binding["session_dir"],
                 "--mode", "rpc", "--no-ui"]
         if binding["session_file"]:
@@ -51,17 +56,18 @@ class OmpRpc:
         from ..customization import snapshot
         settings = binding.get("customization") or {"schema_version": 1, "revision": 0,
             "system_prompt": {"mode": "append", "text": ""}, "skills": []}
-        argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled, binding.get("memory_context"), binding.get("workflow_instructions", "")))
+        builtin_skills = binding.get("builtin_skills", ())
+        skill_directories = ()
+        if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
+            skill_directories = await self._skill_directories(binding["workspace"], environment)
+        argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
+            binding.get("memory_context"), binding.get("workflow_instructions", ""),
+            builtin_skills=builtin_skills, skill_directories=skill_directories))
         # Explicit runtime guard still loads when optional user extensions are disabled.
         argv.extend(["--extension", str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))])
         for option in ("tools", "extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
-        from ..proxy import child_environment
-        environment = dict(child_environment(self.config_path), OICOACH_RUN_ID=run_id,
-                           OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
-        if self.config_path:
-            environment["OICOACH_CONFIG"] = str(self.config_path)
         self.process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *argv,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -73,6 +79,41 @@ class OmpRpc:
         self.stderr_task = asyncio.create_task(self._drain_stderr())
         self.exit_task = asyncio.create_task(self._watch_exit())
         return self.process.pid, process_identity(self.process.pid)
+
+    async def _skill_directories(self, workspace, environment):
+        """Preserve native directories: OMP overlays replace list settings."""
+        process = None
+        try:
+            query_environment = dict(environment)
+            if self.config.agent.profile:
+                query_environment["OMP_PROFILE"] = self.config.agent.profile
+            async with asyncio.timeout(self.config.agent.startup_timeout_seconds):
+                process = await asyncio.create_subprocess_exec(
+                    self.config.agent.executable, "config", "get", "skills.customDirectories", "--json",
+                    cwd=workspace, env=query_environment, stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_FRAME)
+                try:
+                    await process.stdout.readexactly(MAX_FRAME + 1)
+                except asyncio.IncompleteReadError as error:
+                    data = error.partial
+                else:
+                    raise ValueError("Oversized skill configuration")
+                if await process.wait() != 0:
+                    raise ValueError("Native configuration query failed")
+                result = json.loads(data)
+                directories = result.get("value") if isinstance(result, dict) else None
+                if not isinstance(directories, list) or any(not isinstance(path, str) for path in directories):
+                    raise ValueError("Invalid native skill directories")
+                return tuple(directories)
+        except (OSError, TimeoutError, ValueError, RecursionError):
+            raise AgentError("Cannot load native OMP skill directories", code="agent_skill_config_error") from None
+        finally:
+            if process is not None and process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
 
     async def _watch_exit(self):
         # Process.wait can wait for pipes retained by orphaned tools. returncode

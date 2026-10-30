@@ -49,6 +49,35 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("TRUSTED_WORKFLOW_RULE", system)
         self.assertNotIn(done["event_id"], system)
 
+    def test_builtin_scope_changes_apply_next_dispatch_without_replay_or_rebinding(self):
+        from oicoach_runtime.builtin_skills import registry
+        from oicoach_runtime.customization import update
+        from oicoach_runtime.workflow_setup import create
+        manifest = self.config.workflow_root / "echo/workflow.toml"
+        original = manifest.read_text()
+        manifest.write_text(original + 'builtin_skills = ["paveway-tijian"]\n')
+        update(self.config, "echo", 0, "skill-put", name="user-review", description="review", content="USER_REVIEW_BODY")
+        first = self.wait_status(self.schedule("builtin-on")["event_id"])
+        session = next((self.config.state_dir / "sessions").glob("*/session.json"))
+        old_skill = session.parent / "customizations" / first["run_id"] / "skills/paveway-tijian/SKILL.md"
+        expected = registry()["paveway-tijian"].markdown
+        self.assertEqual(old_skill.read_text(), expected)
+        create(self.config, "isolated", self.root, "example")
+        isolated = request(self.socket_path, "schedule", {"workflow_id": "isolated", "task_id": "task",
+            "dedupe_key": "isolated", "reason": "scope check", "at": "now", "payload": {}})
+        other = self.wait_status(isolated["event_id"])
+        self.assertFalse(any((self.config.state_dir / "sessions").glob(
+            "*/customizations/" + other["run_id"] + "/skills/paveway-tijian")))
+        manifest.write_text(original + "builtin_skills = []\n")
+        second = self.wait_status(self.schedule("builtin-off")["event_id"])
+        next_snapshot = session.parent / "customizations" / second["run_id"]
+        self.assertFalse((next_snapshot / "skills/paveway-tijian").exists())
+        self.assertTrue((next_snapshot / "skills/user-review/SKILL.md").is_file())
+        self.assertEqual(old_skill.read_text(), expected)
+        # Same bound file contains exactly the two requested echo turns.
+        self.assertEqual(len(json.loads(session.read_text())["prompts"]), 2)
+        self.assertEqual(self.event(first["event_id"])["status"], "succeeded")
+
     def test_running_event_reports_safe_live_tool_progress(self):
         event = self.schedule(mode="hold")
         deadline = time.monotonic() + 5
@@ -203,6 +232,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(starts), 2)
         self.assertNotEqual(starts[0]["pid"], starts[1]["pid"])
         self.assertTrue(starts[1]["resumed"])
+
+    def test_builtin_conflict_cannot_be_bypassed_by_explicit_restart(self):
+        from oicoach_runtime.customization import update
+        self.wait_status(self.schedule()["event_id"])
+        session = next((self.config.state_dir / "sessions").glob("*/session.json"))
+        before = session.read_bytes()
+        manifest = self.config.workflow_root / "echo/workflow.toml"
+        manifest.write_text(manifest.read_text() + 'builtin_skills = ["paveway-tijian"]\n')
+        update(self.config, "echo", 0, "skill-put", name="paveway-tijian", description="Legacy user record", content="USER_BODY")
+        update(self.config, "echo", 1, "skill-disable", name="paveway-tijian")
+        settings = manifest.parent / "customization.json"
+        original_settings = settings.read_bytes()
+        job = request(self.socket_path, "agent.restart", {"task_id": "task", "workflow_id": "echo"})
+        result = self.wait_restart(job["restart_id"], statuses=("succeeded", "failed"))
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["prompt_replayed"])
+        self.assertEqual(session.read_bytes(), before)
+        self.assertEqual(settings.read_bytes(), original_settings)
+        self.assertEqual(len(request(self.socket_path, "runs.list")), 1)
 
     def test_ask_is_idempotent_and_final_reply_is_readable_through_cli(self):
         command = [sys.executable, "-m", "oicoach_runtime", "ask", "--workflow", "echo", "--task", "ask",

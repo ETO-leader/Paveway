@@ -2,7 +2,9 @@ import concurrent.futures
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from oicoach_runtime import customization as custom
 from oicoach_runtime.context_budget import CONTEXT_PROMPT
@@ -175,3 +177,61 @@ class CustomizationTests(unittest.TestCase):
         with self.assertRaises(WorkflowError):
             self.update("skill-put", name="old-skill", category="../../escape", description="bad", content="bad")
         self.assertEqual(path.read_bytes(), saved)
+
+    def test_builtin_and_user_skills_share_one_private_immutable_snapshot(self):
+        from oicoach_runtime.builtin_skills import registry
+        settings = self.update("skill-put", name="training-review", description="Use for review", content="USER_BODY")
+        packaged = registry()["paveway-tijian"]
+        session = self.root / "builtin-session"
+        argv = custom.snapshot(settings, session, "both", True, builtin_skills=["paveway-tijian"],
+                               skill_directories=["/existing/skills"])
+        overlay = json.loads(Path(argv[argv.index("--config") + 1]).read_text())
+        directories = overlay["skills"]["customDirectories"]
+        self.assertEqual(directories[:-1], ["/existing/skills"])
+        native = Path(directories[-1])
+        builtin = native / "paveway-tijian/SKILL.md"
+        self.assertEqual(builtin.read_text(), packaged.markdown)
+        self.assertTrue((native / "training-review/SKILL.md").read_text().endswith("USER_BODY"))
+        prompt = Path(argv[1]).read_text()
+        self.assertNotIn(packaged.body, prompt)
+        self.assertNotIn("USER_BODY", prompt)
+        self.assertEqual(native.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(builtin.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(builtin.stat().st_mode & 0o777, 0o600)
+        saved = json.loads((native.parent / "settings.json").read_text())
+        self.assertEqual([s["name"] for s in saved["skills"]], ["training-review"])
+        self.update("skill-disable", name="training-review")
+        self.assertEqual(builtin.read_text(), packaged.markdown)
+        # A later installed resource revision must affect only the next round.
+        updated = replace(packaged, markdown=packaged.markdown + "\nNew release body\n")
+        with patch("oicoach_runtime.builtin_skills.registry", return_value={updated.name: updated}):
+            next_argv = custom.snapshot(custom.show(self.config, "coach")["settings"], session, "next", True,
+                                        builtin_skills=["paveway-tijian"])
+        next_native = Path(json.loads(Path(next_argv[3]).read_text())["skills"]["customDirectories"][0])
+        self.assertEqual((next_native / "paveway-tijian/SKILL.md").read_text(), updated.markdown)
+        self.assertFalse((next_native / "training-review").exists())
+        self.assertEqual(builtin.read_text(), packaged.markdown)
+
+    def test_conflict_rejects_before_snapshot_without_modifying_user_data(self):
+        settings = self.update("skill-put", name="paveway-tijian", description="Legacy user skill", content="PRIVATE_USER_BODY")
+        before = (self.directory / "customization.json").read_bytes()
+        for enabled in (True, False):
+            settings["skills"][0]["enabled"] = enabled
+            with self.subTest(enabled=enabled), self.assertRaisesRegex(ConflictError, "paveway-tijian"):
+                custom.snapshot(settings, self.root / "conflict-session", str(enabled), True,
+                                builtin_skills=["paveway-tijian"])
+        self.assertEqual((self.directory / "customization.json").read_bytes(), before)
+        self.assertFalse((self.root / "conflict-session").exists())
+        # The record is still a user record, and can be explicitly removed.
+        self.assertEqual(self.update("skill-delete", name="paveway-tijian")["skills"], [])
+
+    def test_undeclared_or_globally_disabled_builtins_are_not_registered(self):
+        settings = self.update("skill-put", name="user-skill", description="user", content="USER_ONLY_BODY")
+        session = self.root / "scoped-sessions"
+        user_only = custom.snapshot(settings, session, "undeclared", True)
+        native = Path(json.loads(Path(user_only[3]).read_text())["skills"]["customDirectories"][0])
+        self.assertFalse((native / "paveway-tijian").exists())
+        disabled = custom.snapshot(settings, session, "disabled", False, builtin_skills=["paveway-tijian"])
+        self.assertNotIn("--config", disabled)
+        self.assertFalse((session / "customizations/disabled/skills").exists())
+        self.assertNotIn("USER_ONLY_BODY", Path(disabled[1]).read_text())

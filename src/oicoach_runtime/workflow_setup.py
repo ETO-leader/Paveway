@@ -15,7 +15,8 @@ from .workflows import WorkflowProvider
 def describe(workflow):
     return {"id": workflow.workflow_id, "version": workflow.revision, "workspace": str(workflow.workspace),
             "session_policy": workflow.session_policy, "memory_enabled": workflow.memory_enabled,
-            "instructions_in_system": workflow.instructions_in_system}
+            "instructions_in_system": workflow.instructions_in_system,
+            "builtin_skills": list(workflow.builtin_skills)}
 
 
 def create(config, workflow_id, workspace, template="coach"):
@@ -41,7 +42,8 @@ def create(config, workflow_id, workspace, template="coach"):
         manifest.write_text('schema_version = 1\n' + f'id = {json.dumps(workflow_id)}\nversion = "1"\n'
             f'workspace = {json.dumps(str(directory), ensure_ascii=False)}\nsession_policy = "per_task"\n'
             'start_prompt = "event.md"\nwake_prompt = "event.md"\nrecovery_prompt = "event.md"\n'
-            + ('memory_enabled = true\ninstructions_in_system = true\n' if template == "coach" else 'memory_enabled = false\n'))
+            + ('memory_enabled = true\ninstructions_in_system = true\nbuiltin_skills = ["paveway-tijian"]\n'
+               if template == "coach" else 'memory_enabled = false\n'))
         result = describe(WorkflowProvider(root).describe(workflow_id))
     except BaseException:
         for name in ("event.md", "workflow.toml"):

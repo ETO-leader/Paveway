@@ -7,6 +7,7 @@ from pathlib import Path
 from string import Template
 
 from .errors import WorkflowError
+from .builtin_skills import validate_names
 from .models import validate_id
 
 MAX_TEMPLATE_BYTES = 65536
@@ -34,6 +35,7 @@ class Workflow:
     memory_enabled: bool = False
     customization: dict = field(default_factory=dict)
     instructions_in_system: bool = False
+    builtin_skills: tuple[str, ...] = ()
 
     def render_parts(self, kind, envelope):
         if not self.instructions_in_system:
@@ -73,12 +75,13 @@ class WorkflowProvider:
             raw = tomllib.loads(manifest.read_text(encoding="utf-8"))
             expected = {"schema_version", "id", "version", "workspace", "session_policy",
                         "start_prompt", "wake_prompt", "recovery_prompt"}
-            if set(raw) - {"memory_enabled", "instructions_in_system"} != expected or type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+            if set(raw) - {"memory_enabled", "instructions_in_system", "builtin_skills"} != expected or type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
                 raise WorkflowError("Workflow must use the complete v1 manifest schema")
             if type(raw.get("memory_enabled", False)) is not bool:
                 raise WorkflowError("memory_enabled must be a boolean")
             if type(raw.get("instructions_in_system", False)) is not bool:
                 raise WorkflowError("instructions_in_system must be a boolean")
+            builtin_skills = validate_names(raw.get("builtin_skills", []))
             if raw["id"] != workflow_id or not isinstance(raw["version"], str) or not raw["version"] or len(raw["version"]) > 128:
                 raise WorkflowError("Workflow ID or revision is invalid")
             if raw["session_policy"] != "per_task":
@@ -102,7 +105,8 @@ class WorkflowProvider:
                 templates[kind] = template
             from .customization import load
             return Workflow(workflow_id, raw["version"], workspace, raw["session_policy"], templates,
-                            raw.get("memory_enabled", False), load(directory), raw.get("instructions_in_system", False))
+                            raw.get("memory_enabled", False), load(directory), raw.get("instructions_in_system", False),
+                            builtin_skills)
         except WorkflowError:
             raise
         except (OSError, UnicodeError, ValueError, RuntimeError):
