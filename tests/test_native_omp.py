@@ -79,7 +79,7 @@ class NativeOmpTests(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
-    def chat(self, body, background=False, switch=False):
+    def chat(self, body, background=False, switch=False, wakeup=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
@@ -135,6 +135,9 @@ class NativeOmpTests(unittest.TestCase):
             baseline = len(self.server.requests)
             send(b"\x1b[200~" + body.encode() + b"\x1b[201~\r")
             until("M0_REPLY", requests=baseline + 1)
+            if wakeup:
+                send(b"/wakeup in 1s TEST_NATIVE_TIMER\r")
+                until("native_wakeup")
             if switch:
                 before = request(self.config.server.socket_path, "frontend.list")[0]
                 send(b"/new\r")
@@ -199,3 +202,35 @@ class NativeOmpTests(unittest.TestCase):
         archive = request(self.config.server.socket_path, "frontend.messages", {"conversation_id": record["conversation_id"]})
         self.assertTrue(any("BEFORE_NATIVE_NEW" in row["text"] for row in archive["messages"]))
         self.assertTrue(any("AFTER_NATIVE_NEW" in row["text"] for row in archive["messages"]))
+
+    def test_slash_reminder_runs_after_ui_exit_and_is_persisted_without_seen_claim(self):
+        self.chat("REMINDER_FIXTURE_CHAT", wakeup=True)
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})
+            if len(inbox["messages"]) >= 2:
+                break
+            time.sleep(0.05)
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] != "acknowledged" for row in inbox["messages"]))
+        reminders = [row for row in inbox["messages"] if row["kind"] == "reminder"]
+        self.assertEqual(reminders[0]["text"], "TEST_NATIVE_TIMER")
+
+    def test_real_native_agent_tool_schedules_in_the_same_runtime(self):
+        self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
+        self.path.write_text(config_text(self.config))
+        arguments = {"when": {"kind": "after_now", "seconds": 3600}, "reason": "NATIVE_TOOL_REMINDER",
+            "dedupe_key": "native-fixture-tool", "intent": "reminder", "authorized_by_user": True}
+        def response(body):
+            if body.get("messages", [{}])[-1].get("role") == "user" and "M3_AGENT_WAKEUP" in json.dumps(body["messages"][-1]):
+                return [({"role": "assistant", "tool_calls": [{"index": 0, "id": "call-native-wakeup", "type": "function",
+                    "function": {"name": "paveway_wakeup_schedule", "arguments": json.dumps(arguments)}}]}, "tool_calls")]
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+        self.server.response_factory = response
+        self.chat("M3_AGENT_WAKEUP explicit request")
+        events = request(self.config.server.socket_path, "events.upcoming", {"workflow_id": "native-test", "task_id": "training"})
+        self.assertEqual(len(events), 1)
+        event = request(self.config.server.socket_path, "events.show", {"event_id": events[0]["event_id"]})
+        self.assertEqual(event["payload"]["message"], "NATIVE_TOOL_REMINDER")
+        self.assertEqual(event["status"], "queued")
+        self.assertTrue(any(any(message.get("role") == "tool" for message in body["messages"]) for body in self.server.requests))

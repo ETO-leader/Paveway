@@ -2,6 +2,7 @@
 import {createHash, randomUUID} from "node:crypto";
 import {lstatSync, readFileSync, readSync, writeSync} from "node:fs";
 import {createConnection} from "node:net";
+import {registerWakeups} from "./paveway-wakeup.mjs";
 
 function stop() {
     try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
@@ -49,6 +50,8 @@ export default async function paveway(pi) {
         if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
+        const bound = () => ({conversation_id: config.conversation_id, generation: config.generation, owner_token: config.owner_token});
+        const wakeups = registerWakeups(pi, config, bound, runtimeRequest);
         const sessionReady = async (_event, ctx) => {
             try {
                 if (!ctx.hasUI) stop();
@@ -63,11 +66,11 @@ export default async function paveway(pi) {
                 config.generation = owner.generation;
                 admitted = true;
                 ctx.ui.setStatus("paveway", `GPT · ${config.workflow_id}/${config.task_id} · OMP native`);
+                await wakeups.refresh(ctx);
             } catch { stop(); }
         };
         pi.on("session_start", sessionReady);
         pi.on("session_switch", sessionReady);
-        const bound = () => ({conversation_id: config.conversation_id, generation: config.generation, owner_token: config.owner_token});
         for (const phase of ["agent_start", "agent_end", "session_shutdown"]) {
             pi.on(phase, async () => {
                 if (!admitted) return;
@@ -77,6 +80,7 @@ export default async function paveway(pi) {
         }
         const heartbeat = setInterval(() => {
             if (admitted) runtimeRequest(config.socket_path, "frontend.observe", {...bound(), phase: "heartbeat"}).catch(() => {});
+            if (admitted) wakeups.refresh().catch(() => {});
         }, 10000);
         heartbeat.unref();
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {

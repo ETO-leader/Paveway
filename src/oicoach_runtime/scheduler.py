@@ -48,6 +48,42 @@ class Runtime:
         self.sync_wakeup = asyncio.Event()
 
     def dispatch_api(self, command, raw):
+        if command.startswith("wakeup."):
+            from .wakeup import Wakeup
+            arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
+                      ("conversation_id", "generation", "owner_token", "parameters"))
+            owner = {key: raw[key] for key in ("conversation_id", "generation", "owner_token")}
+            result = Wakeup(self.store).call(command.removeprefix("wakeup."), owner, raw["parameters"])
+            self.changed.set()
+            return result
+        if command.startswith("inbox."):
+            from .inbox import Inbox
+            if command.startswith("inbox.bound-"):
+                from .frontend import Frontend, alive
+                arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
+                          ("conversation_id", "generation", "owner_token", "parameters"))
+                owner = {key: raw[key] for key in ("conversation_id", "generation", "owner_token")}
+                record = Frontend(self.store).authenticate(**owner)
+                if not alive(record.get("omp_pid"), record.get("omp_identity")):
+                    raise ConflictError("Native owner is no longer alive")
+                parameters = raw["parameters"]
+                operation = command.removeprefix("inbox.bound-")
+                fields = {"list": ("offset",), "show": ("delivery_id",), "acknowledge": ("delivery_id", "expected_version")}
+                if operation not in fields or not isinstance(parameters, dict):
+                    raise RuntimeContractError("Unknown bound inbox operation")
+                arguments(parameters, fields[operation], () if operation == "list" else fields[operation])
+                return getattr(Inbox(self.store), "offer" if operation == "list" else operation)(record["workflow_id"], task_id=record["task_id"], **parameters)
+            if command == "inbox.list":
+                arguments(raw, ("workflow_id", "task_id", "offset"), ("workflow_id",))
+                return Inbox(self.store).list(**raw)
+            if command == "inbox.show":
+                arguments(raw, ("workflow_id", "task_id", "delivery_id"), ("workflow_id", "delivery_id"))
+                return Inbox(self.store).show(**raw)
+            if command == "inbox.acknowledge":
+                arguments(raw, ("workflow_id", "task_id", "delivery_id", "expected_version"),
+                          ("workflow_id", "delivery_id", "expected_version"))
+                return Inbox(self.store).acknowledge(**raw)
+            raise RuntimeContractError("Unknown inbox operation")
         if command.startswith("frontend."):
             from .frontend import Frontend
             frontend = Frontend(self.store)
@@ -333,6 +369,8 @@ class Runtime:
 
     async def schedule_loop(self):
         while not self.stop_event.is_set():
+            from .inbox import Inbox
+            Inbox(self.store).collect()
             self.changed.clear()
             if self.pending_restart:
                 await self.restart_agent(self.pending_restart)
@@ -340,6 +378,7 @@ class Runtime:
                 continue
             event = self.store.claim_due(self.owner)
             if event:
+                Inbox(self.store).due(event)
                 self.active_scope = (event["workflow_id"], event["task_id"])
                 self.active_dispatch = asyncio.create_task(self.dispatch_event(event))
                 try:

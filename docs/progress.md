@@ -422,3 +422,11 @@ D1/D2 采用独立物理前后台 Session；D3 不开放前台严格 settled 锚
 原生入口支持 `--conversation`／`--new`，默认接续当前 workflow/task 最近的已释放对话；原生 /new 在受管目录中重新登记并提升 generation。`frontend list/show/messages/recover` 提供诊断、分页文字检索和显式恢复；原文和 parent_id／分支来源保留。已退出的登记 Session 以现有文字过滤政策进入独立用户 Git，未配置 remote 仍只本地维护，不归档 capability、启动配置或原始工具日志。
 
 验证：4 项所有权／CAS／活进程／锁／unknown 不重播单元通过；真实 OMP 本地 fixture 验证长文本、TUI 在线时后台 RPC 独立执行、第二 owner 拒绝、顺序恢复同一前台 Session 及独立 Git 导出，合计 6 项通过（8.901 秒）；另原生 /new 的双来源归档／generation 场景 1 项通过（2.804 秒）。最初 PTY 大写入阻塞已定位为测试端不同时读屏，改用非阻塞双向驱动；未改应用成功判断。没有正式用户数据库／Session 迁移，也没有把前台 loop end 标为严格完成。
+
+## 2026-10-30 — M3 同源唤醒与持久收件箱
+
+新增 `paveway_wakeup_schedule/list/cancel/reschedule` 原生 AgentTool、`/wakeup in 10m TEXT`／`at HH:mm TEXT`／list／cancel／reschedule，以及原生 `/inbox [page]`、CLI `inbox list/show/acknowledge`。接口按已登记 owner/generation 绑定作用域，after_now 使用 Runtime 时钟及语义 fingerprint 保证重试幂等，取消／重排保留 CAS。需明确 opt-in 字段，默认不会循环跟进；前台 after_turn_settled 明确拒绝，未静默降级，旧后台 CLI after-turn 不变。
+
+持久记录区分提醒与 Run 结果、created／offered／用户明确 acknowledged；列表、通知、工具调用返回均不代表 Run 完成或用户已读。明确提醒在领取到期事件时先持久化，模型失败也不删除；后台终态另投影结果，未知不重播。选择 D6 的 Inbox 分支，不自动 sendMessage 注入前台，也没有外部系统推送承诺。所有记录使用现有 SQLite 版本化 metadata，无 schema 迁移。
+
+`PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest test_wakeup test_native_omp -v`：8 项通过（19.149 秒），包括语义去重、scope/CAS/旧 generation、拒绝无 opt-in／前台 settled、收件箱持久化与不伪造完成，以及真实 OMP 经 AgentTool 调到同一 Runtime、Slash 提醒在 UI 退出后运行。真实的是 OMP／工具 loop／PTY／IPC，模型仅本地 fixture，没有付费模型或私有凭据。

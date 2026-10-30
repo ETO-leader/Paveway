@@ -146,7 +146,7 @@ class Store:
         return [self.run(row[0]) for row in rows]
 
     def enqueue(self, workflow_id, task_id, reason, dedupe_key, payload=None, at=None,
-                after_turn=None, run_id=None):
+                after_turn=None, run_id=None, *, request_identity=None):
         validate_id(workflow_id)
         validate_id(task_id)
         bounded_text(reason, 4096, "reason")
@@ -171,6 +171,10 @@ class Store:
             after_turn = float(after_turn)
             due, mode, status = None, "after_turn", "waiting_anchor"
         fingerprint = hashlib.sha256(canonical_json([reason, payload, mode, "now" if at == "now" else due, after_turn, run_id]).encode()).hexdigest()
+        if request_identity is not None:
+            if not isinstance(request_identity, str) or len(request_identity) != 64 or any(c not in "0123456789abcdef" for c in request_identity):
+                raise RuntimeContractError("Invalid internal semantic request identity")
+            fingerprint = request_identity
         with self.transaction() as db:
             existing = db.execute("SELECT event_id,request_fingerprint FROM events WHERE workflow_id=? AND task_id=? AND dedupe_key=?",
                                   (workflow_id, task_id, dedupe_key)).fetchone()

@@ -108,6 +108,19 @@ def parser() -> argparse.ArgumentParser:
         if name == "messages":
             child.add_argument("--query", default="")
             child.add_argument("--offset", type=int, default=0)
+    inbox = commands.add_parser("inbox", help="Persistent reminders/results; acknowledging does not complete a Run")
+    inbox_operations = inbox.add_subparsers(dest="operation", required=True)
+    for name in ("list", "show", "acknowledge"):
+        child = inbox_operations.add_parser(name)
+        common(child)
+        child.add_argument("--workflow", required=True)
+        child.add_argument("--task")
+        if name == "list":
+            child.add_argument("--offset", type=int, default=0)
+        else:
+            child.add_argument("delivery")
+        if name == "acknowledge":
+            child.add_argument("--expected-version", type=int, required=True)
     service = commands.add_parser("service", help="Render, install and manage owned systemd user units")
     service_commands = service.add_subparsers(dest="operation", required=True)
     for name in ("render", "install", "status", "logs", "start", "stop", "restart", "enable", "disable", "uninstall"):
@@ -441,6 +454,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.operation == "messages":
                 raw.update(query=args.query, offset=args.offset)
             report = {"api_version": 1, "result": request(load_config(path).server.socket_path, "frontend." + args.operation, raw)}
+        elif args.command == "inbox":
+            raw = {"workflow_id": args.workflow, "task_id": args.task}
+            if args.operation == "list":
+                raw["offset"] = args.offset
+            else:
+                raw["delivery_id"] = args.delivery
+            if args.operation == "acknowledge":
+                raw["expected_version"] = args.expected_version
+            report = {"api_version": 1, "result": request(load_config(path).server.socket_path, "inbox." + args.operation, raw)}
         elif args.command == "ui":
             if args.json:
                 raise RuntimeContractError("The terminal UI is interactive; use the individual CLI commands for JSON")

@@ -50,7 +50,7 @@ def _run_owned(config, config_path, workflow, lease, lock):
     launch_id = str(uuid.uuid4())
     settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id,
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
-                "owner_token": lease["owner_token"]}
+                "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled}
     private = root / (launch_id + ".json")
     private.write_text(json.dumps(settings), encoding="utf-8")
     private.chmod(0o600)

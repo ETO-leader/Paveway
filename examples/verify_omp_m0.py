@@ -46,7 +46,9 @@ class Provider(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for delta, finish in (({"role": "assistant", "content": "M0_REPLY"}, None), ({}, "stop")):
+        response = self.server.response_factory(body) if hasattr(self.server, "response_factory") else (
+            ({"role": "assistant", "content": "M0_REPLY"}, None), ({}, "stop"))
+        for delta, finish in response:
             chunk = {"id": "m0", "object": "chat.completion.chunk", "choices": [
                 {"index": 0, "delta": delta, "finish_reason": finish}]}
             self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
