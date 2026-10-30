@@ -27,7 +27,7 @@ Paveway
 
 ### Paveway 的职责
 - **配置 MCP Server**：通过 `oicoach-runtime workflow connect-tijian` 安全写入 workflow workspace 的 `.omp/mcp.json`。
-- **业务指导与编排**：内置 `paveway-tijian` Skill 为教练 Agent 提供业务认知、能力选择与跨工具工作流策略。
+- **业务指导与编排**：内置 `paveway-tijian` Skill 为 GPT 提供业务认知、能力选择与跨工具工作流策略。
 - **VJudge 会话维护**：通过 `vjudge auth` CLI 及终端 UI 管理与 Tijian 兼容的共享 VJudge 登录 Cookie。
 
 ### Tijian MCP 的职责
@@ -83,10 +83,11 @@ oicoach-runtime workflow connect-tijian coach \
 - **互斥标志**：`--read-only` 与 `--read-write` 严格互斥，不能同时提供。
 - **明确路径**：`--executable` 必须为有效且具备可执行权限的路径，绝不隐式回退到旧 CLI。
 - **合并配置**：写入对应 workflow workspace 下的 `.omp/mcp.json`，保留已有其他 MCP Server 与 `disabledServers`。
+- **旧路径兼容**：显式连接时，若原生配置尚不存在，可从旧根 `.mcp.json` 导入；旧文件不改写。若两个位置均有配置，原生位置为当前操作目标，应自行核对旧文件，不能假设两份会自动同步。
 - **幂等与冲突检测**：相同配置重复执行保持幂等；若存在不同定义的 `tijian` 配置则安全报错（`ConflictError`），原文件严格保持不变。
 - **原子性与安全权限**：通过临时文件原子替换，拒绝 symlink，文件权限保持 `0600`。
 
-生成的 `.mcp.json` 示例：
+生成的 `.omp/mcp.json` 示例：
 
 ```json
 {
@@ -115,6 +116,8 @@ oicoach-runtime workflow connect-tijian coach \
 1. 观察 OMP 会话启动日志或 MCP 连接状态。
 2. 在 OMP Agent 中核对是否通过 `tools/list` 发现了以 `tijian_` 为前缀的原生 MCP 工具。
 3. 在只读模式下，确认写工具已被服务端过滤；读写模式下则具备完整操作能力。
+
+本机 OMP 18.10.4 也会将 MCP 工具挂载为 `xd://` 设备，以 `read xd://` 发现，再通过原生 `write` 向精确设备路径写 JSON 参数调用。工具名和设备路径以运行中的 OMP 发现结果为准，不能只检查模型 provider 的 function 列表就断言未连接。此路径已用实际 OMP 与本地 stdio fixture 验证；不代表 Windows Desktop 题库或真实 Tijian MCP 已通过本机验收。
 
 ### Windows 与 WSL2 运行边界
 - 在 WSL2 Linux 环境中运行的 `tijian-mcp` 默认访问 Linux 的 XDG 数据目录（如 `~/.local/share/tijian`）。

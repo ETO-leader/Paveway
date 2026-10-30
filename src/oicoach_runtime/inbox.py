@@ -40,8 +40,11 @@ class Inbox:
             event = self.store.event(row["event_id"])
             output = self.store.output(row["run_id"])
             run = self.store.run(row["run_id"])
-            message = output.get("text") or ("GPT execution status: " + run["status"] + "; no saved final reply")
-            self.create(event, "result", message, row["run_id"])
+            text = output.get("text") or ""
+            quiet = event["payload"].get("intent") == "agent_wake" and run["status"] == "succeeded" and not text.strip()
+            if not quiet:
+                message = text or ("GPT execution status: " + run["status"] + "; no saved final reply")
+                self.create(event, "result", message, row["run_id"])
             with self.store.transaction() as db:
                 self.store._set_metadata(db, "inbox-projected:v1:" + row["run_id"], True)
 

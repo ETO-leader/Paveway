@@ -11,6 +11,7 @@ dist/
 *.service.env
 /.mcp.json
 .mcp.json
+**/.omp/mcp.json
 customization.json
 customizations/
 user-data-git/

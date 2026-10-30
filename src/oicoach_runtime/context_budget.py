@@ -1,4 +1,7 @@
-"""Independent prompt budgets; archived history is never pruned."""
+"""Current context guidance plus historical token-count helpers for old probes.
+
+LIMIT_TOKENS is retained only for archival tests, never applied by the runtime.
+"""
 
 from functools import lru_cache
 

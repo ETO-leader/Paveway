@@ -115,7 +115,8 @@ class SetupTests(unittest.TestCase):
 
     def test_project_mcp_merge_preserves_other_servers_and_rejects_conflicts(self):
         create(self.config, "coach", self.workspace)
-        target = self.workspace / ".mcp.json"
+        target = self.workspace / ".omp/mcp.json"
+        target.parent.mkdir(mode=0o700, exist_ok=True)
         target.write_text(json.dumps({"mcpServers": {"other": {"command": "other"}}, "disabledServers": ["other"]}))
         connect_tijian(self.config, "coach", self.fake_mcp)
         data = json.loads(target.read_text())
@@ -141,7 +142,8 @@ class SetupTests(unittest.TestCase):
 
     def test_explicit_read_write_omits_read_only_flag(self):
         create(self.config, "coach", self.workspace)
-        target = self.workspace / ".mcp.json"
+        target = self.workspace / ".omp/mcp.json"
+        target.parent.mkdir(mode=0o700, exist_ok=True)
         connect_tijian(self.config, "coach", self.fake_mcp, read_only=False)
         data = json.loads(target.read_text())
         self.assertEqual(data["mcpServers"]["tijian"], {
@@ -158,7 +160,8 @@ class SetupTests(unittest.TestCase):
         non_exec.chmod(0o644)
         with self.assertRaises(WorkflowError):
             connect_tijian(self.config, "coach", non_exec)
-        target = self.workspace / ".mcp.json"
+        target = self.workspace / ".omp/mcp.json"
+        target.parent.mkdir(mode=0o700, exist_ok=True)
         target.write_text("not json")
         with self.assertRaises(WorkflowError):
             connect_tijian(self.config, "coach", self.fake_mcp)
@@ -172,7 +175,8 @@ class SetupTests(unittest.TestCase):
 
     def test_cli_connect_tijian_flags_and_mutual_exclusion(self):
         create(self.config, "coach", self.workspace)
-        target = self.workspace / ".mcp.json"
+        target = self.workspace / ".omp/mcp.json"
+        target.parent.mkdir(mode=0o700, exist_ok=True)
         code = main(["workflow", "connect-tijian", "coach", "--executable", str(self.fake_mcp), "--config", str(self.path), "--json"])
         self.assertEqual(code, 0)
         data = json.loads(target.read_text())

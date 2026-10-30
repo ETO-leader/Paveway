@@ -450,3 +450,11 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 本机发现另一个旧接入缺陷：当前 OMP 原生发现路径为 `workspace/.omp/mcp.json`，不是根 `.mcp.json`；显式 connect-tijian 改用原生路径，首次可导入旧根配置但保留原文件，拒绝目录 symlink／配置冲突。当前版本 MCP 工具可挂载为 `xd://` 设备，经原生 write 调用，不能因 provider function 列表没有同名项而断言没连接；真实 OMP + 本地 stdio MCP 端到端已通过。上游 Tijian／OMP 未修改。
 
 基础完整回归 295 项，267 通过、28 条件跳过（100.093 秒）；本轮新增 MCP 路径／兼容导入／scope 单元验证 26 项通过（1.024 秒）。原生聊天、登录遮罩、编辑菜单、恢复、Profile 与旧管理 UI 往返均用实际 OMP 与本地 provider 测试；Browser／Subagent／MCP 与故障注入的最终统一验收继续在 M6 记录，不把早期失败计为通过。没有正式用户配置部署、真实模型费用或 Windows Tijian 实机验收。
+
+## 2026-10-30 — M6 验收、默认原生入口与 0.21.0
+
+实际 OMP 原生端到端 **18 项全部通过（65.800 秒）**，覆盖聊天／长文本、独立前后台、/new、恢复、Persona、真实唤醒工具、持久 Inbox、编辑与遮罩登录、原管理 UI 往返、Browser、子 Agent、原生 MCP、Memory、daemon 重启与父进程 SIGKILL。故障恢复只显式释放死亡且无锁的 owner，普通 resume 不发新模型请求。没有生产服务部署或正式用户数据改写。
+
+最终完整回归 **303 项，270 通过、33 条件跳过，97.610 秒**，日志 `/tmp/paveway-final-regression.log`；另默认一键入口与原生历史经本地 Git remote 到第二隔离设备的发现／读取 2 项通过（7.161 秒）。明确 reminder 与允许静默 agent_wake 的结果语义补充验证通过。三处旧 setup 用例仍检查根 MCP 路径造成的错误已按实际原生路径更新，冲突／权限断言保留；Browser 冷启动超时保留失败证据并改用隔离 Chrome 与明确操作超时，不将早期失败计入通过。
+
+默认 `paveway.sh` 改用原生入口，保留 --legacy-ui/PAVEWAY_UI=legacy 及全部旧 CLI/RPC。版本升为 0.21.0，README 重写为当前完整使用说明，修正活文档的旧 10k 描述；历史 Guard 调查明确标记已停用。wheel 构建通过，四个原生模块／Tijian Skill 均打包，运行数据不在包或源码 Git。本轮没有 schema migration。详见 [完整验收与边界](verification/omp-native-acceptance.md)。真实付费模型、Windows Tijian 数据路径和真实网络登录未验收；这些缺口不包装为已完成能力。

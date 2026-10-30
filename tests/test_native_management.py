@@ -1,5 +1,6 @@
 import fcntl
 import os
+from pathlib import Path
 import pty
 import select
 import struct
@@ -14,11 +15,14 @@ from oicoach_runtime.ipc import request
 
 
 class NativeManagementTests(NativeFixture):
-    def open_ui(self):
+    def open_ui(self, launcher=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
-            "--workflow", "native-test"], env=self.env, stdin=slave, stdout=slave, stderr=slave)
+        argv = [sys.executable, "-m", "oicoach_runtime", "native"]
+        if launcher:
+            argv = [str(Path(__file__).resolve().parents[1] / "paveway.sh")]
+        process = subprocess.Popen([*argv, "--config", str(self.path), "--workflow", "native-test"],
+            env={**self.env, "PAVEWAY_PYTHON": sys.executable}, cwd=self.root, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         os.set_blocking(master, False)
         raw = bytearray()
@@ -54,6 +58,12 @@ class NativeManagementTests(NativeFixture):
             self.assertEqual(process.returncode, 0, raw.decode(errors="replace")[-2000:])
         until("OMP native")
         return process, raw, send, until, pump, exit_ui
+
+    def test_one_key_native_launcher_from_another_directory(self):
+        process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+        exit_ui()
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
 
     def test_prompt_dialog_saves_privately_without_a_model_turn(self):
         process, raw, send, until, pump, exit_ui = self.open_ui()

@@ -7,7 +7,7 @@ project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 config_path="$project_dir/.runtime/config.toml"
 requested_workflow=""
 requested_coach=""
-ui_entry="${PAVEWAY_UI:-legacy}"
+ui_entry="${PAVEWAY_UI:-native}"
 ui_args=()
 
 usage() {
@@ -18,7 +18,7 @@ usage() {
 默认使用项目 .runtime/config.toml；已有设置、会话和活动请求继续沿用。
 首次启动且无 Workflow 时，将提示输入第一个 Workflow 的名称（或使用 --workflow 预先指定）。
 退出 UI 不会停止后台 Runtime。OMP 需要事先安装并完成模型认证。
---native 打开 OMP 原生界面；--legacy-ui 保留原管理界面。
+默认打开 OMP 原生界面；--legacy-ui 保留原管理界面。
 EOF
 }
 

@@ -14,6 +14,7 @@ from oicoach_runtime.frontend import Frontend
 from oicoach_runtime.inbox import Inbox
 from oicoach_runtime.store import Store
 from oicoach_runtime.wakeup import Wakeup
+from oicoach_runtime.workflows import WorkflowProvider
 
 
 class WakeupTests(unittest.TestCase):
@@ -95,3 +96,22 @@ class WakeupTests(unittest.TestCase):
             self.assertEqual(Inbox(reopened).list("example")["messages"][0]["state"], "acknowledged")
         finally:
             reopened.close()
+
+    def test_successful_agent_wake_can_remain_quiet_without_losing_explicit_reminders(self):
+        from oicoach_runtime.workflow_setup import create
+        create(self.config, "example", self.config.workflow_root.parent)
+        inbox = Inbox(self.store)
+        for intent in ("agent_wake", "reminder"):
+            event = self.schedule(intent=intent, dedupe_key=intent, when={"kind": "after_now", "seconds": 0})
+            claimed = self.store.claim_due("fixture")
+            inbox.due(event)
+            self.store.bind(claimed, WorkflowProvider(self.config.workflow_root).describe("example"))
+            self.store.dispatch(claimed["run_id"])
+            self.store.evidence(claimed["run_id"], acknowledged=True)
+            self.store.evidence(claimed["run_id"], result="completed")
+            self.store.finish(claimed["run_id"], "succeeded", result="completed", settled=True)
+            inbox.collect()
+        rows = inbox.list("example")["messages"]
+        self.assertEqual({row["event_id"] for row in rows}, {event["event_id"]})
+        self.assertEqual({row["kind"] for row in rows}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] == "created" for row in rows))

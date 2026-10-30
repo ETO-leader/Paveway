@@ -5,7 +5,7 @@ Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动
 ## 启动与恢复
 
 ```bash
-./paveway.sh --native
+./paveway.sh
 ./paveway.sh --native --workflow test01
 ./paveway.sh --native --coach alpha
 ./paveway.sh --legacy-ui

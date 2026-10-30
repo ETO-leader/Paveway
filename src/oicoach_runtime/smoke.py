@@ -75,11 +75,9 @@ async def verify_omp(config, *, with_model=False):
         except AgentError as error:
             code = getattr(error, "code", "agent_protocol_error")
             detail_messages = {
-                "agent_context_guard_missing": "OMP is ready, but Context Guard (context-window.mjs) was not loaded or initialized",
-                "agent_context_guard_invalid": "Context Guard initialized with invalid token limit or message format",
-                "agent_rpc_ready_missing": "Context Guard is ready, but OMP RPC ready frame was not received",
+                "agent_rpc_ready_missing": "OMP RPC ready frame was not received",
                 "agent_protocol_version_unsupported": "OMP returned an unsupported RPC protocol version",
-                "agent_rpc_timeout": "Timed out waiting for OMP RPC and Context Guard ready frames",
+                "agent_rpc_timeout": "Timed out waiting for OMP RPC ready",
                 "agent_process_exited": "OMP process exited before initialization completed",
                 "agent_rpc_eof_or_overflow": "OMP closed RPC stream or produced an oversized frame",
             }

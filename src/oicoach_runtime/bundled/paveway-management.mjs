@@ -89,7 +89,10 @@ export function registerManagement(pi, config, requestSwitch) {
             const action = operation === "delete" ? "skill-delete" : existing.enabled ? "skill-disable" : "skill-enable";
             await cli([...base, action, config.workflow_id, "--name", name, "--expected-revision", String(raw.revision)]);
         } else {
-            const category = await ctx.ui.select("Skill category", ["oi-introduce", "user-information", "personal-skill"]);
+            const categories = ["oi-introduce", "user-information", "personal-skill"];
+            const currentCategory = existing?.category || "personal-skill";
+            const category = await ctx.ui.select("Skill category", existing ?
+                [currentCategory, ...categories.filter(value => value !== currentCategory)] : categories);
             if (!category) return;
             const description = await ctx.ui.editor("When should GPT read this Skill?", existing?.description || "");
             if (description === undefined) return;
@@ -181,7 +184,7 @@ export function registerManagement(pi, config, requestSwitch) {
         let offset = 0;
         while (true) {
             const page = (await cli(["frontend", "messages", config.conversation_id, "--query", query, "--offset", String(offset)])).result;
-            const labels = page.messages.map(row => `${row.role} · ${row.session_id.slice(0, 8)} · ${row.text.slice(0, 60)}`);
+            const labels = page.messages.map((row, index) => `${offset + index + 1} · ${row.role} · ${row.session_id.slice(0, 8)} · ${row.text.slice(0, 60)}`);
             const selected = await ctx.ui.select("Native history · page " + (offset / 20 + 1), [...labels,
                 ...(page.has_more ? ["Next page"] : []), ...(offset ? ["Previous page"] : [])]);
             if (!selected) return;

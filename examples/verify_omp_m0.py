@@ -57,6 +57,17 @@ class Provider(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_GET(self):
+        if self.path != "/paveway-browser-fixture":
+            self.send_error(404)
+            return
+        data = b"<!doctype html><title>PAVEWAY_BROWSER_OK</title><h1>Local native browser fixture</h1>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
 
 class Probe:
     def __init__(self, root, executable, server):

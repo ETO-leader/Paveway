@@ -79,7 +79,7 @@ class NativeFixture(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
-    def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False, evidence=lambda: True):
+    def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False, evidence=lambda: True, wait_seconds=25):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native", "--config", str(self.path),
@@ -104,7 +104,7 @@ class NativeFixture(unittest.TestCase):
             self.assertFalse(pending, "fixture input was not consumed")
 
         def until(text, requests=0, predicate=lambda: True):
-            deadline = time.monotonic() + 25
+            deadline = time.monotonic() + wait_seconds
             while time.monotonic() < deadline:
                 if text.encode() in output and len(self.server.requests) >= requests and predicate():
                     return
@@ -202,6 +202,25 @@ class NativeOmpTests(NativeFixture):
         self.assertIn("SECOND_NATIVE_MESSAGE", text)
         self.assertNotIn("owner_token", text)
         self.assertNotIn("token_hash", text)
+        remote = self.root / "fixture-user-data.git"
+        subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)], check=True, capture_output=True)
+        git_sync.set_remote(self.config, str(remote))
+        self.assertEqual(git_sync.cycle(self.config)["state"], "ok")
+        other = self.root / "second-device"
+        other.mkdir(mode=0o700)
+        path = other / "config.toml"
+        initialize(path, str(other / "state"), str(other / "workflows"))
+        config = load_config(path)
+        create(config, "native-test", other, "example")
+        git_sync.configure(config, other / "user-data", str(remote))
+        self.assertEqual(git_sync.cycle(config)["state"], "ok")
+        page = git_sync.sessions(config, workflow="native-test")
+        self.assertEqual(len(page["records"]), 1)
+        found = page["records"][0]
+        self.assertEqual(found["source"], "omp_native_session")
+        saved = git_sync.messages(config, found["device_id"], found["session"])
+        self.assertIn("FIRST_NATIVE_MESSAGE", json.dumps(saved))
+        self.assertIn("SECOND_NATIVE_MESSAGE", json.dumps(saved))
 
     def test_native_new_session_keeps_both_sources_and_fences_old_generation(self):
         record = self.chat("BEFORE_NATIVE_NEW", switch=True)

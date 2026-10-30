@@ -124,3 +124,29 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 
 
 活动事件的 `events.show` 可附可选 `progress` 对象：run_id、phase（starting/tool/model）、tool_calls、started_at、last_activity_at，以及已分类的 tool 名称。仅在当前进程管理的活动 run 上返回；不写入数据库、历史或 Git 归档，终态/重启后不保留。工具名只保留 read/write/bash/todo/glob/grep，其余归为 external-tool，不含参数、结果或原始动态工具名。缺省该字段时客户端保持兼容。
+
+## 0.21 原生前台与持久消息
+
+`native [--workflow ID | --coach ID] [--task ID] [--conversation ID | --new]` 打开受管 OMP 原生界面，不接受 `--json`。`status` 新增 `runtime_version` 与 `native_protocol_version=1`；旧 daemon 缺少此协议时拒绝启动新前台，不终止已有任务。其他 IPC envelope 仍为 v1，无 schema migration。
+
+公开诊断：`frontend list [--workflow ID] [--task ID]`、`frontend show CONVERSATION`、`frontend messages CONVERSATION [--query TEXT] [--offset N]`、`frontend recover CONVERSATION`。messages 每页 20 条只读 user/assistant 文字、最大 2048 字节片段，附来源 Session/entry/parent ID；不修改 OMP 分支或恢复 prompt。recover 只允许 uncertain，须验证 PID/启动身份死亡与 owner.lock 已释放；文件未落盘或损坏时拒绝并保留记录，允许显式新建 Conversation。
+
+受管扩展使用 `frontend.begin/started/attest/observe/inference/finish` 及版本化 `frontend:v1:` 元数据登记。绑定作用域、generation 与 owner_token 校验；owner_token 仅通过私密启动配置及本地 socket 传递，公开记录不返回 token_hash。`agent_end` 的 `observed_loop_only` 不代表严格 settled。前后台物理 Session 分离，原 RPC 完成契约不变。
+
+原生工具调用统一传 `{conversation_id, generation, owner_token, parameters}`：
+
+| IPC command | parameters |
+| --- | --- |
+| `wakeup.schedule` | when `{kind:"at",at:带时区时间}` 或 `{kind:"after_now",seconds:N}`、reason、dedupe_key、intent `reminder/agent_wake`、authorized_by_user=true |
+| `wakeup.list` | 空对象 |
+| `wakeup.cancel` | event_id、expected_version |
+| `wakeup.reschedule` | event_id、expected_version、at |
+| `native_memory.list/show/put/delete` | 与原 Memory 数据接口相同；scope 为 profile/task，workflow/task 从 owner 推导 |
+| `native_history.search` | source=native/background、可选 query/offset |
+| `inbox.bound-list/show/acknowledge` | 分别为 offset、delivery_id、delivery_id+expected_version |
+
+拒绝额外的跨 scope 字段；旧 generation、released/uncertain owner 或已死亡的 OMP 不能使用受管能力。扩展不向子 Agent 交付主会话操作。`after_now` 重试用语义 identity 去重，重复请求不会随着重试时间重新顺延；前台 `after_turn_settled` 不提供，不隐式替换为 after_now。
+
+公开 Inbox CLI：`inbox list --workflow ID [--task ID] [--offset N]`、`inbox show DELIVERY --workflow ID`、`inbox acknowledge DELIVERY --workflow ID --expected-version N`。消息状态 created/offered/acknowledged 与 Run 状态分离；列出或通知不代表已读。没有自动 sendMessage 或未知 prompt 重播。
+
+新增 Profile 管理 `coach list/create/show/persona/state`；配置可选 persona/coach 字段沿用 schema1 与 CAS，首次写入前私密备份。Persona 变化拒绝旧 Conversation 续接，需新建，原文保留。`sync sessions [--workflow ID] [--offset N]` 发现独立用户 Git 中已结束 Session 的只读文字归档；它不是可写 Session 导入接口。界面、字段和回退见 [原生 UI](native-ui.md)。

@@ -89,7 +89,7 @@ def parser() -> argparse.ArgumentParser:
     common(ui)
     ui.add_argument("--workflow", help="Initially selected workflow; otherwise choose in the UI")
     ui.add_argument("--task", default="training")
-    native = commands.add_parser("native", help="Experimental controlled OMP native TUI; legacy ui remains available")
+    native = commands.add_parser("native", help="Controlled OMP native TUI; legacy ui remains available")
     common(native)
     selection = native.add_mutually_exclusive_group()
     selection.add_argument("--workflow")
