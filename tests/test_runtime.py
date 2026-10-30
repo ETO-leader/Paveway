@@ -611,16 +611,19 @@ class RuntimeTests(unittest.TestCase):
         try:
             event = self.wait_status(self.schedule("sync-auto", "sync-history")["event_id"])
             customization.update(self.config, "echo", 0, "prompt", mode="append", content="automatic profile transfer")
-            git_sync.configure(self.config, self.config.state_dir / "user-data-git", str(remote), interval=10)
-            sync_deadline = time.monotonic() + 10
-            while True:
-                try:
-                    git_sync.configure(base, base.state_dir / "user-data-git", str(remote), interval=10)
-                    break
-                except ConflictError:
-                    if time.monotonic() > sync_deadline:
-                        raise
-                    time.sleep(0.05)
+            def safe_configure(cfg, repo):
+                sync_deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        git_sync.configure(cfg, repo, str(remote), interval=10)
+                        break
+                    except ConflictError:
+                        if time.monotonic() > sync_deadline:
+                            raise
+                        time.sleep(0.05)
+
+            safe_configure(self.config, self.config.state_dir / "user-data-git")
+            safe_configure(base, base.state_dir / "user-data-git")
             deadline = time.monotonic() + 30
             transferred = False
             while time.monotonic() < deadline:
