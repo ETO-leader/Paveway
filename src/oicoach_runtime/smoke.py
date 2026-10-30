@@ -72,6 +72,19 @@ async def verify_omp(config, *, with_model=False):
             state, _ = await inspect_session(isolated, binding)
             checks.append({"check": "rpc_transport", "status": "PASS", "detail": "Ready v1, correlated get_state/get_messages, settled and isolated session identity"})
             checks.append({"check": "model_selected", "status": "PASS" if state.get("model") else "WARN", "detail": "Model selection present" if state.get("model") else "No default model selected"})
+        except AgentError as error:
+            code = getattr(error, "code", "agent_protocol_error")
+            detail_messages = {
+                "agent_context_guard_missing": "OMP is ready, but Context Guard (context-window.mjs) was not loaded or initialized",
+                "agent_context_guard_invalid": "Context Guard initialized with invalid token limit or message format",
+                "agent_rpc_ready_missing": "Context Guard is ready, but OMP RPC ready frame was not received",
+                "agent_protocol_version_unsupported": "OMP returned an unsupported RPC protocol version",
+                "agent_rpc_timeout": "Timed out waiting for OMP RPC and Context Guard ready frames",
+                "agent_process_exited": "OMP process exited before initialization completed",
+                "agent_rpc_eof_or_overflow": "OMP closed RPC stream or produced an oversized frame",
+            }
+            detail = f"[{code}] {detail_messages.get(code, 'OMP transport/session inspection failed')}"
+            return {"api_version": 1, "milestone": "M2", "ok": False, "checks": [{"check": "rpc_transport", "status": "FAIL", "detail": detail}]}
         except (RuntimeContractError, OSError, TimeoutError, ValueError):
             return {"api_version": 1, "milestone": "M2", "ok": False, "checks": [{"check": "rpc_transport", "status": "FAIL", "detail": "OMP transport/session inspection failed; no credentials or stderr exposed"}]}
         if not with_model:

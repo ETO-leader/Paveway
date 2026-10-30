@@ -170,19 +170,39 @@ class OmpRpc:
             raise AgentError("Cannot write agent RPC command") from None
 
     async def ready(self):
+        rpc_ready = False
         budget_ready = False
-        async with asyncio.timeout(self.config.agent.startup_timeout_seconds):
-            while True:
-                frame = await self.frame(self.config.agent.startup_timeout_seconds)
-                if frame["type"] == "paveway_context_ready" and frame.get("tokenLimit") == 10000:
-                    budget_ready = True
-                if frame["type"] == "ready":
-                    if type(frame.get("protocolVersion")) is not int or frame["protocolVersion"] != 1:
-                        raise AgentError("Unsupported OMP RPC protocol version")
-                    if not budget_ready:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.agent.startup_timeout_seconds
+        while not (rpc_ready and budget_ready):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                if rpc_ready and not budget_ready:
+                    raise AgentError("OMP did not load the required context budget guard", code="agent_context_guard_missing")
+                if not rpc_ready and budget_ready:
+                    raise AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing")
+                raise AgentError("Agent RPC startup timeout", code="agent_rpc_timeout")
+            try:
+                frame = await self.frame(remaining)
+            except AgentError as error:
+                if error.code == "agent_process_exited":
+                    if rpc_ready and not budget_ready:
+                        raise AgentError("OMP process exited before context guard initialized", code="agent_context_guard_missing")
+                elif error.code == "agent_rpc_timeout":
+                    if rpc_ready and not budget_ready:
                         raise AgentError("OMP did not load the required context budget guard", code="agent_context_guard_missing")
-                    return
-
+                    if not rpc_ready and budget_ready:
+                        raise AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing")
+                raise
+            ftype = frame.get("type")
+            if ftype == "ready":
+                if type(frame.get("protocolVersion")) is not int or frame["protocolVersion"] != 1:
+                    raise AgentError("Unsupported OMP RPC protocol version", code="agent_protocol_version_unsupported")
+                rpc_ready = True
+            elif ftype == "paveway_context_ready":
+                if frame.get("tokenLimit") != 10000:
+                    raise AgentError("Invalid context budget guard token limit", code="agent_context_guard_invalid")
+                budget_ready = True
     async def state(self):
         return await self.command("get_state")
 

@@ -58,7 +58,7 @@ def main():
                                   "model": args.model, "thinking": args.thinking,
                                   "https_proxy_hash": hashlib.sha256(os.environ.get("HTTPS_PROXY", "").encode()).hexdigest()}) + "\n")
     mode_file = args.cwd / "fake-mode"
-    startup_mode = mode_file.read_text().strip() if mode_file.exists() else "normal"
+    startup_mode = os.environ.get("OICOACH_FAKE_OMP_MODE") or (mode_file.read_text().strip() if mode_file.exists() else "normal")
     if startup_mode == "crash-before-ready":
         return 9
     if startup_mode == "hang-before-ready":
@@ -72,9 +72,33 @@ def main():
         session_file.write_text(json.dumps(session))
     settled = True
     exit_code = 0
-    if startup_mode != "missing-context-guard":
+    if startup_mode in ("normal", "guard-first"):
         emit({"type": "paveway_context_ready", "tokenLimit": 10000})
-    emit({"type": "ready", "protocolVersion": 1}, split=True)
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+    elif startup_mode == "rpc-first":
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+    elif startup_mode in ("missing-context-guard", "rpc-ready-only"):
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+    elif startup_mode == "guard-ready-only":
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+    elif startup_mode == "guard-invalid-limit":
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+        emit({"type": "paveway_context_ready", "tokenLimit": 5000})
+    elif startup_mode == "unsupported-protocol":
+        emit({"type": "ready", "protocolVersion": 999}, split=True)
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+    elif startup_mode == "intermediate-frames":
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+        emit({"type": "advisor_cost_changed"})
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+    elif startup_mode == "delayed-guard":
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
+        time.sleep(0.1)
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+    else:
+        emit({"type": "paveway_context_ready", "tokenLimit": 10000})
+        emit({"type": "ready", "protocolVersion": 1}, split=True)
     for line in sys.stdin:
         request = json.loads(line)
         request_id = request["id"]

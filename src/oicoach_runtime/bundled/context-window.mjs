@@ -121,7 +121,12 @@ export function windowMessages(original, count, limit = TOKEN_LIMIT) {
 
 export default async function contextWindow(pi) {
     // Resolve through the host OMP installation, not the user's workspace.
-    const {Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1]));
+    let Tokenizer;
+    try {
+        ({Tokenizer} = await import("@oh-my-pi/pi-agent-core"));
+    } catch {
+        ({Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1])));
+    }
     const tokenizer = new Tokenizer();
     const count = text => tokenizer.countTokens(text, "strict");
     pi.on("context", event => ({messages: windowMessages(event.messages, count)}));

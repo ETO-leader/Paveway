@@ -4,8 +4,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-
+from unittest.mock import patch
 from oicoach_runtime.config import Config, AgentConfig
+from oicoach_runtime.errors import AgentError
 from oicoach_runtime.smoke import verify_omp
 from oicoach_runtime.adapters.omp_rpc import OmpRpc
 import json
@@ -94,6 +95,104 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(report["ok"])
             self.assertNotIn("Traceback", str(report))
 
+
+    async def test_guard_first_and_rpc_first_orders_succeed_and_read_state(self):
+        for mode in ("guard-first", "rpc-first", "intermediate-frames", "delayed-guard"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "fake-mode").write_text(mode)
+                config = self.config(root)
+                session_dir = root / "sessions"
+                session_dir.mkdir()
+                adapter = OmpRpc(config)
+                try:
+                    await adapter.start({"workspace": str(root), "session_dir": str(session_dir), "session_file": None}, f"test-{mode}")
+                    await adapter.ready()
+                    state = await adapter.state()
+                    self.assertTrue(state.get("isSettled"))
+                finally:
+                    await adapter.stop(abort=True)
+
+    async def test_missing_guard_fails_with_agent_context_guard_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fake-mode").write_text("rpc-ready-only")
+            config = self.config(root)
+            config = replace(config, agent=replace(config.agent, startup_timeout_seconds=0.3))
+            session_dir = root / "sessions"
+            session_dir.mkdir()
+            adapter = OmpRpc(config)
+            try:
+                await adapter.start({"workspace": str(root), "session_dir": str(session_dir), "session_file": None}, "test-missing-guard")
+                with self.assertRaises(AgentError) as caught:
+                    await adapter.ready()
+                self.assertEqual(caught.exception.code, "agent_context_guard_missing")
+            finally:
+                await adapter.stop(abort=True)
+
+    async def test_missing_rpc_ready_fails_with_agent_rpc_ready_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fake-mode").write_text("guard-ready-only")
+            config = self.config(root)
+            config = replace(config, agent=replace(config.agent, startup_timeout_seconds=0.3))
+            session_dir = root / "sessions"
+            session_dir.mkdir()
+            adapter = OmpRpc(config)
+            try:
+                await adapter.start({"workspace": str(root), "session_dir": str(session_dir), "session_file": None}, "test-missing-rpc")
+                with self.assertRaises(AgentError) as caught:
+                    await adapter.ready()
+                self.assertEqual(caught.exception.code, "agent_rpc_ready_missing")
+            finally:
+                await adapter.stop(abort=True)
+
+    async def test_invalid_guard_token_limit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fake-mode").write_text("guard-invalid-limit")
+            config = self.config(root)
+            session_dir = root / "sessions"
+            session_dir.mkdir()
+            adapter = OmpRpc(config)
+            try:
+                await adapter.start({"workspace": str(root), "session_dir": str(session_dir), "session_file": None}, "test-invalid-limit")
+                with self.assertRaises(AgentError) as caught:
+                    await adapter.ready()
+                self.assertEqual(caught.exception.code, "agent_context_guard_invalid")
+            finally:
+                await adapter.stop(abort=True)
+
+    async def test_unsupported_rpc_protocol_version_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fake-mode").write_text("unsupported-protocol")
+            config = self.config(root)
+            session_dir = root / "sessions"
+            session_dir.mkdir()
+            adapter = OmpRpc(config)
+            try:
+                await adapter.start({"workspace": str(root), "session_dir": str(session_dir), "session_file": None}, "test-bad-proto")
+                with self.assertRaises(AgentError) as caught:
+                    await adapter.ready()
+                self.assertEqual(caught.exception.code, "agent_protocol_version_unsupported")
+            finally:
+                await adapter.stop(abort=True)
+
+    async def test_verify_omp_diagnostics_report_safe_categories(self):
+        for mode, expected_code in (
+            ("rpc-ready-only", "agent_context_guard_missing"),
+            ("guard-invalid-limit", "agent_context_guard_invalid"),
+            ("unsupported-protocol", "agent_protocol_version_unsupported"),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = self.config(root)
+                config = replace(config, agent=replace(config.agent, startup_timeout_seconds=0.3))
+                with patch.dict(os.environ, {"OICOACH_FAKE_OMP_MODE": mode}):
+                    report = await verify_omp(config)
+                self.assertFalse(report["ok"])
+                self.assertIn(f"[{expected_code}]", report["checks"][0]["detail"])
 
 @unittest.skipUnless(os.environ.get("OICOACH_TEST_REAL_OMP_CONFIG"), "Set OICOACH_TEST_REAL_OMP_CONFIG for an opt-in real transport test")
 class RealTransportTests(unittest.IsolatedAsyncioTestCase):
