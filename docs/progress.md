@@ -486,3 +486,9 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 原生真实 OMP + 本地 provider 最终 **3 项全部通过（15.577 秒）**，日志 `/tmp/paveway-wakeup-audit-final.log`：真实 AgentTool 排程、UI 退出后提醒与结果持久化，以及退出 UI／重启 daemon／后来损坏设置后仍按原快照执行。损坏文件不被修复或覆盖，普通 describe 仍拒绝它。后台 Runtime／setup／唤醒／Profile 回归 **69 项通过（34.433 秒）**，`/tmp/paveway-wakeup-regression.log`；更新运行指令后的自定义设置／唤醒 **16 项通过（0.615 秒）**，`/tmp/paveway-wakeup-guidance.log`。所有新模型请求仅本地 fixture，不代表已验证正式付费 Provider 连通性。
 
 当前消息交付采用持久 Inbox：提醒到期先留存，模型终态另投影；用户须 `/inbox` 查看，没有自动向聊天注入或桌面／手机推送。服务升级后 blocked 不自动重试，需用户确认后另行排程。
+
+## 2026-11-01 — 长 Skill 修复的运行环境闭环
+
+再次核查确认，Skill 后端及新旧 UI 的源码已统一为 64KiB，现场失败仍来自未更新的 0.21.1 daemon。确认没有活动／待执行／等待锚点任务，全部原生 owner 已释放且服务属于当前配置后，重启受管 systemd 用户服务，实际运行版本更新为 0.21.2。未重发 blocked 或 uncertain 事件。
+
+对已有长 Skill 完成真实 daemon 校验：schedule 接口先加载 Workflow／Skills，再在入队前拒绝故意设置的无效 task_id；返回预期 invalid_input 而非 invalid_workflow。前后事件计数与自定义文件字节均不变，无新测试事件或模型请求。此检查证明服务已加载新校验，不冒充完成了一次真实模型唤醒。源码中的普通 ask／聊天消息仍有独立 32KiB 上限，不是 Skill 正文上限；本次没有扩大普通消息或数据库 payload 边界。
