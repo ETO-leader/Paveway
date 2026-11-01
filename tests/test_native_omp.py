@@ -261,6 +261,43 @@ class NativeOmpTests(NativeFixture):
         self.assertEqual(event["status"], "queued")
         self.assertTrue(any(any(message.get("role") == "tool" for message in body["messages"]) for body in self.server.requests))
 
+    def test_wakeup_survives_daemon_restart_and_ignores_later_broken_customization(self):
+        from test_native_management import NativeManagementTests
+        process, raw, send, until, pump, exit_ui = NativeManagementTests.open_ui(self)
+        send("/wakeup in 5s FROZEN_WAKEUP_AFTER_RESTART\r")
+        until("native_wakeup")
+        events = request(self.config.server.socket_path, "events.upcoming", {"workflow_id": "native-test", "task_id": "training"})
+        self.assertEqual(len(events), 1)
+        event_id = events[0]["event_id"]
+        exit_ui()
+        self.stop_daemon()
+        # Emulate a later incomplete settings edit. It must remain invalid for
+        # new launches, without replacing this event's trusted launch snapshot.
+        path = self.config.workflow_root / "native-test/customization.json"
+        path.write_text('{"broken_future_edit":')
+        path.chmod(0o600)
+        self.daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
+            env=self.env, stdout=self.log, stderr=self.log)
+        deadline = time.monotonic() + 18
+        event = None
+        while time.monotonic() < deadline:
+            try:
+                event = request(self.config.server.socket_path, "events.show", {"event_id": event_id})
+                if event["status"] in ("succeeded", "blocked", "failed", "uncertain"): break
+            except RuntimeContractError:
+                pass
+            time.sleep(.05)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["status"], "succeeded", event.get("last_error_code"))
+        inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] == "created" for row in inbox["messages"]))
+        self.assertTrue(any("FROZEN_WAKEUP_AFTER_RESTART" in json.dumps(body["messages"]) for body in self.server.requests))
+        self.assertEqual(path.read_text(), '{"broken_future_edit":')
+        from oicoach_runtime.workflows import WorkflowProvider
+        with self.assertRaises(RuntimeContractError):
+            WorkflowProvider(self.config.workflow_root).describe("native-test")
+
     def test_two_persona_profiles_reach_native_model_without_identity_leakage(self):
         from oicoach_runtime.coaches import create
         a = create(self.config, "alpha", "native-test", "ALPHA_NATIVE_PERSONA")

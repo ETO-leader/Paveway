@@ -476,3 +476,13 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 验证：自定义设置／旧 UI **51 项通过（48.345 秒）**，日志 `/tmp/paveway-skill-64k.log`；覆盖 65536 字节中文边界、65537 拒绝且原文件不变。实际 OMP 原生 Skill 编辑器 **1 项通过（2.937 秒）**，日志 `/tmp/paveway-skill-long-paste.log`：经 bracketed paste 输入 1800 行、超过 32KiB 的正文，完整保存且不进入聊天／模型请求，折叠粘贴占位不会替代正文。Git 同步回归 **12 项通过（3.084 秒）**，日志 `/tmp/paveway-skill-git-regression.log`。
 
 本机只读状态检查发现旧 0.21.1 daemon 及一个 idle 原生前台仍在运行。未重启或结束该前台，避免丢失用户未保存的粘贴草稿。原生管理编辑调用新的 CLI，可先重试保存；保存并退出前台后应在空闲时重启 Runtime，使后续快照及后台 Workflow 加载使用新校验。用户正文、event.md、配置及数据库未由本轮检查改写。
+
+## 2026-11-01 — 唤醒机制复验与固定快照隔离
+
+核查发现现场后台仍加载旧 0.21.1：原生事件在 dispatch_intent 之前因 invalid_workflow 阻止执行。只读比较确认，旧版 32KiB Skill 校验会拒绝后来保存的长 Skill；新的磁盘代码能够正常校验。未向正式队列添加测试提醒、调用私人模型、重启活前台或重发 blocked 任务，用户事件 ID、正文及 Skill 内容不写入源码。
+
+同时修正执行路径：原生唤醒原本先 describe 当前用户设置，再替换成固定设置；这会让与任务无关的后续编辑阻止已授权任务。WorkflowProvider 现支持内部传入固定设置，验证其 schema 并保留 manifest／模板／revision 校验；普通新启动仍拒绝损坏的当前设置。Composer 升为 v3，明确原生前台优先 paveway_wakeup、after_now 从 Runtime 提交起算，后台 CLI after-turn 只接受真实后台 run_id，不把 Conversation 或原生 Session ID 冒充锚点。不改 event.md，不开放前台 settled，不添加自动重播。
+
+原生真实 OMP + 本地 provider 最终 **3 项全部通过（15.577 秒）**，日志 `/tmp/paveway-wakeup-audit-final.log`：真实 AgentTool 排程、UI 退出后提醒与结果持久化，以及退出 UI／重启 daemon／后来损坏设置后仍按原快照执行。损坏文件不被修复或覆盖，普通 describe 仍拒绝它。后台 Runtime／setup／唤醒／Profile 回归 **69 项通过（34.433 秒）**，`/tmp/paveway-wakeup-regression.log`；更新运行指令后的自定义设置／唤醒 **16 项通过（0.615 秒）**，`/tmp/paveway-wakeup-guidance.log`。所有新模型请求仅本地 fixture，不代表已验证正式付费 Provider 连通性。
+
+当前消息交付采用持久 Inbox：提醒到期先留存，模型终态另投影；用户须 `/inbox` 查看，没有自动向聊天注入或桌面／手机推送。服务升级后 blocked 不自动重试，需用户确认后另行排程。

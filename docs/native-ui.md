@@ -59,6 +59,10 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当前 owner/generation 和作用域，用户不能通过参数指向另一 Profile。默认维持 opt-in，不创建无限自主跟进。前台 `after_turn_settled` 明确不提供，旧后台 `schedule --after-turn --run-id` 继续原样使用，二者不会混淆。
 
+原生前台优先使用这些工具；旧流程中 `schedule --after-turn` 只能绑定 Runtime 提供的真实后台 run_id，不能拿原生 Session/Conversation ID 代替。Composer v3 明确覆盖这项运行边界，不改写旧 event.md。已排程的原生事件直接校验固定设置快照，不先加载后来编辑的用户设置；Workflow manifest、模板与 revision 仍会正常校验。
+
+更新代码后仍运行的旧 daemon 不会自动重载 Python。保存草稿并退出原生 UI 后，在空闲时重启 Runtime 再进入界面；`invalid_workflow` 等 blocked 事件需要核查并明确重新安排，不因服务升级自动重发。
+
 明确提醒在到期领取时先持久化，后台 GPT 执行结果另存一条消息。created、offered、用户明确 acknowledged 分开；模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；目前没有外部桌面／手机推送，也不自动把消息重注入 Agent。
 
 ## 隔离、归档与回退

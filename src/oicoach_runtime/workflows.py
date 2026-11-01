@@ -63,7 +63,7 @@ class WorkflowProvider:
     def __init__(self, root: Path):
         self.root = root.resolve()
 
-    def describe(self, workflow_id: str) -> Workflow:
+    def describe(self, workflow_id: str, *, settings=None) -> Workflow:
         try:
             validate_id(workflow_id)
             directory = (self.root / workflow_id).resolve()
@@ -103,9 +103,9 @@ class WorkflowProvider:
                 if raw.get("instructions_in_system", False) and (template.count("${event_json}") != 1 or template.split("${event_json}")[-1].strip()):
                     raise WorkflowError("System instructions require exactly one trailing ${event_json}")
                 templates[kind] = template
-            from .customization import load
+            from .customization import load, validate
             return Workflow(workflow_id, raw["version"], workspace, raw["session_policy"], templates,
-                            raw.get("memory_enabled", False), load(directory), raw.get("instructions_in_system", False),
+                            raw.get("memory_enabled", False), load(directory) if settings is None else validate(settings), raw.get("instructions_in_system", False),
                             builtin_skills)
         except WorkflowError:
             raise

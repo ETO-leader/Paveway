@@ -304,16 +304,17 @@ class Runtime:
                 state["tool_calls"] += 1
                 state["tool"] = tool if tool in ("read", "write", "bash", "todo", "glob", "grep") else "external-tool"
         try:
-            workflow = self.provider.describe(event["workflow_id"])
             trusted = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
+            if event["payload"].get("native_wakeup") and not trusted:
+                raise RuntimeContractError("Native wakeup configuration evidence is missing; no prompt was sent")
+            # Validate the frozen event settings directly. Loading mutable user
+            # settings first can block an authorized event after later edits,
+            # even though those settings will never be used by this wakeup.
+            workflow = self.provider.describe(event["workflow_id"], settings=trusted["settings"] if trusted else None)
             binding_event = event
             if event["payload"].get("native_wakeup"):
-                if not trusted:
-                    raise RuntimeContractError("Native wakeup configuration evidence is missing; no prompt was sent")
                 if trusted["workflow_revision"] != workflow.revision:
                     raise RuntimeContractError("Workflow revision changed after native scheduling; inspect the event and start a new conversation")
-                from dataclasses import replace
-                workflow = replace(workflow, customization=trusted["settings"])
                 binding_event = {**event, "task_id": trusted["binding_task_id"]}
             binding = self.store.bind(binding_event, workflow)
             from .prompt_composer import persona_digest
