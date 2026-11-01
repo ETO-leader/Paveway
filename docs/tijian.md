@@ -4,6 +4,8 @@ Paveway 已全面迁移至 Tijian 原生 stdio MCP Server（`tijian-mcp`），�
 
 旧有的 Python 桥接器（包括 `tijian_catalog.py`、`tijian_mcp.py`、`tijian.py`、旧 `[tijian]` 运行配置及 `tijian tools/call/doctor/setup/mcp` 等 CLI 命令）**已被彻底删除，不再可用**。Paveway 不再自行定义或重新组装 Tijian 的工具 Schema。
 
+0.21.1 起，旧配置文件中保留的 `[tijian]` 段可兼容读取及原值写回，不会再使整个 Runtime 报 `Unknown top-level configuration keys`。这只用于保护旧设置，不会重新启用桥接器；连接须按下文配置原生 MCP。其他未知字段和非法值仍会拒绝，不静默忽略拼写错误。
+
 ---
 
 ## 1. 架构与职责分工

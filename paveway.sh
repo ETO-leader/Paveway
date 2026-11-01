@@ -117,6 +117,8 @@ try:
     if not path.exists():
         initialize(path, str(path.parent / "state"), str(path.parent / "workflows"))
     config = load_config(path)
+    if config.legacy_tijian is not None:
+        print("兼容提示：旧 [tijian] 配置已保留但不再执行；请用 /paveway tijian 或 workflow connect-tijian 配置原生 MCP。", flush=True)
     if requested_coach:
         from oicoach_runtime.coaches import resolve
         requested_workflow = resolve(config, requested_coach)["runtime_workflow_id"]

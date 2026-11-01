@@ -458,3 +458,13 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 最终完整回归 **303 项，270 通过、33 条件跳过，97.610 秒**，日志 `/tmp/paveway-final-regression.log`；另默认一键入口与原生历史经本地 Git remote 到第二隔离设备的发现／读取 2 项通过（7.161 秒）。明确 reminder 与允许静默 agent_wake 的结果语义补充验证通过。三处旧 setup 用例仍检查根 MCP 路径造成的错误已按实际原生路径更新，冲突／权限断言保留；Browser 冷启动超时保留失败证据并改用隔离 Chrome 与明确操作超时，不将早期失败计入通过。
 
 默认 `paveway.sh` 改用原生入口，保留 --legacy-ui/PAVEWAY_UI=legacy 及全部旧 CLI/RPC。版本升为 0.21.0，README 重写为当前完整使用说明，修正活文档的旧 10k 描述；历史 Guard 调查明确标记已停用。wheel 构建通过，四个原生模块／Tijian Skill 均打包，运行数据不在包或源码 Git。本轮没有 schema migration。详见 [完整验收与边界](verification/omp-native-acceptance.md)。真实付费模型、Windows Tijian 数据路径和真实网络登录未验收；这些缺口不包装为已完成能力。
+
+## 2026-11-01 — 0.21.1 旧 Tijian 配置启动兼容
+
+用户运行 `./paveway.sh` 报 `Unknown top-level configuration keys`。只检查本机配置的字段名即定位到原生 MCP 重构前遗留的 `[tijian]` 段；旧重构删除字段时没有提供配置兼容，导致 Runtime 与原生 UI 都无法启动。现保留这份退役配置的已知字段及原值，读取不改文件，config_text 重写仍保留；未知顶层字段、退役段拼写错误及非法类型继续拒绝，不改为任意配置都静默忽略。
+
+退役数据不作为活动 integration 暴露，不启动旧 CLI，也不擅自把旧 CLI executable 当作原生 MCP binary。启动器明确提示“保留但不再执行”，通过 `/paveway tijian` 或 `workflow connect-tijian` 显式配置原生连接。正式用户配置读取验证通过且原文件未变；未修改用户 Workflow、event.md、数据库或启动正式服务。
+
+配置兼容／一键启动／代理回归 **21 项通过（4.643 秒）**，日志 `/tmp/paveway-legacy-config-fix.log`。实际 OMP + 隔离本地 fixture 的一键默认原生入口 **1 项通过（2.762 秒）**，包含旧 enabled=true 配置、不得启动的旧 CLI 路径、无模型请求、原配置字节不变，日志 `/tmp/paveway-legacy-native-launch.log`。
+
+最终完整回归 **307 项：274 通过、33 条件跳过，112.462 秒，无失败**，日志 `/tmp/paveway-legacy-full-regression.log`。修复作为 0.21.1 发布；配置 schema 与数据库 schema 均未升级，保留原生 MCP／旧界面回退路径。

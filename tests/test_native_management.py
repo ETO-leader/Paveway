@@ -60,9 +60,13 @@ class NativeManagementTests(NativeFixture):
         return process, raw, send, until, pump, exit_ui
 
     def test_one_key_native_launcher_from_another_directory(self):
+        original = self.path.read_text() + '\n[tijian]\nenabled = true\nexecutable = "/fixture/retired-cli-must-not-run"\n'
+        self.path.write_text(original)
         process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
         exit_ui()
         self.assertEqual(self.server.requests, [])
+        self.assertIn("旧 [tijian] 配置已保留但不再执行".encode(), raw)
+        self.assertEqual(self.path.read_text(), original)
         self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
 
     def test_prompt_dialog_saves_privately_without_a_model_turn(self):

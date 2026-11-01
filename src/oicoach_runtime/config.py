@@ -50,6 +50,16 @@ class QueueConfig:
     uncertain_event_policy: str = "manual_review"
 
 
+@dataclass(frozen=True)
+class _LegacyTijianConfig:
+    """Validate retired config only; never enables the removed CLI bridge."""
+
+    enabled: bool = False
+    executable: str = "tijian"
+    read_only: bool = True
+    timeout_seconds: float = 60
+    max_output_bytes: int = 1048576
+
 
 @dataclass(frozen=True)
 class Config:
@@ -60,6 +70,9 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
+    # Preserve exactly the supplied legacy fields during configuration rewrites.
+    # This is not an active integration and must never be used to launch Tijian.
+    legacy_tijian: dict | None = field(default=None, repr=False)
 
     @property
     def database_path(self) -> Path:
@@ -124,7 +137,7 @@ def load_config(path: Path) -> Config:
             raw = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError):
         raise ConfigError("Cannot read configuration as TOML; run init or check the file") from None
-    allowed = {f.name for f in fields(Config)}
+    allowed = {f.name for f in fields(Config)} - {"legacy_tijian"} | {"tijian"}
     if set(raw) - allowed:
         raise ConfigError("Unknown top-level configuration keys")
     if type(raw.get("schema_version")) is not int or raw["schema_version"] != 1:
@@ -157,7 +170,12 @@ def load_config(path: Path) -> Config:
     queue = _section(QueueConfig, raw.get("queue", {}))
     if queue.expired_event_policy != "keep" or queue.uncertain_event_policy != "manual_review":
         raise ConfigError("Only keep/manual_review queue policies are supported")
-    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue)
+    legacy_tijian = None
+    if "tijian" in raw:
+        _section(_LegacyTijianConfig, raw["tijian"])
+        legacy_tijian = dict(raw["tijian"])
+    return Config(state, root, server=server, agent=agent, restart=restart, queue=queue,
+                  legacy_tijian=legacy_tijian)
 
 
 def config_text(config: Config) -> str:
@@ -169,6 +187,9 @@ def config_text(config: Config) -> str:
         lines.extend(["", f"[{name}]"])
         for f in fields(section):
             lines.append(f"{f.name} = {json.dumps(getattr(section, f.name), ensure_ascii=False)}")
+    if config.legacy_tijian is not None:
+        lines.extend(["", "# Retired CLI integration; preserved for compatibility, not executed.", "[tijian]"])
+        lines.extend(f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in config.legacy_tijian.items())
     return "\n".join(lines) + "\n"
 
 

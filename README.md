@@ -4,7 +4,7 @@
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
 
-当前版本 **0.21.0**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
+当前版本 **0.21.1**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
 
 ## 环境与安装
 
@@ -197,6 +197,7 @@ flowchart LR
 ## 故障恢复与回退
 
 - `daemon_unavailable`：确认 CLI/UI 使用同一配置，检查 `service status/logs` 或前台 `serve`。升级旧 daemon 时应先确认空闲，再重启；不打断活动请求来加载新协议。
+- 旧 `[tijian]` 配置：0.21.1 起兼容读取并在配置重写时保留已有字段，但不启动已删除的 CLI 桥接器。一键启动会提示停用状态；通过 `/paveway tijian` 或 `workflow connect-tijian` 配置原生 MCP，不需要删除整份旧配置或重建历史。
 - `uncertain`：先检查历史及外部副作用，不自动重发。`frontend list/show/recover` 在验证旧进程死亡及锁释放后显式恢复原生所有权；若 Session 未落盘／损坏，保留旧记录并用 `native --new`。
 - Profile／Persona 或 Workflow revision 变化：新建 Conversation，旧对话和快照保留。
 - 模型／MCP 不可用：检查原生连接状态及配置，排程成功不证明模型或工具已执行。

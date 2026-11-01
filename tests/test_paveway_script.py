@@ -135,6 +135,17 @@ class PavewayScriptTests(unittest.TestCase):
 
         return proc.returncode, output.decode("utf-8", errors="replace")
 
+    def test_legacy_tijian_table_does_not_block_startup_or_get_rewritten(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        create(self.config, "legacy-profile", workspace)
+        original = self.config_path.read_text() + '\n[tijian]\nenabled = true\nexecutable = "/fixture/retired-cli"\nread_only = true\n'
+        self.config_path.write_text(original)
+        code, output = self._run_script()
+        self.assertEqual(code, 0, output)
+        self.assertIn("旧 [tijian] 配置已保留但不再执行", output)
+        self.assertEqual(self.config_path.read_text(), original)
+
     def test_upgrade_bootstrap_installs_new_dependency_before_startup(self):
         """An old editable install must not pass when the new YAML import fails."""
         checkout = self.root / "checkout"
