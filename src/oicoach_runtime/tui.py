@@ -704,7 +704,7 @@ class TerminalUI:
                         return
                 steps = [] if skill else [("name", "Skill 名称 · 小写字母/数字/短横线", "", 64)]
                 steps += [("description", "用途描述 · 最多 64 KiB · 说明何时需要读取此 Skill", skill["description"] if skill else "", 65536),
-                          ("content", "Skill Markdown 正文 · Ctrl+J 换行", skill["content"] if skill else "", 32768)]
+                          ("content", "Skill Markdown 正文 · 最多 64 KiB · Ctrl+J 换行", skill["content"] if skill else "", 65536)]
                 def done(values):
                     return save("skill-put", "--name", skill["name"] if skill else values["name"],
                                 "--category", category, "--description", values["description"], content=values["content"])

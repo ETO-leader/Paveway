@@ -75,7 +75,7 @@ def validate(raw):
             raise WorkflowError("Skill names must be unique lowercase words/digits separated by hyphens, at most 64 characters")
         names.add(name)
         text(skill["description"], 65536, "Skill description")
-        text(skill["content"], 32768, "Skill body")
+        text(skill["content"], 65536, "Skill body")
         if type(skill["enabled"]) is not bool:
             raise WorkflowError("Skill enabled must be a boolean")
     if len(json.dumps(raw, ensure_ascii=False).encode()) > MAX_SETTINGS:

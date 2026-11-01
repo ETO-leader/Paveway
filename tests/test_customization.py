@@ -45,6 +45,16 @@ class CustomizationTests(unittest.TestCase):
         self.assertEqual((self.directory / "event.md").read_bytes(), template)
         self.assertEqual(custom.show(self.config, "other")["settings"]["revision"], 0)
 
+    def test_skill_body_accepts_64kib_utf8_and_rejects_overflow_without_losing_saved_content(self):
+        body = "中" * 21845 + "x"  # Exactly 65536 UTF-8 bytes, well above the old 32768 boundary.
+        self.assertEqual(len(body.encode("utf-8")), 65536)
+        self.update("skill-put", name="long-skill", description="Read for long tasks", content=body)
+        saved = (self.directory / "customization.json").read_bytes()
+        self.assertEqual(custom.show(self.config, "coach")["settings"]["skills"][0]["content"], body)
+        with self.assertRaisesRegex(WorkflowError, "at most 65536 bytes"):
+            self.update("skill-put", name="long-skill", description="Read for long tasks", content=body + "x")
+        self.assertEqual((self.directory / "customization.json").read_bytes(), saved)
+
     def test_skills_crud_keeps_disabled_state_and_reset_keeps_skills(self):
         self.update("skill-put", name="my-skill", description="什么时候使用", content="正文")
         self.update("skill-disable", name="my-skill")

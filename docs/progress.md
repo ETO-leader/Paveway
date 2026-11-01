@@ -468,3 +468,11 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 配置兼容／一键启动／代理回归 **21 项通过（4.643 秒）**，日志 `/tmp/paveway-legacy-config-fix.log`。实际 OMP + 隔离本地 fixture 的一键默认原生入口 **1 项通过（2.762 秒）**，包含旧 enabled=true 配置、不得启动的旧 CLI 路径、无模型请求、原配置字节不变，日志 `/tmp/paveway-legacy-native-launch.log`。
 
 最终完整回归 **307 项：274 通过、33 条件跳过，112.462 秒，无失败**，日志 `/tmp/paveway-legacy-full-regression.log`。修复作为 0.21.1 发布；配置 schema 与数据库 schema 均未升级，保留原生 MCP／旧界面回退路径。
+
+## 2026-11-01 — 0.21.2 Skill 正文统一为 64KiB
+
+用户粘贴长 Skill 后遇到 `at most 32768`。定位为 customization.validate 的 Skill body 及旧 UI 编辑步骤仍保留 32KiB，和此前文档的 64KiB 说明不一致。后端与旧 UI 均统一为 65536 UTF-8 字节，描述／正文各自计额，原有 256KiB 设置总量不变；超限明确拒绝，不截断正文或覆盖旧版本。
+
+验证：自定义设置／旧 UI **51 项通过（48.345 秒）**，日志 `/tmp/paveway-skill-64k.log`；覆盖 65536 字节中文边界、65537 拒绝且原文件不变。实际 OMP 原生 Skill 编辑器 **1 项通过（2.937 秒）**，日志 `/tmp/paveway-skill-long-paste.log`：经 bracketed paste 输入 1800 行、超过 32KiB 的正文，完整保存且不进入聊天／模型请求，折叠粘贴占位不会替代正文。Git 同步回归 **12 项通过（3.084 秒）**，日志 `/tmp/paveway-skill-git-regression.log`。
+
+本机只读状态检查发现旧 0.21.1 daemon 及一个 idle 原生前台仍在运行。未重启或结束该前台，避免丢失用户未保存的粘贴草稿。原生管理编辑调用新的 CLI，可先重试保存；保存并退出前台后应在空闲时重启 Runtime，使后续快照及后台 Workflow 加载使用新校验。用户正文、event.md、配置及数据库未由本轮检查改写。

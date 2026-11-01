@@ -48,7 +48,17 @@ class NativeManagementTests(NativeFixture):
                 pump()
             self.fail("Native management did not reach state: " + raw.decode(errors="replace")[-3000:])
         def send(text):
-            os.write(master, text if isinstance(text, bytes) else text.encode())
+            pending = text if isinstance(text, bytes) else text.encode()
+            deadline = time.monotonic() + 20
+            while pending and time.monotonic() < deadline:
+                pump(0)
+                if select.select([], [master], [], .1)[1]:
+                    try:
+                        count = os.write(master, pending[:4096])
+                        pending = pending[count:]
+                    except BlockingIOError:
+                        pass
+            self.assertFalse(pending, "native fixture input did not drain")
         def exit_ui():
             send("/exit\r")
             deadline = time.monotonic() + 10
@@ -115,11 +125,15 @@ class NativeManagementTests(NativeFixture):
         until("When should GPT read this Skill?")
         send(b"Native skill description\x11")
         until("Skill body")
-        send(b"PRIVATE_SKILL_UI_BODY\x11")
+        body = "PRIVATE_SKILL_UI_BODY\n" + "中文 Skill body line\n" * 1800
+        self.assertGreater(len(body.encode()), 32768)
+        self.assertLess(len(body.encode()), 65536)
+        send(b"\x1b[200~" + body.encode() + b"\x1b[201~")
+        send(b"\x11")
         until("Saved.", lambda: customization.show(self.config, "native-test")["settings"]["revision"] == 1)
         skill = customization.show(self.config, "native-test")["settings"]["skills"][0]
         self.assertEqual(skill["category"], "user-information")
-        self.assertEqual(skill["content"], "PRIVATE_SKILL_UI_BODY")
+        self.assertEqual(skill["content"], body)
         exit_ui()
         self.assertEqual(self.server.requests, [])
         for path in (self.config.state_dir / "native").rglob("*.jsonl"):

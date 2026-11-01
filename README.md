@@ -4,7 +4,7 @@
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
 
-当前版本 **0.21.1**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
+当前版本 **0.21.2**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
 
 ## 环境与安装
 
