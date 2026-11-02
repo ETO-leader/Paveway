@@ -46,7 +46,7 @@ Most FS/bash tools resolve these; path selectors: `read` docs.
 {{#if toolListMode}}
 # Tool Inventory
 {{#each toolInfo}}
-- {{label}}: `{{name}}`
+- {{#if label}}{{label}}: `{{name}}`{{else}}`{{name}}`{{/if}}
 {{/each}}
 {{else}}
 {{toolInventory}}

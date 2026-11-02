@@ -179,6 +179,15 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
         checks = probe_omp(str(executable))
         self.assertEqual(checks[0]["status"], "PASS")
 
+    def test_tool_inventory_template_expression_handles_missing_label(self):
+        """Verify tool inventory template uses OMP official conditional label expression."""
+        from oicoach_runtime.prompt_composer import DYNAMIC_TEMPLATE_SECTIONS
+        self.assertIn(
+            "- {{#if label}}{{label}}: `{{name}}`{{else}}`{{name}}`{{/if}}",
+            DYNAMIC_TEMPLATE_SECTIONS,
+        )
+        self.assertNotIn("- {{label}}: `{{name}}`", DYNAMIC_TEMPLATE_SECTIONS)
+
 
 @unittest.skipUnless(shutil.which("omp"), "requires real omp binary")
 class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
@@ -287,6 +296,77 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+
+    async def test_tool_inventory_label_rendering_and_descriptors_mode(self):
+        """Test tool inventory rendering with/without label and in descriptors mode via real OMP."""
+        # 1. Test template evaluating with and without label through real OMP Handlebars compiler
+        test_tmpl = self.root / "tool-label-test.md"
+        test_tmpl.write_text(
+            "{{#with (lookup toolInfo 0)}}\n"
+            "With label: - {{#if label}}{{label}}: `{{name}}`{{else}}`{{name}}`{{/if}}\n"
+            "{{/with}}\n"
+            "{{#with workspaceTree}}\n"
+            "Without label: - {{#if label}}{{label}}: `custom_tool`{{else}}`custom_tool`{{/if}}\n"
+            "{{/with}}\n"
+        )
+        process = await asyncio.create_subprocess_exec(
+            "omp", "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
+            "--mode", "rpc", "--no-session", "--system-prompt-template", str(test_tmpl),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            req = json.dumps({"id": "label-check", "type": "get_state"}) + "\n"
+            process.stdin.write(req.encode())
+            await process.stdin.drain()
+            system_prompts = []
+            while line := await process.stdout.readline():
+                msg = json.loads(line.decode())
+                if msg.get("id") == "label-check":
+                    system_prompts = msg.get("data", {}).get("systemPrompt", [])
+                    break
+            rendered = "\n".join(system_prompts)
+            self.assertIn("With label: - Read: `read`", rendered)
+            self.assertIn("Without label: - `custom_tool`", rendered)
+            self.assertNotIn("- : `custom_tool`", rendered)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+        # 2. Test when not toolListMode (Gemini model activates inline descriptors mode -> toolInventory)
+        settings = {
+            "schema_version": 1,
+            "revision": 1,
+            "system_prompt": {"mode": "append", "text": ""},
+            "skills": [],
+        }
+        argv = customization.snapshot(settings, self.session_dir, "descriptors_run", True, base="oi-coach")
+        template_file = argv[argv.index("--system-prompt-template") + 1]
+        process_desc = await asyncio.create_subprocess_exec(
+            "omp", "--model", "gemini-2.5-flash", "--cwd", str(self.workspace),
+            "--session-dir", str(self.session_dir), "--mode", "rpc", "--no-session",
+            "--system-prompt-template", str(template_file),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            req = json.dumps({"id": "desc-check", "type": "get_state"}) + "\n"
+            process_desc.stdin.write(req.encode())
+            await process_desc.stdin.drain()
+            system_prompts = []
+            while line := await process_desc.stdout.readline():
+                msg = json.loads(line.decode())
+                if msg.get("id") == "desc-check":
+                    system_prompts = msg.get("data", {}).get("systemPrompt", [])
+                    break
+            full_prompt = "\n\n".join(system_prompts)
+            # In descriptors mode, toolInventory expands function schemas
+            self.assertIn("namespace functions", full_prompt)
+            # Should not render the toolListMode simple list
+            self.assertNotIn("- Read: `read`", full_prompt)
+        finally:
+            if process_desc.returncode is None:
+                process_desc.kill()
+                await process_desc.wait()
 
     async def test_real_omp_with_mcp_fixture(self):
         """4. xd:// MCP device verification: connecting an MCP server registers routes and instructions."""
