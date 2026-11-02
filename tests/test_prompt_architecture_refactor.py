@@ -1,13 +1,14 @@
 """Acceptance tests for Paveway prompt architecture refactoring.
 
-Covers Tests 1-7:
+Covers:
 - Test 1: Auto Update (package Core & Role update automatically reflected)
-- Test 2: Old templates no longer contaminate (obsolete CLI/tokens eliminated)
-- Test 3: User custom append prompt and persona preserved, replace mode rejected
-- Test 4: Profile does not copy framework text
+- Test 2: Old templates no longer contaminate (never promoted to system instructions)
+- Test 3: User custom append prompt and persona preserved, replace mode rejected on all write paths
+- Test 4: Profile preserves custom event templates (>100 chars) and does not copy framework text
 - Test 5: Foreground and background consistency
 - Test 6: Data safety boundaries (payload not promoted to system)
-- Test 7: OMP native execution without model
+- Test 7: Snapshot and Skill discovery configuration
+- Test 8: Single authoritative role policy file and strict base validation
 """
 
 import asyncio
@@ -18,6 +19,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from importlib.resources import files
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +28,7 @@ from oicoach_runtime.config import Config, ServerConfig, AgentConfig
 from oicoach_runtime.customization import snapshot, validate, load, update
 from oicoach_runtime.errors import WorkflowError
 from oicoach_runtime.prompt_composer import compose, manifest, load_core, load_role_policy
-from oicoach_runtime.workflow_setup import create, upgrade_existing_workflows
+from oicoach_runtime.workflow_setup import create
 from oicoach_runtime.workflows import WorkflowProvider, Workflow
 
 
@@ -91,11 +93,11 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         self.assertEqual((workflow_dir / "event.md").read_bytes(), event_before)
 
     def test_2_old_templates_no_longer_contaminate(self):
-        """Test 2: Old templates no longer contaminate.
+        """Test 2: Old templates no longer contaminate system prompt.
 
-        A workflow containing obsolete problem_add, problem_refetch, tijian call,
-        argv_prefix, 10k token claims is directly upgraded. Both system.md and
-        event messages contain none of those contaminated strings.
+        Even if an old workflow directory contains contaminated phrases in its
+        event.md and instructions_in_system=true, framework system instructions
+        are never extracted from event.md into system.md.
         """
         old_dir = self.workflow_root / "legacy_coach"
         old_dir.mkdir(mode=0o700)
@@ -113,12 +115,9 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
             f'workspace = {json.dumps(str(self.workspace))}\nsession_policy = "per_task"\n'
             'start_prompt = "event.md"\nwake_prompt = "event.md"\nrecovery_prompt = "event.md"\n'
             'memory_enabled = true\ninstructions_in_system = true\n'
-            'builtin_skills = ["paveway-tijian"]\n',
+            'base = "oi-coach"\nbuiltin_skills = ["paveway-tijian"]\n',
             encoding="utf-8"
         )
-
-        # Execute in-place direct upgrade
-        upgrade_existing_workflows(self.workflow_root)
 
         provider = WorkflowProvider(self.workflow_root)
         workflow = provider.describe("legacy_coach")
@@ -131,17 +130,15 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
 
         envelope = {"payload": {"message": "hello"}}
         instructions, message = workflow.render_parts("wake", envelope)
+        self.assertEqual(instructions, "")
 
-        # Assert no contaminated phrases exist in system.md or rendered envelope
         forbidden_phrases = [
             "problem_add", "problem_refetch", "tijian call", "argv_prefix", "10,000 tokens", "10k"
         ]
         for phrase in forbidden_phrases:
             self.assertNotIn(phrase, system_text, f"Found '{phrase}' in system.md!")
-            self.assertNotIn(phrase, message, f"Found '{phrase}' in event message!")
             self.assertNotIn(phrase, instructions, f"Found '{phrase}' in instructions!")
 
-        # Assert legitimate Core and Role policy ARE present
         self.assertIn("# Paveway Core", system_text)
         self.assertIn("OI 训练与教学策略", system_text)
 
@@ -150,9 +147,9 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
 
         - User prompt is appended after Core + Role.
         - Persona is preserved.
-        - Replace mode cannot be set via update.
+        - Replace mode cannot be set via update (both 'prompt' and 'replace-settings').
         - Existing replace mode in file is treated with append semantics.
-        - Restart/re-read preserves user customization.
+        - Clearing user append prompt leaves Core + Role intact.
         """
         create(self.config, "coach", self.workspace, template="coach")
         workflow_dir = self.workflow_root / "coach"
@@ -182,6 +179,16 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         with self.assertRaises(WorkflowError):
             update(self.config, "coach", 2, "prompt", mode="replace", content="EVIL_OVERWRITE")
 
+        # replace-settings cannot set mode="replace"
+        evil_settings = {
+            "schema_version": 1,
+            "revision": 2,
+            "system_prompt": {"mode": "replace", "text": "EVIL_OVERWRITE"},
+            "skills": []
+        }
+        with self.assertRaises(WorkflowError):
+            update(self.config, "coach", 2, "replace-settings", settings=evil_settings)
+
         # If a file on disk has mode="replace" from legacy, load() converts it to append semantics
         custom_file = workflow_dir / "customization.json"
         raw_json = json.loads(custom_file.read_text(encoding="utf-8"))
@@ -190,38 +197,61 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
 
         loaded = customization.load(workflow_dir)
         self.assertEqual(loaded["system_prompt"]["mode"], "append")
-        # Ensure it does NOT replace Core when composed
         system_text_loaded = compose(loaded, base="oi-coach")
         self.assertIn("# Paveway Core", system_text_loaded)
         self.assertIn("MY_APPENDED_INSTRUCTION", system_text_loaded)
 
-    def test_4_profile_does_not_copy_framework_rules(self):
-        """Test 4: GPT Profile creation does not duplicate framework rules.
+        # Clearing user append prompt preserves Core and Role
+        update(self.config, "coach", 2, "prompt", mode="append", content="")
+        cleared_settings = customization.load(workflow_dir)
+        self.assertEqual(cleared_settings["system_prompt"]["text"], "")
+        cleared_system = compose(cleared_settings, base="oi-coach")
+        self.assertIn("# Paveway Core", cleared_system)
+        self.assertIn("OI 训练与教学策略", cleared_system)
 
-        Profile inherits the base role identifier and does not write Core
-        or Role text into persistent profile files.
+    def test_4_profile_preserves_custom_event_template_and_does_not_copy_framework_rules(self):
+        """Test 4: GPT Profile preserves custom event templates (>100 chars) and does not copy framework rules.
+
+        - Legal custom event templates >100 characters are preserved completely.
+        - Event rendering produces the expected custom wrapped output.
+        - Profile inherits base role identifier.
+        - Neither Core nor Role policy text is written to persistent profile files.
         """
-        create(self.config, "source_coach", self.workspace, template="coach")
-        profile = coaches.create(self.config, "test_profile", "source_coach", persona="ALPHA_PERSONA")
+        create(self.config, "source_custom", self.workspace, template="coach")
+        source_dir = self.workflow_root / "source_custom"
 
+        custom_template = (
+            "### CUSTOM EVENT PROTOCOL HEADER ###\n"
+            "This is a custom event wrapper designed by the user for private automated logging.\n"
+            "It exceeds 100 characters in length to verify that no heuristic truncation or overwrite occurs.\n"
+            "Event payload:\n${event_json}\n"
+        )
+        self.assertGreater(len(custom_template), 100)
+        (source_dir / "event.md").write_text(custom_template, encoding="utf-8")
+
+        profile = coaches.create(self.config, "custom_profile", "source_custom", persona="MY_PERSONA")
         profile_dir = self.workflow_root / profile["runtime_workflow_id"]
         self.assertTrue(profile_dir.is_dir())
 
-        # Inspect manifest
         manifest_text = (profile_dir / "workflow.toml").read_text(encoding="utf-8")
         self.assertIn('base = "oi-coach"', manifest_text)
 
-        # Inspect prompt files: start.md, wake.md, recovery.md
         core_text = load_core()
         role_text = load_role_policy("oi-coach")
 
         for filename in ("start.md", "wake.md", "recovery.md"):
             content = (profile_dir / filename).read_text(encoding="utf-8")
-            self.assertEqual(content.strip(), "${event_json}")
+            self.assertEqual(content, custom_template)
             self.assertNotIn("# Paveway Core", content)
             self.assertNotIn("OI 训练与教学策略", content)
             self.assertNotIn(core_text[:50], content)
             self.assertNotIn(role_text[:50], content)
+
+        profile_workflow = WorkflowProvider(self.workflow_root).describe(profile["runtime_workflow_id"])
+        envelope = {"task": "solve-problem-101"}
+        _, rendered_message = profile_workflow.render_parts("wake", envelope)
+        self.assertIn("### CUSTOM EVENT PROTOCOL HEADER ###", rendered_message)
+        self.assertIn('"task":"solve-problem-101"', rendered_message)
 
     def test_5_foreground_and_background_consistency(self):
         """Test 5: Foreground & Background Consistency.
@@ -272,7 +302,6 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         self.assertEqual(instructions, "")
         self.assertNotIn("IGNORE PREVIOUS INSTRUCTIONS", instructions)
 
-        # Memory snapshot is strictly data only
         session = self.root / "safe_session"
         session.mkdir(mode=0o700)
         memory_data = {"notes": [{"key": "pref", "content": "prefers C++"}]}
@@ -284,11 +313,11 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         self.assertIn("prefers C++", system)
         self.assertNotIn("IGNORE PREVIOUS INSTRUCTIONS", system)
 
-    def test_7_omp_native_capabilities_and_skill_discovery(self):
-        """Test 7: OMP Native Acceptance Without Model.
+    def test_7_snapshot_and_skill_discovery_configuration(self):
+        """Test 7: Snapshot and Skill Discovery Configuration.
 
-        system.md is generated and passed, built-in Skills are packaged and
-        discovered via customDirectories, MCP config is untouched, rules preserved.
+        system.md is generated and passed via --system-prompt, built-in Skills are
+        configured and discoverable via omp.yml customDirectories overlay.
         """
         create(self.config, "coach", self.workspace, template="coach")
         workflow = WorkflowProvider(self.workflow_root).describe("coach")
@@ -319,6 +348,39 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         self.assertIn("paveway-tijian", tijian_text)
         self.assertIn("tijian_problem_ensure", tijian_text)
         self.assertIn("tijian_problem_content_ensure", tijian_text)
+
+    def test_8_role_policy_single_source_and_base_validation(self):
+        """Test 8: Single Authoritative Role Policy and Base Validation.
+
+        - bundled/oi-coach.md is the only authoritative role policy file.
+        - bundled/coach.md does not exist.
+        - base=None returns empty role text.
+        - base="oi-coach" loads oi-coach.md.
+        - Unknown base strictly raises WorkflowError in both load_role_policy and compose.
+        """
+        bundled_dir = files("oicoach_runtime").joinpath("bundled")
+        self.assertTrue(bundled_dir.joinpath("oi-coach.md").is_file())
+        self.assertFalse(bundled_dir.joinpath("coach.md").is_file())
+
+        # base = None / empty
+        self.assertEqual(load_role_policy(None), "")
+        self.assertEqual(load_role_policy(""), "")
+
+        # base = "oi-coach"
+        role_text = load_role_policy("oi-coach")
+        self.assertIn("OI 训练与教学策略", role_text)
+
+        # Unknown base
+        with self.assertRaises(WorkflowError):
+            load_role_policy("unknown_role")
+
+        with self.assertRaises(WorkflowError):
+            compose({"system_prompt": {"mode": "append", "text": ""}}, base="unknown_role")
+
+        # compose with base=None works and only includes Core
+        core_only = compose({"system_prompt": {"mode": "append", "text": ""}}, base=None)
+        self.assertIn("# Paveway Core", core_only)
+        self.assertNotIn("OI 训练与教学策略", core_only)
 
 
 if __name__ == "__main__":

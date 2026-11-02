@@ -12,7 +12,7 @@ Paveway 已全面迁移至 Tijian 原生 stdio MCP Server（`tijian-mcp`），�
 
 ```text
 Paveway
-  ├── Coach Prompt (bundled/coach.md)
+  ├── Role Policy (bundled/oi-coach.md)
   ├── Built-in Tijian Skill (paveway-tijian)
   ├── Workflow MCP configuration (workflow connect-tijian)
   └── OMP Agent

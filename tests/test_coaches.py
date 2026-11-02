@@ -80,16 +80,15 @@ class CoachTests(unittest.TestCase):
         settings = customization.show(self.config, profile["runtime_workflow_id"])["settings"]
         root = self.root / "snapshot"
         root.mkdir(mode=0o700)
-        for mode in ("append", "replace"):
-            raw = {**settings, "system_prompt": {"mode": mode, "text": "USER_RAW_{{literal}}"}}
-            before = json.dumps(raw)
-            argv = customization.snapshot(raw, root, mode, True, workflow_instructions="WORKFLOW_MODE")
-            self.assertEqual(argv[0], "--system-prompt")
-            self.assertNotIn("--system-prompt-template", argv)
-            self.assertIn("USER_RAW_{{literal}}", Path(argv[1]).read_text())
-            self.assertEqual(json.dumps(raw), before)
-            version = json.loads((Path(argv[1]).parent / "prompt-manifest.json").read_text())
-            self.assertEqual(version, manifest(raw, compose(raw, "WORKFLOW_MODE")))
+        raw = {**settings, "system_prompt": {"mode": "append", "text": "USER_RAW_{{literal}}"}}
+        before = json.dumps(raw)
+        argv = customization.snapshot(raw, root, "append", True)
+        self.assertEqual(argv[0], "--system-prompt")
+        self.assertNotIn("--system-prompt-template", argv)
+        self.assertIn("USER_RAW_{{literal}}", Path(argv[1]).read_text())
+        self.assertEqual(json.dumps(raw), before)
+        version = json.loads((Path(argv[1]).parent / "prompt-manifest.json").read_text())
+        self.assertEqual(version, manifest(raw, compose(raw)))
         git_sync.ensure_local(self.config)
         self.assertEqual(git_sync.cycle(self.config)["state"], "ok")
         repository = Path(git_sync.settings(self.config)["repository"])

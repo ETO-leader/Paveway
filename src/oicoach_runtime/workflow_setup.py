@@ -2,7 +2,6 @@
 
 import json
 import os
-from importlib.resources import files
 from pathlib import Path
 import tempfile
 
@@ -53,45 +52,6 @@ def create(config, workflow_id, workspace, template="coach"):
         destination.rmdir()
         raise
     return {"api_version": 1, "workflow": result, "template": template, "path": str(destination)}
-
-def upgrade_existing_workflows(root: Path):
-    """In-place upgrade of existing workflow templates and manifests to eliminate old framework contamination."""
-    if not root.is_dir():
-        return
-    import tomllib
-    for directory in root.iterdir():
-        if directory.name.startswith(".") or not directory.is_dir():
-            continue
-        manifest_path = directory / "workflow.toml"
-        if not manifest_path.is_file():
-            continue
-        try:
-            raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-            needs_update = False
-            if "instructions_in_system" in raw:
-                raw.pop("instructions_in_system", None)
-                needs_update = True
-            if "base" not in raw and ("paveway-tijian" in raw.get("builtin_skills", []) or raw.get("memory_enabled") or directory.name in ("coach", "gpt")):
-                raw["base"] = "oi-coach"
-                needs_update = True
-            if needs_update:
-                lines = [f'{k} = {json.dumps(v, ensure_ascii=False)}' for k, v in raw.items()]
-                manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            for kind in ("start", "wake", "recovery"):
-                prompt_file = raw.get(f"{kind}_prompt")
-                if prompt_file:
-                    target_file = directory / prompt_file
-                    if target_file.is_file():
-                        content = target_file.read_text(encoding="utf-8")
-                        if len(content) > 100 or "problem_add" in content or "tijian call" in content or "OI 教练工作流" in content:
-                            target_file.write_text("${event_json}\n", encoding="utf-8")
-            event_md = directory / "event.md"
-            if event_md.is_file():
-                content = event_md.read_text(encoding="utf-8")
-                if len(content) > 100 or "problem_add" in content or "tijian call" in content or "OI 教练工作流" in content:
-                    event_md.write_text("${event_json}\n", encoding="utf-8")
-        except Exception:
-            continue
 
 
 def connect_tijian(config, workflow_id, executable, *, read_only=True):

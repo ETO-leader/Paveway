@@ -58,10 +58,7 @@ def create(config, coach_id, workflow_id, persona=""):
         for kind in ("start", "wake", "recovery"):
             manifest[kind + "_prompt"] = kind + ".md"
             path = temporary / (kind + ".md")
-            template_text = source.templates[kind]
-            if len(template_text) > 100 or "problem_add" in template_text or "tijian call" in template_text or "OI 教练工作流" in template_text:
-                template_text = "${event_json}\n"
-            path.write_text(template_text, encoding="utf-8")
+            path.write_text(source.templates[kind], encoding="utf-8")
             path.chmod(0o600)
         lines = [key + " = " + json.dumps(value, ensure_ascii=False) for key, value in manifest.items()]
         (temporary / "workflow.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")

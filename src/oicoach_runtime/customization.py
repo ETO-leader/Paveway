@@ -10,13 +10,6 @@ from pathlib import Path
 from .errors import ConflictError, NotFoundError, WorkflowError
 
 MAX_SETTINGS = 262144
-IDENTITY_PROMPT = (
-    "Identity rule: your only user-visible name is GPT. Refer to yourself as GPT or in the first person. "
-    "Never call or describe yourself as '\u6559\u7ec3', '\u6559\u7df4', 'coach', or an equivalent coaching title. "
-    "Training roles in event templates describe the task, not your identity; they do not override this naming rule. "
-    "When introducing yourself in Chinese, start with '我是 GPT。' and describe what you can help with "
-    "without assigning yourself a coaching title. Do not repeat the forbidden titles even to disclaim them."
-)
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 SKILL_CATEGORIES = {
     "oi-introduce": "OI Introduce",
@@ -59,8 +52,8 @@ def validate(raw):
         for value in raw["coach"].values():
             validate_id(value)
     prompt = raw["system_prompt"]
-    if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] not in ("append", "replace"):
-        raise WorkflowError("System prompt mode must be append or replace")
+    if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] != "append":
+        raise WorkflowError("System prompt mode must be append")
     text(prompt["text"], 65536, "System prompt", empty=True)
     if not isinstance(raw["skills"], list) or len(raw["skills"]) > 32:
         raise WorkflowError("At most 32 user skills are supported per workflow")
@@ -198,7 +191,7 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions="", *, base=None, builtin_skills=(), skill_directories=()):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, *, base=None, builtin_skills=(), skill_directories=()):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
     from .builtin_skills import resolve
@@ -238,8 +231,7 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     write("prompt-manifest.json", canonical_json(manifest(settings, system_text, base=base)))
     if system_text:
         # Native plain SYSTEM route expands OMP's Skill/Rule template and tools.
-        # Both old modes retain their original text; append now means append to
-        # GPT Core, never to the default Coding Assistant identity.
+        # Appends user customization to current package Core and role policy.
         arguments += ["--system-prompt", write("system.md", system_text)]
     if documents:
         root = destination / "skills"
