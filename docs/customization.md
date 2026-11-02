@@ -28,11 +28,10 @@ CLI 的 --model/--thinking 至少给一项；传空串清除该覆盖。选择�
 
 编辑时先选模式，再输入正文：
 
-- `append`：默认方式，追加到 OMP 的原生系统提示词。
-- `replace`：替换 OMP 原生系统正文；OMP 自己的工具信息、项目上下文等仍由原生机制构建。
+- 系统提示词采用分层架构：Layer 1 Paveway Core（基础身份、执行约束、工具与记忆契约）、Layer 2 内置角色策略（如 oi-coach 教学原则）、Layer 3 用户自定义（追加 Prompt 与 Persona）、Layer 4 动态 Runtime Context（记忆快照等）。
+- 用户系统提示词仅支持 `append` 追加模式，不再支持 `replace` 模式；用户不能通过 `/paveway prompt` 覆盖 Paveway Core 或角色策略。清空追加 Prompt 表示使用 Paveway 默认框架指令。
 
-Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Shift+Tab 返回上一项，Esc 取消。正文最多 64 KiB，中文按 UTF-8 字节计算。原样保存 `$`、`${event_json}` 等文字，不进行模板替换、shell 执行或表达式求值。`append` 正文留空表示使用 OMP 原有系统提示；`replace` 不接受空正文。
-
+Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Esc 取消。正文最多 64 KiB，中文按 UTF-8 字节计算。原样保存 `$` 等文字，不进行模板替换、shell 执行或表达式求值。正文留空表示仅使用 Paveway 默认框架指令。
 `/prompt show` 显示用户自定义的部分，不冒充当前 OMP 原生系统提示词的完整展开。`/prompt reset` 确认后清空自定义部分，不删除 Skill，也不改动 OMP 原有项目/全局配置。
 
 `event.md` 仍由外部 workflow 管理。旧 manifest 缺省 `instructions_in_system=false` 时，规则及 envelope 保持原来的用户消息通道；新建 coach 使用 true，将可信模板的静态前缀放入系统 prompt，仅将事件 JSON（mode、用户输入和 Runtime 数据）作为用户消息。模板必须恰有一个位于末尾的 `${event_json}`；在替换前拆分，payload 不会提升为系统指令。此功能把自定义文本通过 OMP 的 `--append-system-prompt` 或 `--system-prompt` 放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。

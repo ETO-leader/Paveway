@@ -61,7 +61,7 @@ def validate(raw):
     prompt = raw["system_prompt"]
     if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] not in ("append", "replace"):
         raise WorkflowError("System prompt mode must be append or replace")
-    text(prompt["text"], 65536, "System prompt", empty=prompt["mode"] == "append")
+    text(prompt["text"], 65536, "System prompt", empty=True)
     if not isinstance(raw["skills"], list) or len(raw["skills"]) > 32:
         raise WorkflowError("At most 32 user skills are supported per workflow")
     names = set()
@@ -91,7 +91,11 @@ def load(directory):
         info = path.lstat()
         if path.is_symlink() or not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > MAX_SETTINGS:
             raise WorkflowError("Customization file must be private, owned, regular and at most 256 KiB")
-        return validate(json.loads(path.read_text(encoding="utf-8")))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("system_prompt"), dict):
+            if data["system_prompt"].get("mode") == "replace":
+                data["system_prompt"]["mode"] = "append"
+        return validate(data)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         if isinstance(error, WorkflowError):
             raise
@@ -126,7 +130,9 @@ def update(config, workflow_id, expected_revision, operation, **values):
         if type(expected_revision) is not int or expected_revision != raw["revision"]:
             raise ConflictError("Customization changed; reload and review before saving")
         if operation == "prompt":
-            raw["system_prompt"] = {"mode": values["mode"], "text": values["content"]}
+            if values.get("mode") and values["mode"] != "append":
+                raise WorkflowError("System prompt mode must be append")
+            raw["system_prompt"] = {"mode": "append", "text": values["content"]}
         elif operation == "persona":
             raw["persona"] = values["content"]
         elif operation == "coach-bind":
@@ -192,7 +198,7 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions="", *, builtin_skills=(), skill_directories=()):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions="", *, base=None, builtin_skills=(), skill_directories=()):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
     from .builtin_skills import resolve
@@ -228,8 +234,8 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
         documents.update((name, skill.markdown) for name, skill in packaged.items())
     from .store import canonical_json
     from .prompt_composer import compose, manifest
-    system_text = compose(settings, workflow_instructions, memory_context)
-    write("prompt-manifest.json", canonical_json(manifest(settings, system_text)))
+    system_text = compose(settings, base=base, memory_context=memory_context)
+    write("prompt-manifest.json", canonical_json(manifest(settings, system_text, base=base)))
     if system_text:
         # Native plain SYSTEM route expands OMP's Skill/Rule template and tools.
         # Both old modes retain their original text; append now means append to

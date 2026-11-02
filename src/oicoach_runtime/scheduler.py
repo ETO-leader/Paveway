@@ -127,7 +127,7 @@ class Runtime:
             if operation == "begin":
                 arguments(raw, ("workflow_id", "task_id", "conversation_id", "new"), ("workflow_id", "task_id"))
                 workflow = self.provider.describe(raw["workflow_id"])
-                instructions = workflow.render_parts("wake", {})[0] if workflow.instructions_in_system else ""
+                instructions = ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
                                       workflow_revision=workflow.revision, workflow_instructions=instructions,
                                       inference_preference={key: workflow.customization.get("inference", {}).get(key) or getattr(self.config.agent, key)
@@ -327,6 +327,7 @@ class Runtime:
                 self.store._set_metadata(db, persona_key, current_persona)
             binding["customization"] = workflow.customization
             binding["builtin_skills"] = workflow.builtin_skills
+            binding["base"] = workflow.base
             envelope = {
                 "event_id": event["event_id"], "run_id": run_id, "workflow_id": event["workflow_id"],
                 "task_id": event["task_id"], "dedupe_key": event["dedupe_key"],
@@ -479,6 +480,7 @@ class Runtime:
                 raise ConflictError("Bound session is missing; restart cannot create a replacement")
             binding["customization"] = workflow.customization
             binding["builtin_skills"] = workflow.builtin_skills
+            binding["base"] = workflow.base
             await adapter.start(binding, job["restart_id"])
             await adapter.ready()
             state = await adapter.state()

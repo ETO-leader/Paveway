@@ -176,7 +176,7 @@ def parser() -> argparse.ArgumentParser:
                 if action != "show":
                     operation.add_argument("--expected-revision", type=int, required=True)
                 if action == "prompt":
-                    operation.add_argument("--mode", choices=("append", "replace"), default="append")
+                    operation.add_argument("--mode", default="append")
                 if action == "inference":
                     from .customization import THINKING_LEVELS
                     operation.add_argument("--model", default=None)
@@ -640,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                         except UnicodeError:
                             raise RuntimeContractError("Customization content must be valid UTF-8") from None
                     if args.customize_operation == "prompt":
-                        values["mode"] = args.mode
+                        values["mode"] = "append"
                     elif args.customize_operation == "inference":
                         values.update({key: getattr(args, key) for key in ("model", "thinking") if getattr(args, key) is not None})
                     else:

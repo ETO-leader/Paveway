@@ -670,7 +670,6 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(ui.wizard)
         self.client.call("workflow", "customize", "prompt", "echo", "--expected-revision", "0", "--mode", "append",
                          text_files={"--content-file": "另一个窗口已修改"})
-        ui.accept()
         ui.replace_draft("我的未保存草稿")
         ui.accept()
         collect(ui)
@@ -858,9 +857,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         def settings():
             return self.client.call("workflow", "customize", "show", "echo")["settings"]
         os.write(master, b"/prompt edit\r")
-        read_until("append 追加 / replace 替换")
-        os.write(master, b"\r")
-        read_until("系统提示词正文")
+        read_until("追加系统提示词正文")
         os.write(master, "先给提示\n不要直接给答案 ${literal}\r".encode())
         self.until(lambda: settings()["revision"] == 1)
         read_until("自定义设置已保存 · v1")
@@ -896,9 +893,8 @@ class TerminalIntegrationTests(unittest.TestCase):
         self.assertEqual(saved["system_prompt"]["text"], "先给提示\n不要直接给答案 ${literal}")
         self.assertEqual(saved["revision"], 3)
         system = snapshots[0].with_name("system.md").read_text()
-        from oicoach_runtime.customization import IDENTITY_PROMPT
-        from oicoach_runtime.context_budget import CONTEXT_PROMPT
-        self.assertEqual(system, "先给提示\n不要直接给答案 ${literal}\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
+        from oicoach_runtime.prompt_composer import load_core
+        self.assertEqual(system, load_core() + "\n\n先给提示\n不要直接给答案 ${literal}")
         native_skill = snapshots[0].parent / "skills/training-skill/SKILL.md"
         self.assertIn("[user information]", native_skill.read_text())
         self.assertIn("先检查边界情况\n再检查复杂度，保留原文", native_skill.read_text())

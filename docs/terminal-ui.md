@@ -50,7 +50,7 @@ daemon 独立运行。首次可按 README 执行 init/serve；UI 中也可 `/ini
 | `/mode [plan\|checkin\|review]` | 安排/反馈/复盘 |
 | `/select-model [provider/model\|default]` | 本机 OMP 模型目录，输入筛选并选择；明确模型恢复 thinking=auto |
 | `/select-thinking-hardness [LEVEL\|default]` | 选择思考等级；从下次派发生效，default 恢复继承 |
-| `/prompt [show\|edit\|reset]` | 当前 workflow 自定义系统提示词，append/replace，确认恢复默认 |
+| `/prompt [show|edit|reset]` | 当前 workflow 自定义追加系统提示词，确认恢复默认 |
 | `/skills [add\|show NAME\|edit NAME\|enable NAME\|disable NAME\|delete NAME]` | 用户 Skill 管理，方向键选择及内联表单 |
 | `/events`、`/events cancel ID` | 所有任务事件列表、详情；取消前读取版本并确认 |
 | `/schedule` | 输入 RFC3339（带时区）或 now、请求正文后安排事件 |

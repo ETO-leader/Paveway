@@ -16,7 +16,7 @@ def describe(workflow):
     return {"id": workflow.workflow_id, "version": workflow.revision, "workspace": str(workflow.workspace),
             "session_policy": workflow.session_policy, "memory_enabled": workflow.memory_enabled,
             "instructions_in_system": workflow.instructions_in_system,
-            "builtin_skills": list(workflow.builtin_skills)}
+            "builtin_skills": list(workflow.builtin_skills), "base": workflow.base}
 
 
 def create(config, workflow_id, workspace, template="coach"):
@@ -33,17 +33,19 @@ def create(config, workflow_id, workspace, template="coach"):
     except FileExistsError:
         raise ConflictError("Workflow already exists; edit its external files and bump its version") from None
     try:
-        prompt = files("oicoach_runtime").joinpath("bundled", template + ".md").read_text(encoding="utf-8")
         prompt_path = destination / "event.md"
         prompt_path.touch(mode=0o600, exist_ok=False)
-        prompt_path.write_text(prompt)
+        prompt_path.write_text("${event_json}\n", encoding="utf-8")
         manifest = destination / "workflow.toml"
         manifest.touch(mode=0o600, exist_ok=False)
-        manifest.write_text('schema_version = 1\n' + f'id = {json.dumps(workflow_id)}\nversion = "1"\n'
+        manifest_text = ('schema_version = 1\n' + f'id = {json.dumps(workflow_id)}\nversion = "1"\n'
             f'workspace = {json.dumps(str(directory), ensure_ascii=False)}\nsession_policy = "per_task"\n'
-            'start_prompt = "event.md"\nwake_prompt = "event.md"\nrecovery_prompt = "event.md"\n'
-            + ('memory_enabled = true\ninstructions_in_system = true\nbuiltin_skills = ["paveway-tijian"]\n'
-               if template == "coach" else 'memory_enabled = false\n'))
+            'start_prompt = "event.md"\nwake_prompt = "event.md"\nrecovery_prompt = "event.md"\n')
+        if template == "coach":
+            manifest_text += 'base = "oi-coach"\nmemory_enabled = true\nbuiltin_skills = ["paveway-tijian"]\n'
+        else:
+            manifest_text += 'memory_enabled = false\n'
+        manifest.write_text(manifest_text, encoding="utf-8")
         result = describe(WorkflowProvider(root).describe(workflow_id))
     except BaseException:
         for name in ("event.md", "workflow.toml"):
@@ -51,6 +53,45 @@ def create(config, workflow_id, workspace, template="coach"):
         destination.rmdir()
         raise
     return {"api_version": 1, "workflow": result, "template": template, "path": str(destination)}
+
+def upgrade_existing_workflows(root: Path):
+    """In-place upgrade of existing workflow templates and manifests to eliminate old framework contamination."""
+    if not root.is_dir():
+        return
+    import tomllib
+    for directory in root.iterdir():
+        if directory.name.startswith(".") or not directory.is_dir():
+            continue
+        manifest_path = directory / "workflow.toml"
+        if not manifest_path.is_file():
+            continue
+        try:
+            raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            needs_update = False
+            if "instructions_in_system" in raw:
+                raw.pop("instructions_in_system", None)
+                needs_update = True
+            if "base" not in raw and ("paveway-tijian" in raw.get("builtin_skills", []) or raw.get("memory_enabled") or directory.name in ("coach", "gpt")):
+                raw["base"] = "oi-coach"
+                needs_update = True
+            if needs_update:
+                lines = [f'{k} = {json.dumps(v, ensure_ascii=False)}' for k, v in raw.items()]
+                manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            for kind in ("start", "wake", "recovery"):
+                prompt_file = raw.get(f"{kind}_prompt")
+                if prompt_file:
+                    target_file = directory / prompt_file
+                    if target_file.is_file():
+                        content = target_file.read_text(encoding="utf-8")
+                        if len(content) > 100 or "problem_add" in content or "tijian call" in content or "OI 教练工作流" in content:
+                            target_file.write_text("${event_json}\n", encoding="utf-8")
+            event_md = directory / "event.md"
+            if event_md.is_file():
+                content = event_md.read_text(encoding="utf-8")
+                if len(content) > 100 or "problem_add" in content or "tijian call" in content or "OI 教练工作流" in content:
+                    event_md.write_text("${event_json}\n", encoding="utf-8")
+        except Exception:
+            continue
 
 
 def connect_tijian(config, workflow_id, executable, *, read_only=True):

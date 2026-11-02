@@ -56,13 +56,19 @@ export function registerManagement(pi, config, requestSwitch) {
     const actions = {};
     actions.prompt = async ctx => {
         const raw = await settings();
-        const mode = await ctx.ui.select("Prompt", ["show", "append", "replace"]);
-        if (mode === "show") return show(ctx, raw.system_prompt.text || "No custom prompt");
-        if (!mode) return;
-        const value = await edit(ctx, "prompt", "Custom user system prompt", raw.system_prompt.text);
+        const choice = await ctx.ui.select("Prompt", ["show", "edit", "clear"]);
+        if (choice === "show") return show(ctx, raw.system_prompt.text || "No custom prompt (using Paveway default instructions)");
+        if (choice === "clear") {
+            await privateInput("", file => cli(["workflow", "customize", "prompt", config.workflow_id,
+                "--mode", "append", "--expected-revision", String(raw.revision), "--content-file", file]));
+            drafts.delete("prompt"); changed(ctx);
+            return;
+        }
+        if (choice !== "edit") return;
+        const value = await edit(ctx, "prompt", "Custom user append system prompt", raw.system_prompt.text);
         if (value === undefined) return;
         await privateInput(value, file => cli(["workflow", "customize", "prompt", config.workflow_id,
-            "--mode", mode, "--expected-revision", String(raw.revision), "--content-file", file]));
+            "--mode", "append", "--expected-revision", String(raw.revision), "--content-file", file]));
         drafts.delete("prompt"); changed(ctx);
     };
     actions.persona = async ctx => {

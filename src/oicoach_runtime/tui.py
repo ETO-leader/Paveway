@@ -682,18 +682,16 @@ class TerminalUI:
                     text_files={"--content-file": content} if content is not None else None), self.custom_saved)
             def prompt_edit():
                 current = settings["system_prompt"]
-                self.info("编辑系统提示词", "append 追加到 OMP 原生系统提示；replace 替换原生系统提示。两种模式都提供三类已启用 Skill 的索引，正文按需读取；coach 模板仍作为回合请求发送。\nCtrl+J 换行；内容按原文保存，不展开 $ 或执行命令。")
+                self.info("编辑追加系统提示词", "追加到 Paveway 框架系统提示词之后。已启用 Skill 正文按需读取。\nCtrl+J 换行；内容按原文保存，不展开 $ 或执行命令。清空表示使用默认框架指令。")
                 def done(values):
-                    if values["mode"] not in ("append", "replace"):
-                        raise RuntimeContractError("模式只能是 append 或 replace；Shift+Tab 可返回修改")
-                    return save("prompt", "--mode", values["mode"], content=values["content"])
-                self.start_wizard("系统提示词", [("mode", "append 追加 / replace 替换", current["mode"], 16),
-                    ("content", "系统提示词正文 · Ctrl+J 换行", current["text"], 65536)], done)
+                    return save("prompt", "--mode", "append", content=values["content"])
+                self.start_wizard("追加系统提示词", [
+                    ("content", "追加系统提示词正文 · Ctrl+J 换行（清空即恢复默认）", current["text"], 65536)], done)
             def prompt_show():
-                self.info("自定义系统提示词 · " + settings["system_prompt"]["mode"] + " · v" + str(revision),
-                          settings["system_prompt"]["text"] or "使用 OMP 默认系统提示词，三类已启用 Skill 的正文按需读取；尚未追加自定义系统提示词。")
+                self.info("自定义追加系统提示词 · v" + str(revision),
+                          settings["system_prompt"]["text"] or "使用 Paveway 默认系统提示词；尚未追加自定义系统提示词。")
             def prompt_reset():
-                self.confirm("恢复默认系统提示词（不删除 Skill）", lambda: save("prompt", "--mode", "append", content=""))
+                self.confirm("恢复默认系统提示词（清空追加内容，不删除 Skill）", lambda: save("prompt", "--mode", "append", content=""))
             def skill_edit(skill=None, category=None):
                 if category is None:
                     if skill:
@@ -733,9 +731,8 @@ class TerminalUI:
                     (("● " if s["enabled"] else "○ ") + s["name"] + " · " + s["description"], lambda s=s: skill_menu(s)) for s in group])
             if kind == "prompt":
                 if not args:
-                    self.open_picker("系统提示词 · 当前 " + settings["system_prompt"]["mode"],
-                        [("查看当前系统提示词", prompt_show), ("编辑系统提示词", prompt_edit), ("恢复 OMP 默认提示词", prompt_reset)])
-                elif args == ["show"]:
+                    self.open_picker("追加系统提示词",
+                        [("查看追加系统提示词", prompt_show), ("编辑追加系统提示词", prompt_edit), ("清空追加提示词（恢复默认）", prompt_reset)])
                     prompt_show()
                 elif args == ["edit"]:
                     prompt_edit()

@@ -23,7 +23,7 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 | 菜单 | 功能 |
 | --- | --- |
-| prompt | 查看／编辑用户自定义 Prompt，保留 append/replace 原文与模式 |
+| prompt | 查看／编辑／清空用户自定义追加 Prompt |
 | skills | 新建、查看、编辑、启停、删除；OI Introduce、user information、personal skill 同时按需发现 |
 | persona | 编辑独立 Persona，CAS 保存，新的 Paveway Conversation 生效 |
 | profile | 创建／切换 Profile、新 Conversation、重启原生进程；先正常释放旧进程再启动目标环境 |
