@@ -105,6 +105,7 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import ensure_private_directory, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
+from oicoach_runtime.compatibility import check_runtime_compatibility, probe_daemon
 from oicoach_runtime.models import validate_id
 from oicoach_runtime.workflow_setup import create
 
@@ -164,15 +165,8 @@ try:
                 f"指定的 Workflow 不存在：{requested_workflow}。已有 Workflow：{', '.join(existing_workflows)}。"
             )
 
-    def online():
-        try:
-            return request(config.server.socket_path, "status").get("daemon") == "running"
-        except RuntimeContractError as error:
-            if error.code != "daemon_unavailable":
-                raise
-            return False
-
-    if not online():
+    daemon_status = probe_daemon(config.server.socket_path)
+    if daemon_status is None:
         if service.status(path).get("managed"):
             print("正在启动已有的 systemd 用户服务…", flush=True)
             service.control(path, "start")
@@ -190,10 +184,13 @@ try:
                 (config.state_dir / "daemon.pid").write_text(str(daemon_proc.pid), encoding="utf-8")
             print("正在启动后台 Runtime…", flush=True)
         deadline = time.monotonic() + 20
-        while not online():
+        while daemon_status is None:
             if time.monotonic() >= deadline:
                 raise RuntimeContractError("Runtime 启动未就绪；请使用 doctor 或 service logs 检查，不会自动重发请求。")
             time.sleep(0.1)
+            daemon_status = probe_daemon(config.server.socket_path)
+
+    check_runtime_compatibility(daemon_status, path)
 except RuntimeContractError as error:
     print(f"启动失败：{error}", file=sys.stderr)
     sys.exit(1)

@@ -46,6 +46,8 @@ class Runtime:
         self.pending_restart = None
         self.execution_progress = None
         self.sync_wakeup = asyncio.Event()
+        from .build_id import runtime_build_id
+        self.runtime_build_id = runtime_build_id()
 
     def dispatch_api(self, command, raw):
         if command.startswith("native_memory.") or command == "native_history.search":
@@ -166,8 +168,8 @@ class Runtime:
             supervisor = self.store.status()
             health = "degraded" if supervisor["supervisor"]["phase"] in ("backoff", "open") else self.agent_health
             from . import __version__
-            return {"daemon": "running", "runtime_version": __version__, "native_protocol_version": 1,
-                    "milestone": "M4", "agent_health": health, **supervisor}
+            return {"daemon": "running", "runtime_version": __version__, "runtime_build_id": self.runtime_build_id,
+                    "native_protocol_version": 1, "milestone": "M4", "agent_health": health, **supervisor}
         if command == "schedule":
             arguments(raw, ("workflow_id", "task_id", "reason", "dedupe_key", "payload", "at", "after_turn", "run_id"),
                       ("workflow_id", "task_id", "reason", "dedupe_key"))
