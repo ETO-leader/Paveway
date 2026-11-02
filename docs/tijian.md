@@ -119,8 +119,12 @@ oicoach-runtime workflow connect-tijian coach \
 2. 在 OMP Agent 中核对是否通过 `tools/list` 发现了以 `tijian_` 为前缀的原生 MCP 工具。
 3. 在只读模式下，确认写工具已被服务端过滤；读写模式下则具备完整操作能力。
 
-本机 OMP 18.10.4 也会将 MCP 工具挂载为 `xd://` 设备，以 `read xd://` 发现，再通过原生 `write` 向精确设备路径写 JSON 参数调用。工具名和设备路径以运行中的 OMP 发现结果为准，不能只检查模型 provider 的 function 列表就断言未连接。此路径已用实际 OMP 与本地 stdio fixture 验证；不代表 Windows Desktop 题库或真实 Tijian MCP 已通过本机验收。
+Paveway 现已切换至 OMP 原生 `--system-prompt-template` 机制。在此机制下，OMP 原生模板中的 `# xd:// Tool Devices` 与 `xdevDocs` 完整保留并由 OMP 动态求值。
+当连接 Tijian MCP 时，OMP 会自动在 Project Context 中注入 `## MCP Tool Routes`（例如 `"tijian_problem_get" → xd://mcp__tijian_problem_get`），并在系统指令中明确指导模型：
+- 通过 `read xd://...` 查看工具使用文档与 JSON Schema（按需读取，不预先向系统提示词全量塞入所有 Schema）；
+- 通过原生 `write` 向对应设备路径（如 `xd://mcp__...`）写入 JSON 参数完成工具调用。
 
+工具名和设备路径以运行中 OMP 动态发现的结果为准，Paveway Core 与 Skill 不硬编码任何工具 Schema。
 ### Windows 与 WSL2 运行边界
 - 在 WSL2 Linux 环境中运行的 `tijian-mcp` 默认访问 Linux 的 XDG 数据目录（如 `~/.local/share/tijian`）。
 - Windows Desktop 版 Tijian 运行在 Windows 主机环境，默认使用 Windows 的 AppData/Local 数据目录。

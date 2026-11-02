@@ -27,15 +27,18 @@ CLI 的 --model/--thinking 至少给一项；传空串清除该覆盖。选择�
 `/prompt` 打开查看、编辑、恢复默认的选择器；也可直接用 `/prompt show`、`/prompt edit`、`/prompt reset`。
 
 编辑时先选模式，再输入正文：
-
-- 系统提示词采用分层架构：Layer 1 Paveway Core（基础身份、执行约束、工具与记忆契约）、Layer 2 内置角色策略（如 oi-coach 教学原则）、Layer 3 用户自定义（追加 Prompt 与 Persona）、Layer 4 动态 Runtime Context（记忆快照等）。
+- 系统提示词采用分层与动态组装架构：
+  1. **Paveway 静态四层 Prompt**：Layer 1 Paveway Core（基础身份、执行约束、工具与记忆契约）、Layer 2 内置角色策略（如 oi-coach 教学原则）、Layer 3 用户自定义（追加 Prompt 与 Persona）、Layer 4 动态 Runtime Context（记忆快照等）。
+  2. **OMP 原生 Handlebars 动态系统模板**：Paveway 四层指令经字面值安全转义后，与 OMP 原生动态占位符（Skills、Rules、工具目录 `toolInventory` / `toolInfo`、`xd://` 设备指引等）组装为 Handlebars 模板源 `system-template.md`，并在启动时唯一通过 OMP 原生 `--system-prompt-template` 传递。彻底停用旧的 `--system-prompt` 入口。
+  3. **Skill 按需读取**：系统提示词只提供 `<skills>` 索引（名称与用途描述），不全量展开正文；模型按需通过 `skill://<name>` 读取。
+  4. **MCP Server Instructions 自动加载**：由 OMP 原生根据连接的服务动态挂载与加载。
+  5. **MCP 工具详细说明按需发现**：通过原生 `# xd:// Tool Devices` 指引模型通过 `read xd://` 查阅工具文档与 Schema，通过 `write xd://...` 调用工具，不在 Core 或静态提示词中固定硬编码工具 Schema。
 - 用户系统提示词仅支持 `append` 追加模式，不再支持 `replace` 模式；用户不能通过 `/paveway prompt` 覆盖 Paveway Core 或角色策略。清空追加 Prompt 表示使用 Paveway 默认框架指令。
 
-Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Esc 取消。正文最多 64 KiB，中文按 UTF-8 字节计算。原样保存 `$` 等文字，不进行模板替换、shell 执行或表达式求值。正文留空表示仅使用 Paveway 默认框架指令。
+Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Esc 取消。正文最多 64 KiB，中文按 UTF-8 字节计算。原样保存 `$`、`{{...}}`、反斜线等特殊文字；在生成系统模板时自动进行字面值安全转义，不会被 OMP 误当作 Handlebars 模板代码执行。正文留空表示仅使用 Paveway 默认框架指令。
 `/prompt show` 显示用户自定义的部分，不冒充当前 OMP 原生系统提示词的完整展开。`/prompt reset` 确认后清空自定义部分，不删除 Skill，也不改动 OMP 原有项目/全局配置。
 
-`event.md` 仍由外部 workflow 管理。旧 manifest 缺省 `instructions_in_system=false` 时，规则及 envelope 保持原来的用户消息通道；新建 coach 使用 true，将可信模板的静态前缀放入系统 prompt，仅将事件 JSON（mode、用户输入和 Runtime 数据）作为用户消息。模板必须恰有一个位于末尾的 `${event_json}`；在替换前拆分，payload 不会提升为系统指令。此功能把自定义文本通过 OMP 的 `--append-system-prompt` 或 `--system-prompt` 放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。
-
+`event.md` 仍由外部 workflow 管理。旧 manifest 缺省 `instructions_in_system=false` 时，规则及 envelope 保持原来的用户消息通道；新建 coach 使用 true，将可信模板的静态前缀放入系统 prompt，仅将事件 JSON（mode、用户输入和 Runtime 数据）作为用户消息。模板必须恰有一个位于末尾的 `${event_json}`；在替换前拆分，payload 不会提升为系统指令。此功能确保自定义文本通过 OMP 原生系统模板机制放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。
 0.18.0 起，每回合的原生系统提示都会附加命名约定：自称 GPT 或使用第一人称，不以 coaching title 自称。此约定在默认提示、append、replace 及 Skill/工具停用时都生效，保存在本轮 system.md 中；不会改写 event.md、用户保存的自定义正文、Skill 或旧历史。UI 的 `/prompt show` 仍只显示用户自定义部分。
 
 系统 prompt 包含及时维护记忆及按需检索要求；启用记忆时追加当轮有界 `Runtime memory snapshot` 数据段。2026-10-30 起按用户要求取消固定 10k token 限制，使用 OMP 原生窗口及压缩；记忆快照仅受 IPC 传输字节边界约束。用户保存的自定义正文和 Skill 不变。
@@ -108,8 +111,11 @@ OMP 只将名称、description 和原生读取指引放进系统上下文；Agen
 
 保存成功后，下次**派发**请求时读取新设置，无需重启 daemon 或切换 task。已经排队但尚未派发的请求采用派发时版本；已经开始的回合保持其旧快照。同一 task 可继续使用原会话，历史仍会影响模型，并不会因修改/删除提示词或 Skill 而抹除旧对话。升级前已进入上下文的 Skill 正文或之前读取的内容也可能留在旧历史里；按需读取减少之后的预先注入，不清除历史，需完全隔离时可用 `/new` 新建 task。
 
-每轮将设置快照、系统提示词和原生 Skill 文件保存在 `state_dir/sessions/<binding>/customizations/<run_id>/`，目录 0700、文件 0600。快照不会被后续编辑覆盖，作为该回合的审计资料保留；备份与隐私管理应包括这些文件。恢复默认/删除 Skill 不会删除旧快照或原生会话历史。
-
+每轮将设置快照、静态纯文本提示词、Handlebars 模板源和原生 Skill 文件保存在 `state_dir/sessions/<binding>/customizations/<run_id>/`，目录 0700、文件 0600：
+- `system.md`：Paveway 自身四层指令的纯文本快照，用于本地审计。
+- `system-template.md`：交由 OMP 原生 Handlebars 渲染器求值的完整模板源，包含转义后的静态指令及 OMP 原生动态占位符。
+- `prompt-manifest.json`：记录模板模式（`omp-handlebars`）、版本、对应摘要（`system_digest`、`template_digest`）和必要元数据。
+快照不会被后续编辑覆盖，作为该回合的审计资料保留；备份与隐私管理应包括这些文件。恢复默认/删除 Skill 不会删除旧快照或原生会话历史。
 每次保存携带所读 revision，并在文件锁内检查、原子替换。两个窗口同时编辑时，后保存者得到 conflict，不覆盖新版本；UI 保留表单和输入。Esc 关闭表单后重新打开，核对最新内容再保存。不会强行把已提交的请求重新发送。
 
 此功能沿用 UI → 公开 CLI 子进程的架构，不直接写数据库；无新的 daemon API、DB/config/manifest 版本变更。升级到支持本功能的 wheel 后，需在无活动回合时重启已有 daemon 一次；之后编辑自定义设置不再需要重启。

@@ -314,7 +314,7 @@ class DoctorTests(TemporaryCase):
 
     def test_probe_flags_are_capabilities_not_rpc_verification(self):
         executable = self.root / "fake-omp"
-        executable.write_text('#!/bin/sh\ncase "$1" in\n--version) echo "omp/18.10.4";;\n--help) echo "--cwd --session-dir --resume --mode --no-ui";;\nesac\n')
+        executable.write_text('#!/bin/sh\ncase "$1" in\n--version) echo "omp/18.10.4";;\n--help) echo "--cwd --session-dir --resume --mode --no-ui --system-prompt-template";;\nesac\n')
         executable.chmod(0o700)
         checks = probe_omp(str(executable))
         self.assertEqual(checks[0]["status"], "PASS")

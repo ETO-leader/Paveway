@@ -83,9 +83,10 @@ class CoachTests(unittest.TestCase):
         raw = {**settings, "system_prompt": {"mode": "append", "text": "USER_RAW_{{literal}}"}}
         before = json.dumps(raw)
         argv = customization.snapshot(raw, root, "append", True)
-        self.assertEqual(argv[0], "--system-prompt")
-        self.assertNotIn("--system-prompt-template", argv)
-        self.assertIn("USER_RAW_{{literal}}", Path(argv[1]).read_text())
+        self.assertEqual(argv[0], "--system-prompt-template")
+        self.assertNotIn("--system-prompt", argv)
+        self.assertIn("USER_RAW_{{literal}}", (Path(argv[1]).parent / "system.md").read_text())
+        self.assertIn('USER_RAW_{{default "{{" ""}}literal}}', Path(argv[1]).read_text())
         self.assertEqual(json.dumps(raw), before)
         version = json.loads((Path(argv[1]).parent / "prompt-manifest.json").read_text())
         self.assertEqual(version, manifest(raw, compose(raw)))

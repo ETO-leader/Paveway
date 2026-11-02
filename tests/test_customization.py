@@ -100,19 +100,24 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(settings, session, "run1", True)
-        self.assertIn("--system-prompt", argv)
-        old_prompt = Path(argv[1]).read_text()
+        self.assertIn("--system-prompt-template", argv)
+        self.assertNotIn("--system-prompt", argv)
+        old_template = Path(argv[1]).read_text()
+        old_prompt = (Path(argv[1]).parent / "system.md").read_text()
         self.assertEqual(old_prompt, RUNTIME_PROMPT + "\n\n旧系统提示")
-        self.assertNotIn("原生正文", old_prompt)
+        self.assertIn(RUNTIME_PROMPT + "\n\n旧系统提示", old_template)
+        self.assertNotIn("原生正文", old_template)
         overlay = json.loads(Path(argv[3]).read_text())
         skill = Path(overlay["skills"]["customDirectories"][0]) / "native-skill/SKILL.md"
         self.assertIn("原生正文", skill.read_text())
         self.update("prompt", mode="append", content="新系统提示")
-        self.assertEqual(Path(argv[1]).read_text(), old_prompt)
+        self.assertEqual((Path(argv[1]).parent / "system.md").read_text(), old_prompt)
+        self.assertEqual(Path(argv[1]).read_text(), old_template)
         self.assertEqual(skill.stat().st_mode & 0o777, 0o600)
         latest = custom.show(self.config, "coach")["settings"]
         disabled = custom.snapshot(latest, session, "run2", False)
-        self.assertEqual(disabled[0], "--system-prompt")
+        self.assertEqual(disabled[0], "--system-prompt-template")
+        self.assertNotIn("--system-prompt", disabled)
         self.assertNotIn("--config", disabled)
         self.assertEqual(len(latest["skills"]), 1)
 
@@ -125,8 +130,10 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "identity-session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(settings, session, "identity", False)
-        self.assertEqual(argv[0], "--system-prompt")
-        self.assertEqual(Path(argv[1]).read_text(), RUNTIME_PROMPT)
+        self.assertEqual(argv[0], "--system-prompt-template")
+        self.assertNotIn("--system-prompt", argv)
+        self.assertEqual((Path(argv[1]).parent / "system.md").read_text(), RUNTIME_PROMPT)
+        self.assertIn(RUNTIME_PROMPT, Path(argv[1]).read_text())
         self.assertEqual(event.read_bytes(), original)
         self.assertEqual(json.dumps(settings), before)
 
@@ -140,9 +147,11 @@ class CustomizationTests(unittest.TestCase):
         session.mkdir(mode=0o700)
         settings = self.update("prompt", mode="append", content="CUSTOM_SYSTEM")
         argv = custom.snapshot(settings, session, "append", True)
-        self.assertEqual(argv[0], "--system-prompt")
-        prompt = Path(argv[1]).read_text()
+        self.assertEqual(argv[0], "--system-prompt-template")
+        self.assertNotIn("--system-prompt", argv)
+        prompt = (Path(argv[1]).parent / "system.md").read_text()
         self.assertEqual(prompt, RUNTIME_PROMPT + "\n\nCUSTOM_SYSTEM")
+        self.assertIn(RUNTIME_PROMPT + "\n\nCUSTOM_SYSTEM", Path(argv[1]).read_text())
         for category in custom.SKILL_CATEGORIES:
             self.assertNotIn("BODY_" + category, prompt)
         self.assertNotIn("DO_NOT_LOAD", prompt)
@@ -157,7 +166,7 @@ class CustomizationTests(unittest.TestCase):
             else:
                 self.assertFalse(path.exists())
         disabled = custom.snapshot(settings, session, "globally-disabled", False)
-        self.assertEqual(Path(disabled[1]).read_text(), RUNTIME_PROMPT + "\n\nCUSTOM_SYSTEM")
+        self.assertEqual((Path(disabled[1]).parent / "system.md").read_text(), RUNTIME_PROMPT + "\n\nCUSTOM_SYSTEM")
 
     def test_legacy_category_reading_preserves_records_and_edits_preserve_category(self):
         settings = self.update("skill-put", name="old-skill", description="old", content="legacy body")
@@ -172,7 +181,8 @@ class CustomizationTests(unittest.TestCase):
         session = self.root / "legacy-session"
         session.mkdir(mode=0o700)
         argv = custom.snapshot(loaded, session, "legacy", True)
-        self.assertIn("--system-prompt", argv)
+        self.assertIn("--system-prompt-template", argv)
+        self.assertNotIn("--system-prompt", argv)
         native = Path(json.loads(Path(argv[3]).read_text())["skills"]["customDirectories"][0])
         self.assertIn("[personal skill] old", (native / "old-skill/SKILL.md").read_text())
         self.assertEqual((session / "customizations/legacy/system.md").read_text(), RUNTIME_PROMPT)

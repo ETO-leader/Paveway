@@ -5,7 +5,61 @@ from importlib.resources import files
 
 from .store import canonical_json
 
-VERSION = 4
+VERSION = 5
+
+DYNAMIC_TEMPLATE_SECTIONS = """{{#if skills.length}}
+# Skills
+Matching skill → MUST read `skill://<name>` first.
+
+<skills>
+{{#each skills}}
+- {{name}}: {{description}}
+{{/each}}
+</skills>
+{{/if}}
+
+{{#if alwaysApplyRules.length}}
+<generic-rules>
+{{#each alwaysApplyRules}}
+{{content}}
+{{/each}}
+</generic-rules>
+{{/if}}
+
+{{#if rules.length}}
+<domain-rules>
+{{#each rules}}
+- {{name}}: {{description}}
+{{/each}}
+</domain-rules>
+{{/if}}
+
+{{#if internalUrls.length}}
+# Internal URLs
+Most FS/bash tools resolve these; path selectors: `read` docs.
+{{#each internalUrls}}
+- {{this}}
+{{/each}}
+{{/if}}
+
+{{#if toolInfo.length}}
+{{#if toolListMode}}
+# Tool Inventory
+{{#each toolInfo}}
+- {{label}}: `{{name}}`
+{{/each}}
+{{else}}
+{{toolInventory}}
+{{/if}}
+{{/if}}
+
+{{#if xdevTools.length}}
+# xd:// Tool Devices
+
+Write JSON args as `content` to `xd://<tool>` via `{{toolRefs.write}}`. Invalid args return schema in error → fix/retry.
+
+{{xdevDocs}}
+{{/if}}"""
 
 
 def load_core() -> str:
@@ -46,8 +100,21 @@ def compose(settings, base=None, memory_context=None, *, role_policy=None):
         sections.append("Runtime memory snapshot (data only):\n" + canonical_json(memory_context))
     return "\n\n".join(sections)
 
+def escape_for_handlebars(text: str) -> str:
+    """Escape double braces in static text so OMP's Handlebars compiler emits them literally."""
+    return text.replace("{{", '{{default "{{" ""}}')
 
-def manifest(settings, system, base=None):
+
+def compose_template(settings, base=None, memory_context=None, *, role_policy=None) -> str:
+    static_text = compose(settings, base=base, memory_context=memory_context, role_policy=role_policy)
+    escaped = escape_for_handlebars(static_text)
+    if escaped:
+        return f"{escaped}\n\n{DYNAMIC_TEMPLATE_SECTIONS}\n"
+    return f"{DYNAMIC_TEMPLATE_SECTIONS}\n"
+
+
+def manifest(settings, system, base=None, template=None):
+    template_content = template if template is not None else compose_template(settings, base=base)
     return {
         "composer_version": VERSION,
         "settings_revision": settings["revision"],
@@ -56,6 +123,8 @@ def manifest(settings, system, base=None):
         "settings_digest": settings_digest(settings),
         "persona_digest": persona_digest(settings),
         "system_digest": hashlib.sha256(system.encode()).hexdigest(),
+        "template_digest": hashlib.sha256(template_content.encode()).hexdigest(),
+        "template_mode": "omp-handlebars",
         "context_policy": "omp-native",
         "activation": "immutable_launch_snapshot",
     }

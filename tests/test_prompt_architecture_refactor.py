@@ -316,8 +316,8 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
     def test_7_snapshot_and_skill_discovery_configuration(self):
         """Test 7: Snapshot and Skill Discovery Configuration.
 
-        system.md is generated and passed via --system-prompt, built-in Skills are
-        configured and discoverable via omp.yml customDirectories overlay.
+        system.md and system-template.md are generated, passed via --system-prompt-template,
+        built-in Skills are configured and discoverable via omp.yml customDirectories overlay.
         """
         create(self.config, "coach", self.workspace, template="coach")
         workflow = WorkflowProvider(self.workflow_root).describe("coach")
@@ -328,13 +328,23 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         argv = snapshot(workflow.customization, session, "omp_run", True,
                         base=workflow.base, builtin_skills=workflow.builtin_skills)
 
-        self.assertIn("--system-prompt", argv)
-        system_path = Path(argv[argv.index("--system-prompt") + 1])
+        self.assertIn("--system-prompt-template", argv)
+        self.assertNotIn("--system-prompt", argv)
+        template_path = Path(argv[argv.index("--system-prompt-template") + 1])
+        self.assertTrue(template_path.is_file())
+        template_content = template_path.read_text(encoding="utf-8")
+        self.assertIn("# Paveway Core", template_content)
+        self.assertIn("OI 训练与教学策略", template_content)
+        self.assertIn("{{#if skills.length}}", template_content)
+        self.assertIn("{{#if xdevTools.length}}", template_content)
+
+        # system.md is also written as an audit snapshot
+        system_path = template_path.parent / "system.md"
         self.assertTrue(system_path.is_file())
         system_content = system_path.read_text(encoding="utf-8")
         self.assertIn("# Paveway Core", system_content)
         self.assertIn("OI 训练与教学策略", system_content)
-
+        self.assertNotIn("{{#if skills.length}}", system_content)
         # Built-in Skill discovery via omp.yml overlay
         self.assertIn("--config", argv)
         config_path = Path(argv[argv.index("--config") + 1])

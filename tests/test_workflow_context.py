@@ -30,7 +30,8 @@ class WorkflowContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             argv = snapshot(settings, root, "system-layer", False, memory_context={"notes": []}, base="oi-coach")
             text = Path(argv[1]).read_text()
-            self.assertEqual(argv[0], "--system-prompt")
+            self.assertEqual(argv[0], "--system-prompt-template")
+            self.assertNotIn("--system-prompt", argv)
             # Layer 1: Core -> Layer 2: Role policy -> Layer 3: User prompt + Persona -> Layer 4: Memory snapshot
             self.assertIn("# Paveway Core", text)
             self.assertIn("OI 训练与教学策略", text)
