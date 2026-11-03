@@ -508,3 +508,11 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 Memory／后台重启与禁用权限定向回归 **9 项通过（1.838 秒）**，日志 `/tmp/paveway-memory-audit-unit.log`。强化真实 OMP + 本地 fixture 验收：原生 put 后停止并重启 daemon，在全新 Conversation 的 SYSTEM 快照中找到持久笔记，确认不是旧聊天历史回放；另完整驱动 put/show/update/旧版本写入拒绝/delete/list 工具链，核对 v3 tombstone、删除后 recall 不再注入。原生 **2 项全部通过（7.951 秒）**，`/tmp/paveway-memory-audit-native.log`。没有付费模型调用。
 
 限制已明确写入 memory.md：原生 SYSTEM 记忆为进程启动时快照，新增笔记能立刻通过工具读取，但不会热替换 SYSTEM；重启原生进程刷新，后台每次派发读取当时笔记。快照 64KiB、单条 4096 字节，无固定 10k token 裁剪；自动记笔记仍依赖 GPT 成功调用工具，不等同于逐句自动提取。
+
+## 2026-11-03 — 在线唤醒消息的可见提示
+
+用户反馈唤醒异常。只读核查近期事件已有 prompt_result completed、settled、正常退出及非空提醒／结果持久化，队列不在熔断；不能把历史错误码当作本次执行失败。发现原生扩展轮询只更新 Inbox 数字，用户未主动打开收件箱时缺少明显的到达提示。本轮没有向正式队列插入事件、重发已有任务、确认用户已读或中断原生前台。
+
+新增原生 UI 到达通知：首次刷新仅记录现有消息，后续轮询遇到新的未确认 delivery_id 时发一次不含正文的通知，引导 /inbox 查看。按 ID 防重复，状态只到 offered，不自动 acknowledged，不 sendMessage 或 triggerTurn，不向模型上下文注入通知，不在重连时重播历史；观察集合有大小界限。UI 关闭时原持久 Inbox 行为不变，原生扩展需重新进入 UI 加载，daemon 及已有排程无需重启／重建。
+
+真实 OMP／PTY 管理与唤醒回归 **10 项全部通过（48.470 秒）**，`/tmp/paveway-wakeup-notice-regression.log`。新用例覆盖到期通知、未发送草稿在通知后仍可原样提交、通知不进模型请求、/inbox 读取并取消确认不变成已读、重新进入不播报旧通知，保留 UI 退出后执行与 daemon 重启恢复场景。唤醒／Inbox 单元 **4 项通过（0.198 秒）**，`/tmp/paveway-wakeup-notice-unit.log`。新测试模型仅本地 fixture；具体用户提醒内容、事件 ID 和执行结果不进入源码。

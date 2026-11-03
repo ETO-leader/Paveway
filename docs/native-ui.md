@@ -67,6 +67,8 @@ Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当�
 
 明确提醒在到期领取时先持久化，后台 GPT 执行结果另存一条消息。created、offered、用户明确 acknowledged 分开；模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；目前没有外部桌面／手机推送，也不自动把消息重注入 Agent。
 
+UI 在线时轮询到新的提醒／结果，会显示一次“新的唤醒消息”通知及 `/inbox` 查看提示，不再只有状态栏数字变化。通知不包含消息正文、不触发模型、不确认已读，也不清空输入草稿；重新打开 UI 只显示已有未确认数，不重播旧通知。后台刷新间隔约 10 秒，后台执行结果可能晚于到期提醒。更新这部分扩展后，保存草稿并重新进入原生 UI 生效，不必为此重启 daemon 或重新排程已有任务。
+
 ## 隔离、归档与回退
 
 Profile 的逻辑身份独立于流程模板。新 Profile 复用选定流程并分配私有 runtime workflow，原工作流隐式映射原同名 Profile；不会复制源 Profile 的私人 Skills、Prompt 和笔记，不重写旧历史。Persona 与通用 state 使用现有版本／CAS，原配置保留私密备份。模型配置、Prompt、Skill 和 Persona 通过原独立用户数据 Git 同步；没有 dedicated remote 时只在本地 commit。

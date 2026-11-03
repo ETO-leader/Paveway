@@ -47,6 +47,8 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
     let upcoming = [];
     let unread = 0;
     let unavailable = false;
+    let inboxInitialized = false;
+    const observedDeliveries = new Set();
     const status = () => {
         if (!context) return;
         if (unavailable) return context.ui.setStatus("paveway-wakeup", "Runtime unavailable or owner uncertain · no automatic replay");
@@ -61,6 +63,21 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
             upcoming = await call("list", {});
             const inbox = await inboxCall("list");
             unread = inbox.unacknowledged;
+            const fresh = inbox.messages.filter(row => !observedDeliveries.has(row.delivery_id) && row.state !== "acknowledged");
+            for (const row of inbox.messages) observedDeliveries.add(row.delivery_id);
+            // Existing Inbox contents remain visible on reconnect without
+            // replaying old notifications. A notice is not acknowledgement,
+            // a model message, or evidence that the user has seen the result.
+            if (inboxInitialized && fresh.length && context) {
+                const reminders = fresh.filter(row => row.kind === "reminder").length;
+                const results = fresh.filter(row => row.kind === "result").length;
+                context.ui.notify(`Paveway · 新的唤醒消息：提醒 ${reminders} 条，执行结果 ${results} 条。输入 /inbox 查看详情。`, "info");
+            }
+            inboxInitialized = true;
+            if (observedDeliveries.size > 1000) {
+                observedDeliveries.clear();
+                for (const row of inbox.messages) observedDeliveries.add(row.delivery_id);
+            }
             unavailable = false;
             status();
         } catch (error) { unavailable = true; status(); throw error; }

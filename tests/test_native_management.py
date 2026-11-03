@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -81,6 +82,33 @@ class NativeManagementTests(NativeFixture):
         self.assertIn("旧 [tijian] 配置已保留但不再执行".encode(), raw)
         self.assertEqual(self.path.read_text(), original)
         self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
+
+    def test_due_inbox_notice_preserves_draft_and_does_not_ack_or_replay(self):
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/wakeup in 1s UI_NOTICE_FIXTURE\r")
+        until("native_wakeup")
+        draft = "UNSENT_DRAFT_MUST_SURVIVE_NOTICE"
+        send(draft)
+        until("新的唤醒消息", lambda: len(request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]) >= 2)
+        self.assertFalse(any(draft in json.dumps(body["messages"]) for body in self.server.requests))
+        send("\r")
+        until("M0_REPLY", lambda: any(draft in json.dumps(body["messages"]) for body in self.server.requests) and
+            request(self.config.server.socket_path, "frontend.list")[0]["status"] == "idle")
+        self.assertFalse(any("新的唤醒消息" in json.dumps(body["messages"], ensure_ascii=False) for body in self.server.requests))
+        send("/inbox\r")
+        until("Paveway Inbox")
+        send("\r")
+        until("Acknowledge this message?")
+        send(b"\x1b")
+        for _ in range(3): pump(.1)
+        exit_ui()
+        rows = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]
+        self.assertEqual({row["kind"] for row in rows}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] != "acknowledged" for row in rows))
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        for _ in range(3): pump(.1)
+        self.assertNotIn("新的唤醒消息".encode(), raw)
+        exit_ui()
 
     def test_prompt_dialog_saves_privately_without_a_model_turn(self):
         process, raw, send, until, pump, exit_ui = self.open_ui()
