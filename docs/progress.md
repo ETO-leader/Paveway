@@ -500,3 +500,11 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 修正原生启动 UX：同一 workflow/task 的最近或显式 Conversation 未释放时，提供原生启动前恢复选择。uncertain 提供明确恢复、新建和取消；其他未释放状态没有恢复选项。恢复仍调用 Runtime 的原进程／启动身份／文件锁／档案完整性检查，后端拒绝时不会自动新建或重发；新建不修改旧记录，跨 scope 恢复被拒绝。此修复在客户端加载，不需要为此重启正在正常工作的 daemon。
 
 所有权／启动选择定向单元 **9 项通过（0.186 秒）**，`/tmp/paveway-startup-recovery-unit.log`。真实 OMP + 隔离 provider 的故障恢复 **3 项通过（15.085 秒）**，`/tmp/paveway-startup-recovery-native.log`，包括恢复对话框接续原 Session、模型请求数不增加，以及活会话不可接管的原检查。原生管理回归 **6 项通过（20.892 秒）**，`/tmp/paveway-recovery-management-regression.log`。此处实际用户环境 smoke 未发送模型输入；已有异常执行的外部副作用仍由用户核对，不宣称 exactly-once。
+
+## 2026-11-03 — 记忆链路复验
+
+按用户要求检查记忆启用、系统注入、SQLite 持久化及原生 AgentTool。实际运行会话启用 memory，系统含记忆工具指引及启动快照，token_limit=null、byte_limit=65536。通过当前 owner/generation 绑定的 native_memory.show 逐条只读回验，版本／正文与 recall 一致；未在正式笔记库创建、修改或删除任何内容。现场笔记数量、正文、key 和用户历史不记录到源码。历史读取错误需区分创建前的 not_found 与已解决的旧 daemon Skill 校验问题，不把它们误报为本轮持久化失败。
+
+Memory／后台重启与禁用权限定向回归 **9 项通过（1.838 秒）**，日志 `/tmp/paveway-memory-audit-unit.log`。强化真实 OMP + 本地 fixture 验收：原生 put 后停止并重启 daemon，在全新 Conversation 的 SYSTEM 快照中找到持久笔记，确认不是旧聊天历史回放；另完整驱动 put/show/update/旧版本写入拒绝/delete/list 工具链，核对 v3 tombstone、删除后 recall 不再注入。原生 **2 项全部通过（7.951 秒）**，`/tmp/paveway-memory-audit-native.log`。没有付费模型调用。
+
+限制已明确写入 memory.md：原生 SYSTEM 记忆为进程启动时快照，新增笔记能立刻通过工具读取，但不会热替换 SYSTEM；重启原生进程刷新，后台每次派发读取当时笔记。快照 64KiB、单条 4096 字节，无固定 10k token 裁剪；自动记笔记仍依赖 GPT 成功调用工具，不等同于逐句自动提取。
