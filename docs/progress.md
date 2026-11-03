@@ -492,3 +492,11 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 再次核查确认，Skill 后端及新旧 UI 的源码已统一为 64KiB，现场失败仍来自未更新的 0.21.1 daemon。确认没有活动／待执行／等待锚点任务，全部原生 owner 已释放且服务属于当前配置后，重启受管 systemd 用户服务，实际运行版本更新为 0.21.2。未重发 blocked 或 uncertain 事件。
 
 对已有长 Skill 完成真实 daemon 校验：schedule 接口先加载 Workflow／Skills，再在入队前拒绝故意设置的无效 task_id；返回预期 invalid_input 而非 invalid_workflow。前后事件计数与自定义文件字节均不变，无新测试事件或模型请求。此检查证明服务已加载新校验，不冒充完成了一次真实模型唤醒。源码中的普通 ask／聊天消息仍有独立 32KiB 上限，不是 Skill 正文上限；本次没有扩大普通消息或数据库 payload 边界。
+
+## 2026-11-03 — 启动时提供异常会话恢复入口
+
+用户实际启动提示 Native conversation has an active or uncertain owner。后台及配置均正常；阻碍是异常结束后留下的 uncertain 登记。现场检查确认旧 guardian/OMP 均退出、文件锁空闲、历史持久化有效后，先将原生 Session 复制到私密 recovery-backups，再通过既有 frontend.recover 接口解除登记。未重播请求、重试任务或修改 Tijian；未把实际用户历史、路径标识和内容写入源码。实际项目 ./paveway.sh 的无提示词 PTY smoke 随后进入原生 UI，/exit 正常返回 0。
+
+修正原生启动 UX：同一 workflow/task 的最近或显式 Conversation 未释放时，提供原生启动前恢复选择。uncertain 提供明确恢复、新建和取消；其他未释放状态没有恢复选项。恢复仍调用 Runtime 的原进程／启动身份／文件锁／档案完整性检查，后端拒绝时不会自动新建或重发；新建不修改旧记录，跨 scope 恢复被拒绝。此修复在客户端加载，不需要为此重启正在正常工作的 daemon。
+
+所有权／启动选择定向单元 **9 项通过（0.186 秒）**，`/tmp/paveway-startup-recovery-unit.log`。真实 OMP + 隔离 provider 的故障恢复 **3 项通过（15.085 秒）**，`/tmp/paveway-startup-recovery-native.log`，包括恢复对话框接续原 Session、模型请求数不增加，以及活会话不可接管的原检查。原生管理回归 **6 项通过（20.892 秒）**，`/tmp/paveway-recovery-management-regression.log`。此处实际用户环境 smoke 未发送模型输入；已有异常执行的外部副作用仍由用户核对，不宣称 exactly-once。

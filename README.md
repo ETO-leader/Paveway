@@ -199,6 +199,7 @@ flowchart LR
 - `daemon_unavailable`：确认 CLI/UI 使用同一配置，检查 `service status/logs` 或前台 `serve`。升级旧 daemon 时应先确认空闲，再重启；不打断活动请求来加载新协议。
 - 旧 `[tijian]` 配置：0.21.1 起兼容读取并在配置重写时保留已有字段，但不启动已删除的 CLI 桥接器。一键启动会提示停用状态；通过 `/paveway tijian` 或 `workflow connect-tijian` 配置原生 MCP，不需要删除整份旧配置或重建历史。
 - `uncertain`：先检查历史及外部副作用，不自动重发。`frontend list/show/recover` 在验证旧进程死亡及锁释放后显式恢复原生所有权；若 Session 未落盘／损坏，保留旧记录并用 `native --new`。
+- 默认接续遇到旧 owner 未释放时，启动器提供恢复／新建／取消选择；仍活跃的 owner 不提供恢复接管。恢复需用户明确选择并经过上述检查，避免反复只报抽象的 conflict。
 - Profile／Persona 或 Workflow revision 变化：新建 Conversation，旧对话和快照保留。
 - 模型／MCP 不可用：检查原生连接状态及配置，排程成功不证明模型或工具已执行。
 - 回退界面：`./paveway.sh --legacy-ui` 或 `PAVEWAY_UI=legacy ./paveway.sh`；旧 `ui`、CLI 和 RPC 都保留。

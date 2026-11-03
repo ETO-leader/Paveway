@@ -15,6 +15,24 @@ from oicoach_runtime.ipc import request
 class NativeRecoveryTests(NativeFixture):
     open_ui = test_native_management.NativeManagementTests.open_ui
 
+    def test_startup_recovery_dialog_resumes_without_replaying_a_prompt(self):
+        saved = self.chat("PRESERVE_RECOVERY_DIALOG_SOURCE")
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        owner = request(self.config.server.socket_path, "frontend.list")[0]
+        process.kill()
+        process.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(alive(owner.get(k + "_pid"), owner.get(k + "_identity")) for k in ("guardian", "omp")):
+            time.sleep(.03)
+        self.restart_daemon()
+        count = len(self.server.requests)
+        resumed, _, _, _, _, exit_resumed = self.open_ui(recover=True)
+        current = request(self.config.server.socket_path, "frontend.list")[0]
+        self.assertEqual(current["conversation_id"], saved["conversation_id"])
+        self.assertEqual(current["session_id"], saved["session_id"])
+        self.assertEqual(len(self.server.requests), count)
+        exit_resumed()
+
     def restart_daemon(self):
         self.stop_daemon()
         self.daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],

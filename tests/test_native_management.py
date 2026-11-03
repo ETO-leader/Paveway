@@ -15,7 +15,7 @@ from oicoach_runtime.ipc import request
 
 
 class NativeManagementTests(NativeFixture):
-    def open_ui(self, launcher=False):
+    def open_ui(self, launcher=False, recover=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         argv = [sys.executable, "-m", "oicoach_runtime", "native"]
@@ -66,6 +66,9 @@ class NativeManagementTests(NativeFixture):
                 pump()
             process.wait(timeout=5)
             self.assertEqual(process.returncode, 0, raw.decode(errors="replace")[-2000:])
+        if recover:
+            until("Session recovery")
+            send(b" \t\r")
         until("OMP native")
         return process, raw, send, until, pump, exit_ui
 

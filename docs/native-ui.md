@@ -17,6 +17,8 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 初次升级需在空闲时重启 daemon，使其加载新的 frontend IPC；旧 daemon 不支持该协议时入口明确拒绝，已有请求不被打断。原生入口目前只精确加载 Paveway trusted extension，不自动发现其他用户 Extension；内建工具、Workspace MCP、Skills 和 Rules 仍由 OMP 提供，并遵守配置权限。
 
+默认接续的旧对话尚未释放时，启动入口显示 Session recovery 选择：uncertain 可选择恢复旧对话、新建或取消；仍处于 active/idle/starting 的旧 owner 只提供新建或取消。方向键／空格选择，Tab 切到确认按钮，Enter 确认。恢复必须经 Runtime 检查旧进程死亡、锁已释放及历史完整性，不能凭失去心跳接管；失败不会偷偷改为新对话，也不重发旧输入。新建保留原记录，缺失或损坏的 Session 仍需核查并使用新对话。
+
 ## 原生菜单
 
 输入 `/paveway` 用方向键选择；也可 `/paveway prompt` 等直接打开。以下均为用户操作界面，编辑正文不发送给模型。

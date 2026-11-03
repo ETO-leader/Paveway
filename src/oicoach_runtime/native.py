@@ -22,12 +22,47 @@ from .proxy import child_environment
 from .workflows import WorkflowProvider
 
 
+def recovery_choice(config, workflow_id, task_id, conversation_id, new):
+    """Explicit startup recovery; never infer release from a lost heartbeat."""
+    if new:
+        return conversation_id, new, False
+    if conversation_id:
+        record = request(config.server.socket_path, "frontend.show", {"conversation_id": conversation_id})
+        if (record["workflow_id"], record["task_id"]) != (workflow_id, task_id):
+            raise RuntimeContractError("Native conversation belongs to another scope")
+    else:
+        rows = request(config.server.socket_path, "frontend.list", {"workflow_id": workflow_id, "task_id": task_id})
+        if not rows:
+            return conversation_id, new, False
+        record = rows[0]
+    if record["status"] == "released":
+        return record["conversation_id"], False, False
+    from prompt_toolkit.shortcuts import radiolist_dialog
+    choices = []
+    if record["status"] == "uncertain":
+        choices.append(("recover", "恢复旧对话（不自动重发请求）"))
+    choices += [("new", "新建对话（保留旧历史）"), ("cancel", "取消启动")]
+    choice = radiolist_dialog(title="GPT · Session recovery", text=(
+        "旧会话尚未释放，状态：" + record["status"] + "。\n"
+        "请核对上次操作的结果。恢复不会重发输入；服务会检查旧进程已退出、文件锁已释放及历史完整性。\n"
+        "仍在运行的会话不会被接管。方向键／空格选择，Tab 切到确认，Enter 确认。"), values=choices).run()
+    if choice == "recover":
+        request(config.server.socket_path, "frontend.recover", {"conversation_id": record["conversation_id"]})
+        return record["conversation_id"], False, False
+    if choice == "new":
+        return None, True, False
+    return conversation_id, new, True
+
+
 def run(config, config_path, workflow_id, task_id="training", conversation_id=None, new=False):
     if not os.isatty(0) or not os.isatty(1):
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     from .proxy import synchronize
     synchronize(config_path)
     while True:
+        conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
+        if cancelled:
+            return 0
         code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new)
         if code or not action:
             return code
