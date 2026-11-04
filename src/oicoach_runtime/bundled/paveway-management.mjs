@@ -2,6 +2,7 @@
 import {randomUUID} from "node:crypto";
 import {writeFileSync, unlinkSync} from "node:fs";
 import {dirname, join} from "node:path";
+import {loadNativeTui, openSettings} from "./paveway-settings.mjs";
 
 export function registerManagement(pi, config, requestSwitch) {
     const drafts = new Map();
@@ -28,7 +29,7 @@ export function registerManagement(pi, config, requestSwitch) {
     const secretInput = async (ctx, title) => {
         // Some installed OMP versions silently ignore ui.input({secret:true}).
         // Use the host's actual masked Input, and verify it before accepting data.
-        const {Input} = await import(Bun.resolveSync("@oh-my-pi/pi-tui", process.argv[1]));
+        const {Input} = await loadNativeTui();
         const input = new Input();
         if (!("mask" in input)) throw new Error("This OMP build has no verified masked input; use the protected legacy login UI");
         input.mask = true;
@@ -245,15 +246,11 @@ export function registerManagement(pi, config, requestSwitch) {
         } else if (action !== "clear" || await ctx.ui.confirm("Clear VJudge Cookie?", "Password is never saved."))
             show(ctx, await cli(["vjudge", "auth", action]));
     };
-    actions.tijian = async ctx => {
-        const executable = await ctx.ui.input("Absolute native tijian-mcp executable path");
-        if (!executable) return;
-        const mode = await ctx.ui.select("Tijian service permission", ["read only", "read/write"]);
-        if (!mode) return;
-        show(ctx, await cli(["workflow", "connect-tijian", config.workflow_id, "--executable", executable,
-            mode === "read only" ? "--read-only" : "--read-write"]));
-        show(ctx, "MCP saved; restart the native session to load it");
-    };
+    const openSettingsPage = (ctx, page) => openSettings(ctx, {
+        cli, workflowId: config.workflow_id, preferences: settings, model: actions.model, thinking: actions.thinking,
+    }, page);
+    actions.settings = async ctx => openSettingsPage(ctx, "settings");
+    actions.tijian = async ctx => openSettingsPage(ctx, "tijian");
     actions.service = async ctx => {
         const action = await ctx.ui.select("Runtime systemd service", ["status", "logs", "install", "start", "stop", "restart", "enable", "disable", "uninstall"]);
         if (!action) return;
@@ -272,14 +269,20 @@ export function registerManagement(pi, config, requestSwitch) {
         const raw = await settings();
         const rows = (await cli(["workflow", "models", config.workflow_id])).models;
         const selected = await ctx.ui.select("Portable model preference (next launch)", ["inherit", ...rows.map(row => row.selector)]);
-        if (selected !== undefined) show(ctx, await cli(["workflow", "customize", "inference", config.workflow_id,
-            "--model", selected === "inherit" ? "" : selected, "--expected-revision", String(raw.revision)]));
+        if (selected !== undefined) {
+            await cli(["workflow", "customize", "inference", config.workflow_id,
+                "--model", selected === "inherit" ? "" : selected, "--expected-revision", String(raw.revision)]);
+            show(ctx, "Model preference saved. Applies on the next native launch.");
+        }
     };
     actions.thinking = async ctx => {
         const raw = await settings();
         const selected = await ctx.ui.select("Portable thinking preference (next launch)", ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
-        if (selected !== undefined) show(ctx, await cli(["workflow", "customize", "inference", config.workflow_id,
-            "--thinking", selected === "inherit" ? "" : selected, "--expected-revision", String(raw.revision)]));
+        if (selected !== undefined) {
+            await cli(["workflow", "customize", "inference", config.workflow_id,
+                "--thinking", selected === "inherit" ? "" : selected, "--expected-revision", String(raw.revision)]);
+            show(ctx, "Thinking preference saved. Applies on the next native launch.");
+        }
     };
     const run = async (args, ctx) => {
         try {

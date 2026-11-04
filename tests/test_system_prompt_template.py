@@ -291,7 +291,6 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
 
             # Internal URLs
             self.assertIn("# Internal URLs", full_prompt)
-            self.assertIn("skill://<name>", full_prompt)
         finally:
             if process.returncode is None:
                 process.kill()

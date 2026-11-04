@@ -23,6 +23,7 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 | 菜单 | 功能 |
 | --- | --- |
+| settings | SettingsList 设置中心：Tijian MCP、Model preference、Thinking preference |
 | prompt | 查看／编辑／清空用户自定义追加 Prompt |
 | skills | 新建、查看、编辑、启停、删除；OI Introduce、user information、personal skill 同时按需发现 |
 | persona | 编辑独立 Persona，CAS 保存，新的 Paveway Conversation 生效 |
@@ -34,7 +35,7 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 | recover | 后台不确定事件诊断及明确确认后的重试，不自动重放 |
 | sync | 私有 Git 状态、remote、本地同步、冲突、远端配置绑定及跨设备文字归档 |
 | vjudge | 状态／测试／密码或 Cookie 登录／清除；隐藏输入、私密文件传递，不进聊天 |
-| tijian | 连接原生 MCP，明确选择只读或读写；保存后重启原生 Session 加载 |
+| tijian | 直接打开与 settings 相同的 Tijian MCP 页；None / Managed / Full，保存后重启生效 |
 | service | 已有 systemd 管理功能；操作服务生命周期时保留未知状态的恢复语义 |
 | agent | 后台 worker 重启及不重播说明 |
 | legacy | 正常释放原生进程后进入原管理 UI；退出后恢复原生 Conversation，覆盖其余低频旧操作 |
@@ -42,6 +43,22 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 `/paveway status` 读取 Runtime 健康状态；`/coach` 显示当前 GPT Profile 及 Session。不覆盖 OMP 自己的 `/memory`、`/skills` 等命令，因此 Paveway 的专属功能统一放在 `/paveway` 菜单中。
 
 登录使用宿主 OMP 的 masked Input 组件，实际测试屏幕不含明文。不能仅依赖 `ui.input(..., {secret:true})`，本机 18.10.4 会忽略这个选项；组件预检失败时拒绝收集秘密，保留旧受保护 UI。用户名／密码只通过临时 0600 文件交给原有认证 CLI，密码不保存；Cookie 仅写 Tijian 自己的本机会话位置。
+
+## 原生设置中心
+
+`/paveway` 菜单选择 `settings`，或直接输入 `/paveway settings`。Model preference 和 Thinking preference 复用原有 `/paveway model`、`/paveway thinking` 操作，保存的是下次原生启动使用的偏好。Prompt、Skills、Persona、Memory 等独立命令不变，不注入 OMP 自己的 `/settings`。
+
+Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
+
+- **MCP executable**：当前 `.omp/mcp.json` 中保存的路径。Enter 打开 OMP `ui.input()` 输入替换路径；空输入保留已有路径，Esc 取消。只修改路径不改变权限。
+- **Permission**：Enter 打开原生 SelectList。None 只读；Managed（首次推荐）允许只读与三种 ensure，禁止直接编辑／删除；Full 完整读写。从 None／Managed 升至 Full 时由原生 `ui.confirm()` 明确确认。
+- **Configuration**：只读状态。保存后显示 `Saved (restart required)`；不是 MCP 已连接或权限已立即改变的证明。
+
+列表的导航、选中样式、搜索、滚动、Esc 由宿主 OMP SettingsList／SelectList 提供，Theme 与 ANSI 安全截断沿用 OMP；已验证 18.16.0 的实际组件 API。长路径在窄终端中截断，路径输入使用 OMP 自身的单行滚动。权限子菜单 Esc 回到 Tijian 页，Tijian 页 Esc 回设置中心，设置中心 Esc 退出并恢复原编辑器、焦点及未提交文本。提交后的文件 I/O 期间保留原生 UI 焦点，避免按键落入聊天。
+
+每次打开／返回 Tijian 页都读取真实配置；已有连接不自动调整权限。未知参数或非标准 Server 定义显示错误并拒绝覆盖，修复后可重新操作，不清除其他设置。保存带文件内容 revision；并发变化时拒绝旧编辑并重新读取。所有这些界面操作不发给模型，也不注册模型可调用的设置工具；RPC、后台和子 Agent 不挂载设置页。
+
+成功提示为 `Saved. Restart the Paveway native OMP session to apply Tijian MCP changes.`。需用户自行在空闲时退出并重启原生 Session；不自动停止当前 Session、后台 Worker 或 AI Job，不实现 MCP 热重载，也不通过 MCP 工具调用验证权限。三档能力、安全写入及旧 CLI 兼容见 [Tijian 文档](tijian.md)。
 
 ## 唤醒与收件箱
 

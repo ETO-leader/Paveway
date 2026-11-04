@@ -28,13 +28,13 @@ Paveway
 ```
 
 ### Paveway 的职责
-- **配置 MCP Server**：通过 `oicoach-runtime workflow connect-tijian` 安全写入 workflow workspace 的 `.omp/mcp.json`。
+- **配置 MCP Server**：通过 `/paveway settings` → Tijian MCP 或 `workflow tijian show/set` 安全读取、修改 workspace 的 `.omp/mcp.json`；旧 `workflow connect-tijian` 保持兼容。
 - **业务指导与编排**：内置 `paveway-tijian` Skill 为 GPT 提供业务认知、能力选择与跨工具工作流策略。
 - **VJudge 会话维护**：通过 `vjudge auth` CLI 及终端 UI 管理与 Tijian 兼容的共享 VJudge 登录 Cookie。
 
 ### Tijian MCP 的职责
 - **工具定义与执行**：通过标准的 MCP `tools/list` 暴露真实的工具名称、description、inputSchema、outputSchema 及 annotations。Paveway 不在 Python 中复刻任何工具定义。
-- **权限与模式管理**：启动参数 `--read-only` 决定整个 MCP 进程的服务端权限；服务端直接负责拒绝写工具或写操作。
+- **权限与模式管理**：启动参数 `--write-policy=none|managed|full` 决定 MCP 进程权限；服务端负责过滤／拒绝不允许的工具和操作。旧 `--read-only` 按 None 识别，空 args 按 Full 识别。
 - **底层数据交互**：由 Tijian 核心 use cases 处理题目存储、搜索、向量与 AI Job。
 
 ---
@@ -57,59 +57,75 @@ cargo build --release --bin tijian-mcp
 
 ---
 
-## 3. 使用 `workflow connect-tijian` 配置 MCP
+## 3. 设置界面与三档权限
 
-使用 Paveway 的 CLI 命令为目标 workflow 连接原生 `tijian-mcp`：
+在原生 OMP 中输入 `/paveway settings`，选择 **Tijian MCP**；`/paveway tijian` 是同一页面的直接入口，不再启动连续输入向导。首次只需在 **MCP executable** 项输入可执行文件路径，默认建议 Managed。已有路径和权限从当前 Workflow 的 `.omp/mcp.json` 读取，不自动升级或降级。
+
+| 模式 | 启动参数 | 能力 |
+| --- | --- | --- |
+| None — 只读 | `--write-policy=none` | 查询、搜索、查看题面与历史等只读工具 |
+| Managed — 受控维护（推荐） | `--write-policy=managed` | 全部只读工具，以及 `tijian_problem_ensure`、`tijian_problem_content_ensure`、`tijian_problem_embedding_ensure`；禁止直接编辑题面／属性／状态、删除等 |
+| Full — 完整读写 | `--write-policy=full` | 全部 MCP 工具，包括直接修改与删除 |
+
+在 **Permission** 项按 Enter，用原生 SelectList 选择权限；从 None／Managed 切换 Full 必须由用户通过确认框明确同意。只改权限不需要填写路径；只改路径保留原权限及旧参数编码。路径输入框用于填写替换值，空输入保留已有路径，Esc 丢弃未提交输入；权限子菜单 Esc 返回 Tijian 页，Tijian 页 Esc 返回设置中心。首次尚未填写路径时选择的权限只作为本页草稿，离开不写盘。
+
+保存后显示 `Saved (restart required)` 并通知：
+
+```text
+Saved. Restart the Paveway native OMP session to apply Tijian MCP changes.
+```
+
+这只是已保存状态；无法可靠获知当前 MCP 进程权限，因此不展示“已立即生效”。由用户自行重启 Paveway 原生 OMP Session，不自动杀进程、停止 Worker／AI Job，不实现热重载，也不发送 MCP 工具调用验证权限。设置操作不进入聊天，不注册模型可调用的设置工具。
+
+### 配置读取与安全更新
+
+- 唯一有效来源为 Workflow Workspace 的 `.omp/mcp.json`。不新增 `[tijian]`、数据库表或独立权限副本。只读查询不会创建文件／目录，不验证或执行 MCP 可执行文件。
+- 仅接受 `command` 为绝对路径字符串、`args` 为已知完整参数列表的标准 Tijian 定义。旧 `["--read-only"]` → None，`[]` → Full；三个单独的 `["--write-policy=…"]` 分别识别。未知参数、混合参数或额外 Server 字段明确报错，拒绝猜成 Full 或自动覆盖。
+- 新增／替换的 executable 须存在且可执行；只改权限不要求旧文件仍存在，不自动重建 Workflow 或 GPT Profile。
+- 仅更改 `mcpServers.tijian`，保留其他 Server、`disabledServers` 和其他字段；Tijian 被显式禁用时拒绝修改，须人工核对。
+- 使用整个文件内容的 SHA-256 revision 检测过期编辑，提交前再次核对原始字节；临时文件 fsync 后原子创建／替换。拒绝 symlink、不安全目录和并发冲突，写入文件权限为 `0600`。
+- 未改变配置时不重复写盘，保留原文件字节、inode 和修改时间。保存结果及返回页面再次读取的配置均不等同 MCP 握手成功。
+
+### `workflow tijian show/set`
+
+CLI 接口供本机管理和原生设置控制器使用。`show` 返回 `configured`、`executable`、`permission`、`revision` 等字段；`set` 必须传最近读取的 `--expected-revision`，返回更新后的配置和 `changed`。首次省略 `--permission` 使用 Managed。
 
 ```bash
-# 默认推荐只读模式（包含 --read-only 参数）
-oicoach-runtime workflow connect-tijian coach \
-  --executable /absolute/path/to/tijian-mcp \
-  --config "$PWD/.runtime/config.toml"
+export PAVEWAY_CONFIG="$PWD/.runtime/config.toml"
+oicoach-runtime workflow tijian show coach --config "$PAVEWAY_CONFIG" --json
 
-# 或显式指定只读模式
-oicoach-runtime workflow connect-tijian coach \
-  --executable /absolute/path/to/tijian-mcp \
-  --read-only \
-  --config "$PWD/.runtime/config.toml"
+# 每次保存前重新读取 revision；并发变化会拒绝本次保存。
+REV=$(oicoach-runtime workflow tijian show coach --config "$PAVEWAY_CONFIG" --json |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')
+oicoach-runtime workflow tijian set coach \
+  --executable /absolute/path/to/tijian-mcp --permission managed \
+  --expected-revision "$REV" --config "$PAVEWAY_CONFIG" --json
 
-# 显式读写模式（不带 --read-only 参数）
-oicoach-runtime workflow connect-tijian coach \
-  --executable /absolute/path/to/tijian-mcp \
-  --read-write \
-  --config "$PWD/.runtime/config.toml"
+# 已连接时仅修改权限，不重复提供 executable。
+REV=$(oicoach-runtime workflow tijian show coach --config "$PAVEWAY_CONFIG" --json |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')
+oicoach-runtime workflow tijian set coach --permission none \
+  --expected-revision "$REV" --config "$PAVEWAY_CONFIG" --json
 ```
 
-### 规则与安全性
-- **默认只读**：省略模式标志时，默认采用 `--read-only`，限制 MCP 进程只暴露和允许只读能力。
-- **互斥标志**：`--read-only` 与 `--read-write` 严格互斥，不能同时提供。
-- **明确路径**：`--executable` 必须为有效且具备可执行权限的路径，绝不隐式回退到旧 CLI。
-- **合并配置**：写入对应 workflow workspace 下的 `.omp/mcp.json`，保留已有其他 MCP Server 与 `disabledServers`。
-- **旧路径兼容**：显式连接时，若原生配置尚不存在，可从旧根 `.mcp.json` 导入；旧文件不改写。若两个位置均有配置，原生位置为当前操作目标，应自行核对旧文件，不能假设两份会自动同步。
-- **幂等与冲突检测**：相同配置重复执行保持幂等；若存在不同定义的 `tijian` 配置则安全报错（`ConflictError`），原文件严格保持不变。
-- **原子性与安全权限**：通过临时文件原子替换，拒绝 symlink，文件权限保持 `0600`。
+仅改路径时传 `--executable`，不传 `--permission`。新建 Full 或从其他模式升至 Full 还须明确传 `--confirm-full`；设置界面只在用户确认后添加此标志。CLI 是本机用户管理接口，不是同 UID 进程之间的安全沙箱。
 
-生成的 `.omp/mcp.json` 示例：
+### 旧 `workflow connect-tijian` 兼容性
 
-```json
-{
-  "mcpServers": {
-    "tijian": {
-      "command": "/absolute/path/to/tijian-mcp",
-      "args": [
-        "--read-only"
-      ]
-    }
-  }
-}
+```bash
+# 保持原默认只读语义，写入 args: ["--read-only"]。
+oicoach-runtime workflow connect-tijian coach \
+  --executable /absolute/path/to/tijian-mcp --config "$PAVEWAY_CONFIG"
 ```
+
+`--read-only`／`--read-write` 仍互斥，后者写入空 args（Full）。旧命令不负责修改已有不同定义，仍拒绝冲突；需要切换时使用设置页或新的 revision 接口。仅此旧命令在原生配置不存在时可显式导入 workspace 根 `.mcp.json`，旧文件保持原样；新设置接口不读取或导入旧文件。
 
 ---
 
 ## 4. 运行边界与状态验证
 
 ### 配置成功 vs 实际连接成功
-- `workflow connect-tijian` 返回 `availability: "configured_not_verified"`，仅表示 `.mcp.json` 配置文件已正确写入。
+- 旧 `workflow connect-tijian` 与新设置接口在已配置时返回 `availability: "configured_not_verified"`，仅表示 `.omp/mcp.json` 配置已保存；未配置的查询返回 `not_configured`。
 - **配置成功不代表 MCP 进程已经成功启动或连接**。
 - 启动与连接由 OMP 在派发回合时负责：OMP 读取 workspace 的 `.omp/mcp.json`，通过 stdio 启动 `tijian-mcp` 子进程并完成 MCP 初始化握手。
 
@@ -117,7 +133,7 @@ oicoach-runtime workflow connect-tijian coach \
 可以通过以下方式确认工具已被发现：
 1. 观察 OMP 会话启动日志或 MCP 连接状态。
 2. 在 OMP Agent 中核对是否通过 `tools/list` 发现了以 `tijian_` 为前缀的原生 MCP 工具。
-3. 在只读模式下，确认写工具已被服务端过滤；读写模式下则具备完整操作能力。
+3. 按已启动进程的模式核对服务端工具发现结果；不能用设置页的已保存权限推断旧进程已经切换。
 
 Paveway 现已切换至 OMP 原生 `--system-prompt-template` 机制。在此机制下，OMP 原生模板中的 `# xd:// Tool Devices` 与 `xdevDocs` 完整保留并由 OMP 动态求值。
 当连接 Tijian MCP 时，OMP 会自动在 Project Context 中注入 `## MCP Tool Routes`（例如 `"tijian_problem_get" → xd://mcp__tijian_problem_get`），并在系统指令中明确指导模型：

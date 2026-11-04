@@ -37,6 +37,7 @@ omp --version
 
 | 命令／菜单 | 功能 |
 | --- | --- |
+| `/paveway settings` | 原生设置中心：Tijian MCP、Model preference、Thinking preference |
 | `/paveway prompt` | 查看和编辑用户系统 Prompt，保留 append/replace 模式 |
 | `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除 |
 | `/paveway persona` | 编辑当前 GPT 的独立 Persona |
@@ -45,7 +46,7 @@ omp --version
 | `/paveway memory`、`history` | Paveway 笔记 CRUD、原生历史分页与检索 |
 | `/paveway events`、`recover` | 事件详情、取消／重排、明确确认后的恢复 |
 | `/paveway sync` | 专用 Git remote、本地同步、冲突和跨设备文字归档 |
-| `/paveway vjudge`、`tijian` | 遮罩登录输入、原生 Tijian MCP 配置 |
+| `/paveway vjudge`、`tijian` | 遮罩登录输入；`tijian` 直接进入设置中心的 Tijian MCP 页 |
 | `/paveway service`、`agent` | systemd 服务及后台 worker 管理 |
 | `/paveway legacy` | 进入原管理 UI；退出后恢复原生对话 |
 | `/paveway status`、`/coach` | Runtime 状态、绑定 Profile 与 Session |
@@ -117,15 +118,20 @@ OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀�
 
 ## Tijian 与 VJudge
 
-Paveway 使用上游 **原生 `tijian-mcp` stdio 服务**，不修改 Tijian、不复刻工具 Schema。先按 [Tijian 文档](docs/tijian.md) 构建或取得可执行文件，然后在菜单配置，或运行：
+Paveway 使用上游 **原生 `tijian-mcp` stdio 服务**，不修改 Tijian、不复刻工具 Schema。先按 [Tijian 文档](docs/tijian.md) 构建或取得可执行文件，再打开 `/paveway settings` → **Tijian MCP**，或直接 `/paveway tijian`。
+
+设置页读取当前 Workflow Workspace 的 **`.omp/mcp.json`**，显示已保存路径和权限。首次配置推荐 **Managed**：允许只读及 problem/content/embedding ensure，不允许直接编辑和删除；**None** 为只读，**Full** 为完整读写。从 None／Managed 切换 Full 必须确认。修改权限无需重输路径，修改路径保留权限；Esc 取消未提交编辑。
+
+保存后须**重启 Paveway 原生 OMP Session**。界面只报告 Saved / Restart required，不冒充运行中 MCP 的权限，也不自动重启、热重载或调用工具探测。
+
+旧 CLI 保持默认只读和冲突拒绝语义：
 
 ```bash
 oicoach-runtime workflow connect-tijian test01 \
   --executable /absolute/tijian-mcp --read-only --config "$PAVEWAY_CONFIG"
-# 需要业务写操作时，明确改用 --read-write；已有不同配置需人工核对。
 ```
 
-配置写入 Workflow Workspace 的 **`.omp/mcp.json`**；首次显式连接可导入旧根 `.mcp.json`，原文件保留。文件仅当前用户可读写，冲突或 symlink 被拒绝。连接结果 `configured_not_verified` 仅表示配置已保存；实际握手与调用由 OMP 完成，修改后重启原生 Session。当前 OMP 可将 MCP 工具映射为 `xd://` 设备，通过原生 read/write 发现和调用，精确名称以实际服务为准。
+新 `workflow tijian show/set` 支持按 revision 安全地单独修改权限或路径，详见 [Tijian 配置说明](docs/tijian.md)。设置页不读取旧根 `.mcp.json`；仅旧 `connect-tijian` 在原生配置不存在时可显式导入该文件。写入保留其他 MCP 配置、使用 0600 权限、拒绝 symlink 和并发冲突。`configured_not_verified` 只表示配置保存成功，实际握手由 OMP 完成。
 
 已收录题目通过 `problem_get` 读取持久题面；缺题用 `problem_add`，缺题面或用户要求更新时用 `problem_refetch`。不每次重新爬取。`网页示例/` 是上游解析器开发样本，不是运行时题库。
 
