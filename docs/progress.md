@@ -534,3 +534,11 @@ Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显
 最终完整回归 **328 项：291 通过、37 条件跳过，105.857 秒，无失败**，日志 `/tmp/paveway-desktop-complete-regression.log`。最终通知／Inbox／部署定向 **30 项通过（3.379 秒）**，`/tmp/paveway-desktop-final-checks.log`，涵盖队列忙碌仍到期、UI 关闭、取消／重排、重启去重、未知发送结果、正文隐藏与凭据隔离。原生 UI 原有提醒回归 **1 项通过（14.803 秒）**，`/tmp/paveway-desktop-native-regression.log`；随后新增 UI 环境失败诊断 **1 项通过（2.489 秒）**，`/tmp/paveway-desktop-menu-validation.log`。全部自动化模型测试仅本地 fixture。0.22.0 wheel 构建通过并核对包含 PowerShell 资源及通知 worker，无私密运行文件。
 
 本机独立通知服务已显式启用／安装，active/enabled，worker 0.22.0；更新通知服务前后原生前台 generation／状态一致。主 Runtime 保持原进程运行，新功能无需结束当前 GPT 会话。具体启停与环境边界见 [桌面提醒](desktop-notifications.md)。不提供手机推送或在 Windows／WSL 关闭、休眠时唤醒系统的能力；accepted 是系统接收，不是用户已读。
+
+## 2026-11-04 — 合并远端提示词／设置重构并同步源码
+
+同步前本地 main 为 bb4a015，远端更新至 520643d：本地 5 个提交、远端 8 个提交分叉，采用保留双方历史的 merge。人工合并版本导出、新设置页／Tijian 入口与桌面通知菜单、PTY 测试驱动及异常恢复测试，保持应用版本 0.22.0，同时保留远端 runtime_build_id、分层 Core／base Prompt 架构、受管 MCP 权限和设置页修复。新增 Windows 通知脚本的构建指纹覆盖，避免 PowerShell 资源变化被漏检；README 同步为最终模板架构。
+
+初始本地原生夹具依赖旧 Identity 文本，合并后按实际提交请求及新 Core 识别主请求，保留原文持久化、无重复模型调用及提示词隔离断言。停止修改运行代码后统一复验：全量 **412 项，360 通过、52 条件跳过，115.838 秒**，`/tmp/paveway-git-merge-full.log`；原生设置／恢复／记忆／唤醒 **28 项全部通过（147.007 秒）**，`/tmp/paveway-git-merge-native-final.log`；构建兼容与桌面通知 **29 项通过（3.914 秒）**，`/tmp/paveway-git-merge-compat.log`。原生模型响应仅本地 fixture，未调用私人付费 Provider。
+
+本次仅同步源码；未重启正式 Runtime、通知服务或活前台，未修改私密 Prompt、Skills、event.md 或用户数据 Git。远端新增严格版本／构建匹配检查，已运行的旧 daemon 需要在前台退出、任务空闲后按启动器指引重启，再加载合并后的新架构。

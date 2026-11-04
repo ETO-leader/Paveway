@@ -27,7 +27,7 @@ def main():
         print("omp/0.0.1-test")
         return
     if "--help" in sys.argv:
-        print("--cwd --session-dir --resume --mode --no-ui --profile")
+        print("--cwd --session-dir --resume --mode --no-ui --profile --system-prompt-template")
         return
     if sys.argv[1:] == ["config", "get", "skills.customDirectories", "--json"]:
         print(json.dumps({"key": "skills.customDirectories", "value": []}))
@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--thinking")
     parser.add_argument("--system-prompt", type=Path)
     parser.add_argument("--append-system-prompt", type=Path)
+    parser.add_argument("--system-prompt-template", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--extension", type=Path)
     for option in ("tools", "extensions", "skills", "rules"):

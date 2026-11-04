@@ -52,6 +52,9 @@ def create(config, coach_id, workflow_id, persona=""):
         import json
         manifest = tomllib.loads((config.workflow_root / workflow_id / "workflow.toml").read_text())
         manifest["id"] = alias
+        if source.base:
+            manifest["base"] = source.base
+        manifest.pop("instructions_in_system", None)
         for kind in ("start", "wake", "recovery"):
             manifest[kind + "_prompt"] = kind + ".md"
             path = temporary / (kind + ".md")

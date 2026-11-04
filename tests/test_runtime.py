@@ -39,14 +39,13 @@ class RuntimeTests(unittest.TestCase):
     def test_static_workflow_rules_are_separate_from_user_envelope(self):
         directory = self.config.workflow_root / "echo"
         manifest = directory / "workflow.toml"
-        manifest.write_text(manifest.read_text() + "instructions_in_system = true\n")
-        (directory / "event.md").write_text("TRUSTED_WORKFLOW_RULE\n${event_json}\n")
+        manifest.write_text(manifest.read_text() + 'base = "oi-coach"\n')
         done = self.wait_status(self.schedule()["event_id"])
         session = next((self.config.state_dir / "sessions").glob("*/session.json"))
         message = json.loads(session.read_text())["prompts"][0]
         self.assertEqual(message["event_id"], done["event_id"])
         system = (session.parent / "customizations" / done["run_id"] / "system.md").read_text()
-        self.assertIn("TRUSTED_WORKFLOW_RULE", system)
+        self.assertIn("OI 训练与教学策略", system)
         self.assertNotIn(done["event_id"], system)
 
     def test_builtin_scope_changes_apply_next_dispatch_without_replay_or_rebinding(self):
@@ -524,18 +523,19 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn(secret, json.dumps(finished) + json.dumps(run) + (self.root / "daemon.log").read_text())
 
     def test_customization_applies_next_dispatch_without_rebinding_existing_task(self):
-        from oicoach_runtime.customization import update, IDENTITY_PROMPT
-        from oicoach_runtime.context_budget import CONTEXT_PROMPT
+        from oicoach_runtime.customization import update
+        from oicoach_runtime.prompt_composer import load_core
+        core = load_core()
         update(self.config, "echo", 0, "prompt", mode="append", content="first prompt")
         first = self.wait_status(self.schedule("custom-first", "custom-task")["event_id"])
-        update(self.config, "echo", 1, "prompt", mode="replace", content="second prompt")
+        update(self.config, "echo", 1, "prompt", mode="append", content="second prompt")
         second = self.wait_status(self.schedule("custom-second", "custom-task")["event_id"])
         first_run = request(self.socket_path, "runs.show", {"run_id": first["run_id"]})
         second_run = request(self.socket_path, "runs.show", {"run_id": second["run_id"]})
         self.assertEqual(first_run["binding_id"], second_run["binding_id"])
         parent = self.config.state_dir / "sessions" / first_run["binding_id"] / "customizations"
-        self.assertEqual((parent / first["run_id"] / "system.md").read_text(), "first prompt\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
-        self.assertEqual((parent / second["run_id"] / "system.md").read_text(), "second prompt\n\n" + IDENTITY_PROMPT + "\n\n" + CONTEXT_PROMPT)
+        self.assertEqual((parent / first["run_id"] / "system.md").read_text(), core + "\n\nfirst prompt")
+        self.assertEqual((parent / second["run_id"] / "system.md").read_text(), core + "\n\nsecond prompt")
         self.assertEqual(second["attempt"], 1)
 
     def test_model_settings_apply_next_dispatch_and_resume_the_existing_session(self):

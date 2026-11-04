@@ -89,6 +89,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
     root = Path(lease["session_dir"])
     lock = None
     code = None
+    primary_failed = False
     try:
         ensure_private_directory(root)
         lock = InstanceLock(root / "owner.lock")
@@ -101,15 +102,35 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
         if action and action["kind"] in ("resume", "legacy"):
             action["conversation_id"] = lease["conversation_id"]
         return code, action
+    except BaseException:
+        primary_failed = True
+        raise
     finally:
         if lock:
             lock.close()
         try:
-            current = request(config.server.socket_path, "frontend.show", {"conversation_id": lease["conversation_id"]})
-            request(config.server.socket_path, "frontend.finish", {"conversation_id": lease["conversation_id"],
-                "generation": current["generation"], "owner_token": lease["owner_token"], "exit_code": code})
-        except RuntimeContractError:
-            pass  # An outage or stale owner is never treated as completion.
+            finished = request(config.server.socket_path, "frontend.finish", {
+                "conversation_id": lease["conversation_id"], "generation": lease["generation"],
+                "owner_token": lease["owner_token"], "exit_code": code})
+            if code == 0 and finished["status"] != "released":
+                error = RuntimeContractError("Native archive could not be validated")
+                error.code = "native_archive_failed"
+                raise error
+        except RuntimeContractError as error:
+            # Never print remote payloads or replace the original process failure.
+            category = error.code if error.code in (
+                "daemon_unavailable", "conflict", "internal_error", "native_archive_failed"
+            ) else "runtime_error"
+            outcome = f"OMP exit_code={code}" if code is not None else "OMP exit_code=unknown"
+            failure = RuntimeContractError(
+                f"Native ownership release not confirmed ({category}; {outcome}). "
+                "Start Runtime with the same config, inspect frontend show/list, and only use "
+                "frontend recover for an uncertain conversation after checking old processes "
+                "and side effects; --new preserves the old history. No automatic retry.")
+            failure.code = "native_finish_failed"
+            if not primary_failed and code == 0:
+                raise failure from None
+            print(f"{failure.code}: {failure}", file=sys.stderr)
 
 
 def _run_owned(config, config_path, workflow, lease, lock):
@@ -151,13 +172,12 @@ def _run_owned(config, config_path, workflow, lease, lock):
         if not getattr(config.agent, option + "_enabled"):
             argv += ["--no-" + option]
     memory = request(config.server.socket_path, "memory.recall", {"workflow_id": workflow_id, "task_id": task_id}) if workflow.memory_enabled else None
-    instructions = workflow.render_parts("wake", {})[0] if workflow.instructions_in_system else ""
     directories = ()
     if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
         from .omp_config import skill_directories
         directories = asyncio.run(skill_directories(config, str(workflow.workspace), environment))
-    argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled, memory, instructions,
-                     builtin_skills=workflow.builtin_skills, skill_directories=directories)
+    argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled, memory,
+                     base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories)
     overlay = root / "native.yml"
     overlay.write_text(json.dumps({"autoResume": False, "startup": {"setupWizard": False}}))
     overlay.chmod(0o600)
@@ -179,7 +199,9 @@ def _run_owned(config, config_path, workflow, lease, lock):
             raise RuntimeContractError("Native OMP session escaped its dedicated directory")
         observed = request(config.server.socket_path, "frontend.attest", {**owner(), "omp_pid": pid,
             "session_id": frame["sessionId"], "session_file": str(session_file)})
-        settings["generation"] = observed["generation"]
+        # Keep the final owner identity from our own authenticated attestation,
+        # including OMP /new switches; finish needs no extra frontend.show round trip.
+        lease["generation"] = settings["generation"] = observed["generation"]
 
     def owner():
         return {key: settings[key] for key in ("conversation_id", "generation", "owner_token")}

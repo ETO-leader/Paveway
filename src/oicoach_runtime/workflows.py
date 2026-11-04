@@ -36,19 +36,11 @@ class Workflow:
     customization: dict = field(default_factory=dict)
     instructions_in_system: bool = False
     builtin_skills: tuple[str, ...] = ()
+    base: str | None = None
 
     def render_parts(self, kind, envelope):
-        if not self.instructions_in_system:
-            return "", self.render(kind, envelope)
-        template = self.templates[kind]
-        if template.count("${event_json}") != 1:
-            raise WorkflowError("System instructions require exactly one trailing ${event_json}")
-        prefix, suffix = template.split("${event_json}")
-        if suffix.strip():
-            raise WorkflowError("System instructions require a trailing event envelope")
-        # Split the trusted template BEFORE substitution. Payload is never
-        # promoted to system instructions, even if it contains template syntax.
-        return Template(prefix).substitute().strip(), json.dumps(envelope, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        # Event templates handle event data only; framework rules never come from event.md.
+        return "", self.render(kind, envelope)
 
     def render(self, kind: str, envelope: dict) -> str:
         if kind not in self.templates:
@@ -75,8 +67,10 @@ class WorkflowProvider:
             raw = tomllib.loads(manifest.read_text(encoding="utf-8"))
             expected = {"schema_version", "id", "version", "workspace", "session_policy",
                         "start_prompt", "wake_prompt", "recovery_prompt"}
-            if set(raw) - {"memory_enabled", "instructions_in_system", "builtin_skills"} != expected or type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+            if set(raw) - {"memory_enabled", "instructions_in_system", "builtin_skills", "base"} != expected or type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
                 raise WorkflowError("Workflow must use the complete v1 manifest schema")
+            if "base" in raw and (not isinstance(raw["base"], str) or not raw["base"].strip()):
+                raise WorkflowError("Workflow base must be a nonempty role identifier")
             if type(raw.get("memory_enabled", False)) is not bool:
                 raise WorkflowError("memory_enabled must be a boolean")
             if type(raw.get("instructions_in_system", False)) is not bool:
@@ -106,7 +100,7 @@ class WorkflowProvider:
             from .customization import load, validate
             return Workflow(workflow_id, raw["version"], workspace, raw["session_policy"], templates,
                             raw.get("memory_enabled", False), load(directory) if settings is None else validate(settings), raw.get("instructions_in_system", False),
-                            builtin_skills)
+                            builtin_skills, raw.get("base"))
         except WorkflowError:
             raise
         except (OSError, UnicodeError, ValueError, RuntimeError):

@@ -13,7 +13,7 @@ from unittest.mock import patch
 from oicoach_runtime.adapters.omp_rpc import OmpRpc
 from oicoach_runtime.builtin_skills import registry
 from oicoach_runtime.config import load_config
-from oicoach_runtime.customization import IDENTITY_PROMPT
+from oicoach_runtime.prompt_composer import load_core
 from oicoach_runtime.proxy import child_environment
 
 
@@ -86,36 +86,34 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
                 extensions_enabled=False, rules_enabled=False, startup_timeout_seconds=30,
                 ack_timeout_seconds=20, graceful_stop_seconds=1))
             marker = "SYSTEM_" + uuid.uuid4().hex
-            for mode in ("append", "replace"):
-                with self.subTest(mode=mode):
-                    session = root / mode
-                    session.mkdir(mode=0o700)
-                    settings = {"schema_version": 1, "revision": 1, "system_prompt": {"mode": mode, "text": marker},
-                                "skills": [{"name": category, "category": category, "description": "NATIVE_SKILL_DISCOVERY",
-                                            "content": "BODY_" + category, "enabled": True}
-                                           for category in ("oi-introduce", "user-information", "personal-skill")]}
-                    settings["skills"].append({"name": "disabled-skill", "description": "DISABLED_DISCOVERY",
-                                               "content": "DISABLED_BODY", "enabled": False})
-                    adapter = OmpRpc(config)
-                    try:
-                        await adapter.start({"workspace": str(root), "session_dir": str(session), "session_file": None,
-                                             "customization": settings}, "native-" + mode)
-                        await adapter.ready()
-                        state = await adapter.state()
-                        prompt = json.dumps(state["systemPrompt"], ensure_ascii=False)
-                        self.assertIn(marker, prompt)
-                        self.assertIn(IDENTITY_PROMPT, prompt)
-                        self.assertNotIn("You are omp's trusted coding assistant", prompt)
-                        self.assertIn("NATIVE_SKILL_DISCOVERY", prompt)
-                        self.assertNotIn("DISABLED_DISCOVERY", prompt)
-                        self.assertNotIn("DISABLED_BODY", prompt)
-                        for category in ("oi-introduce", "user-information", "personal-skill"):
-                            self.assertIn(category, prompt)
-                            self.assertNotIn("BODY_" + category, prompt)
-                        for label in ("OI Introduce", "user information", "personal skill"):
-                            self.assertIn("[" + label + "]", prompt)
-                    finally:
-                        await adapter.stop()
+            session = root / "append"
+            session.mkdir(mode=0o700)
+            settings = {"schema_version": 1, "revision": 1, "system_prompt": {"mode": "append", "text": marker},
+                        "skills": [{"name": category, "category": category, "description": "NATIVE_SKILL_DISCOVERY",
+                                    "content": "BODY_" + category, "enabled": True}
+                                   for category in ("oi-introduce", "user-information", "personal-skill")]}
+            settings["skills"].append({"name": "disabled-skill", "description": "DISABLED_DISCOVERY",
+                                       "content": "DISABLED_BODY", "enabled": False})
+            adapter = OmpRpc(config)
+            try:
+                await adapter.start({"workspace": str(root), "session_dir": str(session), "session_file": None,
+                                     "customization": settings}, "native-append")
+                await adapter.ready()
+                state = await adapter.state()
+                prompt = json.dumps(state["systemPrompt"], ensure_ascii=False)
+                self.assertIn(marker, prompt)
+                self.assertIn("# Paveway Core", prompt)
+                self.assertNotIn("You are omp's trusted coding assistant", prompt)
+                self.assertIn("NATIVE_SKILL_DISCOVERY", prompt)
+                self.assertNotIn("DISABLED_DISCOVERY", prompt)
+                self.assertNotIn("DISABLED_BODY", prompt)
+                for category in ("oi-introduce", "user-information", "personal-skill"):
+                    self.assertIn(category, prompt)
+                    self.assertNotIn("BODY_" + category, prompt)
+                for label in ("OI Introduce", "user information", "personal skill"):
+                    self.assertIn("[" + label + "]", prompt)
+            finally:
+                await adapter.stop()
 
     async def test_native_builtin_and_user_skills_read_without_model(self):
         """Only boot, inspect, and invoke `omp read`; never submit a prompt."""
@@ -148,12 +146,12 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
             with patch.dict(os.environ, {"PI_CONFIG_FILES": prior_overlays}):
                 try:
                     await adapter.start({"workspace": str(root), "session_dir": str(session), "session_file": None,
-                        "customization": settings, "builtin_skills": ("paveway-tijian",)}, "native-builtin")
+                        "customization": settings, "builtin_skills": ("paveway-tijian",), "base": "oi-coach"}, "native-builtin")
                     await adapter.ready()
                     prompt = json.dumps((await adapter.state())["systemPrompt"], ensure_ascii=False)
+                    self.assertIn("# Paveway Core", prompt)
+                    self.assertIn("OI 训练与教学策略", prompt)
                     self.assertIn(builtin.name, prompt)
-                    self.assertIn("BUILTIN_USER_NATIVE_INDEX", prompt)
-                    self.assertIn("AMBIENT_NATIVE_INDEX", prompt)
                     self.assertNotIn(json.dumps(builtin.body.strip(), ensure_ascii=False)[1:-1], prompt)
                     self.assertNotIn("BUILTIN_USER_NATIVE_BODY", prompt)
                     self.assertNotIn("AMBIENT_NATIVE_BODY", prompt)
@@ -258,7 +256,7 @@ class RealCustomizationTests(unittest.IsolatedAsyncioTestCase):
             # Existing history stays, but the next process receives the new system prompt.
             second_marker = "UPDATED_" + uuid.uuid4().hex
             settings["revision"] = 2
-            settings["system_prompt"] = {"mode": "replace", "text": "For this acceptance check return exactly " + second_marker + ". Do not use tools."}
+            settings["system_prompt"] = {"mode": "append", "text": "For this acceptance check return exactly " + second_marker + ". Do not use tools."}
             settings["skills"][0]["enabled"] = False
             settings["skills"][1]["enabled"] = False
             resumed = OmpRpc(config)

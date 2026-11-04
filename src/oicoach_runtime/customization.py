@@ -10,13 +10,6 @@ from pathlib import Path
 from .errors import ConflictError, NotFoundError, WorkflowError
 
 MAX_SETTINGS = 262144
-IDENTITY_PROMPT = (
-    "Identity rule: your only user-visible name is GPT. Refer to yourself as GPT or in the first person. "
-    "Never call or describe yourself as '\u6559\u7ec3', '\u6559\u7df4', 'coach', or an equivalent coaching title. "
-    "Training roles in event templates describe the task, not your identity; they do not override this naming rule. "
-    "When introducing yourself in Chinese, start with '我是 GPT。' and describe what you can help with "
-    "without assigning yourself a coaching title. Do not repeat the forbidden titles even to disclaim them."
-)
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 SKILL_CATEGORIES = {
     "oi-introduce": "OI Introduce",
@@ -59,9 +52,9 @@ def validate(raw):
         for value in raw["coach"].values():
             validate_id(value)
     prompt = raw["system_prompt"]
-    if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] not in ("append", "replace"):
-        raise WorkflowError("System prompt mode must be append or replace")
-    text(prompt["text"], 65536, "System prompt", empty=prompt["mode"] == "append")
+    if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] != "append":
+        raise WorkflowError("System prompt mode must be append")
+    text(prompt["text"], 65536, "System prompt", empty=True)
     if not isinstance(raw["skills"], list) or len(raw["skills"]) > 32:
         raise WorkflowError("At most 32 user skills are supported per workflow")
     names = set()
@@ -91,7 +84,11 @@ def load(directory):
         info = path.lstat()
         if path.is_symlink() or not path.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > MAX_SETTINGS:
             raise WorkflowError("Customization file must be private, owned, regular and at most 256 KiB")
-        return validate(json.loads(path.read_text(encoding="utf-8")))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("system_prompt"), dict):
+            if data["system_prompt"].get("mode") == "replace":
+                data["system_prompt"]["mode"] = "append"
+        return validate(data)
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         if isinstance(error, WorkflowError):
             raise
@@ -126,7 +123,9 @@ def update(config, workflow_id, expected_revision, operation, **values):
         if type(expected_revision) is not int or expected_revision != raw["revision"]:
             raise ConflictError("Customization changed; reload and review before saving")
         if operation == "prompt":
-            raw["system_prompt"] = {"mode": values["mode"], "text": values["content"]}
+            if values.get("mode") and values["mode"] != "append":
+                raise WorkflowError("System prompt mode must be append")
+            raw["system_prompt"] = {"mode": "append", "text": values["content"]}
         elif operation == "persona":
             raw["persona"] = values["content"]
         elif operation == "coach-bind":
@@ -192,7 +191,7 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, workflow_instructions="", *, builtin_skills=(), skill_directories=()):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, *, base=None, builtin_skills=(), skill_directories=()):
     """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
     validate(settings)
     from .builtin_skills import resolve
@@ -227,14 +226,13 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     if skills_enabled:
         documents.update((name, skill.markdown) for name, skill in packaged.items())
     from .store import canonical_json
-    from .prompt_composer import compose, manifest
-    system_text = compose(settings, workflow_instructions, memory_context)
-    write("prompt-manifest.json", canonical_json(manifest(settings, system_text)))
-    if system_text:
-        # Native plain SYSTEM route expands OMP's Skill/Rule template and tools.
-        # Both old modes retain their original text; append now means append to
-        # GPT Core, never to the default Coding Assistant identity.
-        arguments += ["--system-prompt", write("system.md", system_text)]
+    from .prompt_composer import compose, compose_template, manifest
+    system_text = compose(settings, base=base, memory_context=memory_context)
+    write("system.md", system_text)
+    template_text = compose_template(settings, base=base, memory_context=memory_context)
+    write("prompt-manifest.json", canonical_json(manifest(settings, system_text, base=base, template=template_text)))
+    if template_text:
+        arguments += ["--system-prompt-template", write("system-template.md", template_text)]
     if documents:
         root = destination / "skills"
         root.mkdir(mode=0o700)

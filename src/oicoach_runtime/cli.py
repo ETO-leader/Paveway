@@ -176,9 +176,21 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--lines", type=int, default=50)
     workflow = commands.add_parser("workflow", help="Create and inspect editable external workflows")
     workflow_commands = workflow.add_subparsers(dest="operation", required=True)
-    for name in ("create", "list", "show", "models", "connect-tijian", "customize"):
+    for name in ("create", "list", "show", "models", "connect-tijian", "tijian", "customize"):
         child = workflow_commands.add_parser(name)
         common(child)
+        if name == "tijian":
+            actions = child.add_subparsers(dest="tijian_operation", required=True)
+            for action in ("show", "set"):
+                operation = actions.add_parser(action)
+                common(operation)
+                operation.add_argument("identifier")
+                if action == "set":
+                    operation.add_argument("--executable", type=Path)
+                    operation.add_argument("--permission", choices=("none", "managed", "full"))
+                    operation.add_argument("--expected-revision", required=True)
+                    operation.add_argument("--confirm-full", action="store_true")
+            continue
         if name == "customize":
             actions = child.add_subparsers(dest="customize_operation", required=True)
             for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable"):
@@ -188,7 +200,7 @@ def parser() -> argparse.ArgumentParser:
                 if action != "show":
                     operation.add_argument("--expected-revision", type=int, required=True)
                 if action == "prompt":
-                    operation.add_argument("--mode", choices=("append", "replace"), default="append")
+                    operation.add_argument("--mode", default="append")
                 if action == "inference":
                     from .customization import THINKING_LEVELS
                     operation.add_argument("--model", default=None)
@@ -656,11 +668,18 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 report = git_sync.history_show(config, args.device, args.run)
         elif args.command == "workflow":
-            from .workflow_setup import create, describe, connect_tijian
+            from .workflow_setup import create, describe, connect_tijian, show_tijian, set_tijian
             from .workflows import WorkflowProvider
             config = load_config(path)
             provider = WorkflowProvider(config.workflow_root)
-            if args.operation == "customize":
+            if args.operation == "tijian":
+                if args.tijian_operation == "show":
+                    report = show_tijian(config, args.identifier)
+                else:
+                    report = set_tijian(config, args.identifier, expected_revision=args.expected_revision,
+                                        executable=args.executable, permission=args.permission,
+                                        confirm_full=args.confirm_full)
+            elif args.operation == "customize":
                 from . import customization
                 if args.customize_operation == "show":
                     report = customization.show(config, args.identifier)
@@ -674,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
                         except UnicodeError:
                             raise RuntimeContractError("Customization content must be valid UTF-8") from None
                     if args.customize_operation == "prompt":
-                        values["mode"] = args.mode
+                        values["mode"] = "append"
                     elif args.customize_operation == "inference":
                         values.update({key: getattr(args, key) for key in ("model", "thinking") if getattr(args, key) is not None})
                     else:

@@ -14,7 +14,7 @@ from .errors import RuntimeContractError
 from .ipc import request
 from .workflows import WorkflowProvider
 
-REQUIRED_FLAGS = ("--cwd", "--session-dir", "--resume", "--mode", "--no-ui")
+REQUIRED_FLAGS = ("--cwd", "--session-dir", "--resume", "--mode", "--no-ui", "--system-prompt-template")
 
 
 def probe_omp(executable: str) -> list[dict]:

@@ -60,7 +60,7 @@ class OmpRpc:
         if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
             skill_directories = await self._skill_directories(binding["workspace"], environment)
         argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
-            binding.get("memory_context"), binding.get("workflow_instructions", ""),
+            binding.get("memory_context"), base=binding.get("base"),
             builtin_skills=builtin_skills, skill_directories=skill_directories))
         for option in ("tools", "extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
