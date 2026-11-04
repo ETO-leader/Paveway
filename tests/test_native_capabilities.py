@@ -18,7 +18,7 @@ class NativeCapabilityTests(NativeFixture):
             latest = json.dumps(body.get("messages", [{}])[-1])
             if child_marker and child_marker in latest:
                 return [({"role": "assistant", "content": "SUBAGENT_NATIVE_OK"}, "stop")]
-            if body["messages"][-1].get("role") == "user" and marker in latest and "Identity rule:" in json.dumps(body["messages"]):
+            if self.is_prompt_request(body, marker):
                 return [({"role": "assistant", "tool_calls": [{"index": 0, "id": "native-capability-call", "type": "function",
                     "function": {"name": name, "arguments": json.dumps(arguments)}}]}, "tool_calls")]
             return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
@@ -77,8 +77,7 @@ await browser.close({{all:true,kill:true}});'''
         (directory / "mcp.json").write_text(json.dumps({"mcpServers": {
             "fixture": {"command": str(server), "args": ["--read-only"]}}}))
         def response(body):
-            latest = body["messages"][-1]
-            if latest.get("role") == "user" and "NATIVE_MCP_PROBE" in json.dumps(latest) and "Identity rule:" in json.dumps(body["messages"]):
+            if self.is_prompt_request(body, "NATIVE_MCP_PROBE"):
                 names = [tool["function"]["name"] for tool in body.get("tools", [])]
                 name = next((name for name in names if name.endswith("tijian_problem_get")), None)
                 arguments = "{}"

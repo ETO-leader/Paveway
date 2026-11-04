@@ -1,5 +1,6 @@
 """Targeted tests for paveway.sh startup and workflow creation behaviors."""
 
+import json
 import os
 import pty
 import select
@@ -55,9 +56,12 @@ class PavewayScriptTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _run_script(self, args=(), input_lines=(), pty_eof=False, timeout=15,
-                    script_path=SCRIPT_PATH, python=sys.executable):
+                    script_path=SCRIPT_PATH, python=sys.executable,
+                    startup_only=True, env_overrides=None):
         master, slave = pty.openpty()
-        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1")
+        env = dict(os.environ, PAVEWAY_PROBE_STARTUP_ONLY="1" if startup_only else "0",
+                   PAVEWAY_UI="native")
+        env.update(env_overrides or {})
         env.pop("PAVEWAY_PYTHON", None)
         if python is not None:
             env["PAVEWAY_PYTHON"] = python
@@ -134,6 +138,130 @@ class PavewayScriptTests(unittest.TestCase):
                 proc.wait()
 
         return proc.returncode, output.decode("utf-8", errors="replace")
+
+    def _capture_script_exec(self, args=(), env_overrides=None):
+        """Capture the actual shell exec, isolating bootstrap and the terminal UI."""
+        capture = self.root / "python-calls.jsonl"
+        capture.unlink(missing_ok=True)
+        executable = self.root / "capture-python"
+        executable.write_text(f'''#!{sys.executable}
+import json
+from pathlib import Path
+import sys
+with Path({str(capture)!r}).open("a") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1] == "-c" and sys.argv[6]:
+    Path(sys.argv[5]).write_text("resolved-" + sys.argv[6])
+''')
+        executable.chmod(0o755)
+        code, output = self._run_script(
+            args=args, python=str(executable), startup_only=False,
+            env_overrides=env_overrides,
+        )
+        calls = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+        return code, output, calls
+
+    def test_native_startup_flags_reach_exec_unchanged(self):
+        cases = (
+            ([], []),
+            (["--new"], ["--new"]),
+            (["--conversation", "conversation-id"], ["--conversation", "conversation-id"]),
+            (["--workflow", "wf1", "--task", "training", "--new"],
+             ["--workflow", "wf1", "--task", "training", "--new"]),
+            (["--conversation", "conversation-id", "--workflow", "wf1", "--task", "training"],
+             ["--conversation", "conversation-id", "--workflow", "wf1", "--task", "training"]),
+            (["--coach", "alpha", "--new", "--task", "training"],
+             ["--new", "--task", "training", "--workflow", "resolved-alpha"]),
+            (["--coach", "alpha", "--conversation", "conversation-id"],
+             ["--conversation", "conversation-id", "--workflow", "resolved-alpha"]),
+        )
+        for args, expected in cases:
+            with self.subTest(args=args):
+                code, output, calls = self._capture_script_exec(args)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(len(calls), 2, calls)
+                self.assertEqual(calls[0][0], "-c")
+                self.assertEqual(calls[-1], [
+                    "-m", "oicoach_runtime", "native", "--config", str(self.config_path), *expected,
+                ])
+
+    def test_native_startup_preserves_config_path_argument(self):
+        config_path = self.root / "alternate config.toml"
+        code, output, calls = self._capture_script_exec(
+            ["--config", str(config_path), "--workflow", "wf1", "--new"],
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(calls[0][2], str(config_path))
+        self.assertEqual(calls[-1], [
+            "-m", "oicoach_runtime", "native", "--config", str(config_path),
+            "--workflow", "wf1", "--new",
+        ])
+
+    def test_new_and_conversation_are_mutually_exclusive_before_bootstrap(self):
+        for args in (
+            ["--new", "--conversation", "conversation-id"],
+            ["--conversation", "conversation-id", "--new"],
+        ):
+            with self.subTest(args=args):
+                code, output, calls = self._capture_script_exec(args)
+                self.assertEqual(code, 2, output)
+                self.assertIn("--new", output)
+                self.assertIn("--conversation", output)
+                self.assertIn("不可同时", output)
+                self.assertEqual(calls, [], "Invalid flags must not bootstrap the runtime")
+
+    def test_conversation_missing_value_is_explicit_before_bootstrap(self):
+        for args in (["--conversation"], ["--conversation", ""], ["--conversation", "--new"]):
+            with self.subTest(args=args):
+                code, output, calls = self._capture_script_exec(args)
+                self.assertEqual(code, 2, output)
+                self.assertIn("缺少 --conversation 的值", output)
+                self.assertEqual(calls, [])
+
+    def test_native_startup_flags_reject_legacy_ui_before_bootstrap(self):
+        for selection in (["--new"], ["--conversation", "conversation-id"]):
+            for args, env in (
+                (["--legacy-ui", *selection], None),
+                ([*selection, "--legacy-ui"], None),
+                (selection, {"PAVEWAY_UI": "legacy"}),
+            ):
+                with self.subTest(args=args, env=env):
+                    code, output, calls = self._capture_script_exec(args, env)
+                    self.assertEqual(code, 2, output)
+                    self.assertIn(selection[0], output)
+                    self.assertIn("--legacy-ui", output)
+                    self.assertIn("原生", output)
+                    self.assertEqual(calls, [], "Legacy UI must reject native flags before boot")
+
+    def test_explicit_native_overrides_legacy_environment_for_startup_flags(self):
+        for selection in (["--new"], ["--conversation", "conversation-id"]):
+            with self.subTest(selection=selection):
+                code, output, calls = self._capture_script_exec(
+                    ["--native", *selection], {"PAVEWAY_UI": "legacy"},
+                )
+                self.assertEqual(code, 0, output)
+                self.assertEqual(calls[-1], [
+                    "-m", "oicoach_runtime", "native", "--config", str(self.config_path), *selection,
+                ])
+
+    def test_legacy_ui_still_forwards_workflow_and_task_without_native_flags(self):
+        code, output, calls = self._capture_script_exec(
+            ["--legacy-ui", "--workflow", "wf1", "--task", "training"],
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(calls[-1], [
+            "-m", "oicoach_runtime", "ui", "--config", str(self.config_path),
+            "--workflow", "wf1", "--task", "training",
+        ])
+
+    def test_help_describes_native_startup_selection_without_bootstrap(self):
+        code, output, calls = self._capture_script_exec(["--help"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("--new", output)
+        self.assertIn("--conversation ID", output)
+        self.assertIn("不可同时", output)
+        self.assertIn("原生", output)
+        self.assertEqual(calls, [])
 
     def test_legacy_tijian_table_does_not_block_startup_or_get_rewritten(self):
         workspace = self.root / "workspace"

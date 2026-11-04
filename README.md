@@ -25,9 +25,13 @@ omp --version
 ```bash
 ./paveway.sh --workflow test01
 ./paveway.sh --coach alpha
+./paveway.sh --workflow test01 --new
+./paveway.sh --conversation CONVERSATION_ID
 ./paveway.sh --config /absolute/config.toml --workflow test01 --task training
 ./paveway.sh --legacy-ui
 ```
+
+`--new` 显式新建 Conversation；`--conversation ID` 选择已有 Conversation。两者不可同时使用，且仅适用于原生界面；与 `--legacy-ui`（包括 `PAVEWAY_UI=legacy` 默认值）一起使用会在启动 Runtime 前报错。未指定时沿用原生界面的默认会话选择，不自动添加 `--new`。`--workflow`／`--coach`、`--task` 和 `--config` 的用法不变。
 
 默认私密数据位于被 Git 忽略的 `.runtime/`。直接使用 CLI 时默认走 XDG 配置；要操作一键脚本的数据，请始终传同一 `--config`。
 

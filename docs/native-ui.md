@@ -8,12 +8,16 @@ Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动
 ./paveway.sh
 ./paveway.sh --native --workflow test01
 ./paveway.sh --native --coach alpha
+./paveway.sh --new
+./paveway.sh --conversation CONVERSATION_ID
 ./paveway.sh --legacy-ui
 # 已启动 Runtime 时也可直接进入：
 oicoach-runtime native --config /absolute/config.toml --workflow test01
 ```
 
 同一 workflow/task 默认接续最近的已释放原生 Conversation；不传 task 时恢复最近使用的 task。多 Profile 的第一次启动可用方向键选择，已有原生记录时优先恢复最近使用的 Profile。`--new` 新建 Conversation；`--conversation ID` 明确恢复。Persona 更新要求新的 Paveway Conversation，不会热改当前身份；原生 `/new` 只在本次加载的配置中创建另一个 OMP Session，要加载新 Persona 请用 `/paveway profile` 的 New conversation 或重新启动加 `--new`。
+
+`--new` 与 `--conversation ID` 互斥，且仅适用于原生入口；`--legacy-ui` 或 `PAVEWAY_UI=legacy` 下明确拒绝，不会静默忽略。两者都不传时保留默认续接行为，不会为了绕过所有权冲突而自动新建。
 
 初次升级需在空闲时重启 daemon，使其加载新的 frontend IPC；旧 daemon 不支持该协议时入口明确拒绝，已有请求不被打断。原生入口目前只精确加载 Paveway trusted extension，不自动发现其他用户 Extension；内建工具、Workspace MCP、Skills 和 Rules 仍由 OMP 提供，并遵守配置权限。
 
@@ -97,5 +101,11 @@ oicoach-runtime sync sessions --config /absolute/config.toml --json
 ```
 
 第二 owner、旧 generation、目录逃逸或未释放的锁被拒绝；心跳超时不证明进程死亡。异常退出／daemon 重启留下 uncertain，需检查副作用并确认旧进程与锁已退出才显式恢复；也可新建 Conversation，原数据保留。前台没有严格 settled 的成功声明，不自动重播用户输入。
+
+空闲界面的 Ctrl+D 和 `/exit` 走同一所有权收尾路径：按键透传给 OMP，等待 OMP 与 guardian 退出并回收子进程，关闭本次 `owner.lock` 描述符，再以最后一次已认证的 generation/token 提交 `frontend.finish`。Runtime 校验进程已退出、读取已落盘 Session 后，提交 `released` 与 `exit_code=0`。`session_shutdown` 只是观察记录，不能代替 finish；已释放记录在 Runtime 重启后仍可直接续接。
+
+如果收尾请求失败，入口报告 `native_finish_failed`，区分 `daemon_unavailable`、`conflict`、`internal_error` 等类别，并单独显示 OMP 的退出码（或 unknown）；不回显请求载荷、token 或 Session 正文。OMP 正常退出但释放未确认时，入口返回非零；原有非零退出码／启动异常优先保留，并额外报告收尾失败。归档校验未通过时也不宣称成功释放。
+
+遇到此诊断，先用同一配置启动 Runtime，再用 `frontend show/list` 查看持久化状态。仅对 `uncertain` 且确认旧进程、锁和副作用安全的记录显式 `frontend recover`；也可 `--new` 保留旧历史继续。不会自动 recover、重试退出提交或重发模型请求。Runtime 失联时可能连 finish 都未提交，重启时仍按原有规则保留 `uncertain`，不从关闭事件或心跳推断成功。
 
 使用 `--legacy-ui` 或 `PAVEWAY_UI=legacy` 可切回原界面；旧 CLI/RPC 保留。这里没有 schema migration，旧表语义不变。回退 UI 与降级旧二进制不同：新增 Persona/coach 设置字段需要新版本读取；要使用旧二进制须先停服务并从私密配置备份恢复，不能删除用户数据或重试 uncertain 来“修复”。

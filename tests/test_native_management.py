@@ -24,14 +24,14 @@ except ImportError:
 
 
 class NativeManagementTests(NativeFixture):
-    def open_ui(self, launcher=False, *, columns=120, screen=None):
+    def open_ui(self, launcher=False, *, columns=120, screen=None, args=()):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, columns, 0, 0))
         stream = pyte.ByteStream(screen) if screen is not None else None
         argv = [sys.executable, "-m", "oicoach_runtime", "native"]
         if launcher:
             argv = [str(Path(__file__).resolve().parents[1] / "paveway.sh")]
-        process = subprocess.Popen([*argv, "--config", str(self.path), "--workflow", "native-test"],
+        process = subprocess.Popen([*argv, "--config", str(self.path), "--workflow", "native-test", *args],
             env={**self.env, "PAVEWAY_PYTHON": sys.executable}, cwd=self.root, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         os.set_blocking(master, False)

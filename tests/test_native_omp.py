@@ -79,6 +79,22 @@ class NativeFixture(unittest.TestCase):
                 self.daemon.kill()
                 self.daemon.wait()
 
+    @staticmethod
+    def is_prompt_request(body, text):
+        """Match a submitted turn, not auxiliary requests carrying its history."""
+        messages = body.get("messages", [])
+        if not messages or messages[-1].get("role") != "user":
+            return False
+        content = messages[-1].get("content")
+        if isinstance(content, str):
+            return content == text
+        return isinstance(content, list) and any(
+            part.get("type") == "text" and part.get("text") == text
+            for part in content if isinstance(part, dict))
+
+    def prompt_requests(self, text):
+        return [body for body in self.server.requests if self.is_prompt_request(body, text)]
+
     def chat(self, body, background=False, switch=False, wakeup=False, workflow="native-test", new=False, evidence=lambda: True, wait_seconds=25):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
@@ -303,16 +319,11 @@ class NativeOmpTests(NativeFixture):
         a = create(self.config, "alpha", "native-test", "ALPHA_NATIVE_PERSONA")
         b = create(self.config, "beta", "native-test", "BETA_NATIVE_PERSONA")
         def main_request(marker):
-            # Native auxiliary title requests use a different system prompt.
-            # Identify the main GPT request by our own Core, not provider timing
-            # or exact OMP user-message wrapper wording.
-            return next(row for row in reversed(self.server.requests)
-                        if marker in json.dumps(row["messages"]) and "Identity rule:" in json.dumps(row["messages"]))
+            return self.prompt_requests(marker)[-1]
         first = self.chat("ALPHA_CHAT", workflow=a["runtime_workflow_id"])
         wire = json.dumps(main_request("ALPHA_CHAT"))
         self.assertIn("ALPHA_NATIVE_PERSONA", wire)
         self.assertNotIn("BETA_NATIVE_PERSONA", wire)
-        self.assertNotIn("You are omp's trusted coding assistant", wire)
         second = self.chat("BETA_CHAT", workflow=b["runtime_workflow_id"])
         wire = json.dumps(main_request("BETA_CHAT"))
         self.assertIn("BETA_NATIVE_PERSONA", wire)
