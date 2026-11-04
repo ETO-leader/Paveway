@@ -1,9 +1,11 @@
-"""Targeted tests for runtime version and build compatibility checking."""
+"""Runtime compatibility tests use real startup/IPC and the shared fake OMP executable."""
 
 import asyncio
 import hashlib
 import os
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -20,7 +22,7 @@ from oicoach_runtime.compatibility import (
     probe_daemon,
     restart_guidance,
 )
-from oicoach_runtime.config import Config, ServerConfig, config_text, ensure_private_directory, defaults
+from oicoach_runtime.config import AgentConfig, Config, ServerConfig, config_text, ensure_private_directory, defaults
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.scheduler import Runtime
@@ -276,11 +278,14 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         self.workflow_dir = self.root / "workflows"
         self.state_dir = self.root / "state"
         self.workspace_dir = self.root / "workspace"
+        fake_omp = PROJECT_DIR / "tests" / "fake_omp.py"
+        fake_omp.chmod(0o755)
 
         self.config = Config(
             state_dir=self.state_dir,
             workflow_root=self.workflow_dir,
             server=ServerConfig(socket_path=str(self.state_dir / "runtime.sock")),
+            agent=AgentConfig(executable=str(fake_omp)),
         )
         ensure_private_directory(self.state_dir)
         ensure_private_directory(self.workflow_dir)
@@ -292,18 +297,28 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         create(self.config, "test-wf", self.workspace_dir)
 
     def tearDown(self):
-        pid_file = self.state_dir / "daemon.pid"
-        if pid_file.exists():
-            try:
-                pid = int(pid_file.read_text().strip())
-                os.kill(pid, 15)
-            except (OSError, ValueError):
-                pass
-        self.temp_dir.cleanup()
+        try:
+            pid_file = self.state_dir / "daemon.pid"
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    pid_fd = os.pidfd_open(pid)
+                except (ProcessLookupError, ValueError):
+                    pass
+                else:
+                    try:
+                        signal.pidfd_send_signal(pid_fd, signal.SIGTERM)
+                        if not select.select([pid_fd], [], [], 5)[0]:
+                            signal.pidfd_send_signal(pid_fd, signal.SIGKILL)
+                            self.assertTrue(select.select([pid_fd], [], [], 5)[0],
+                                            "Test daemon did not exit after SIGKILL")
+                    finally:
+                        os.close(pid_fd)
+        finally:
+            self.temp_dir.cleanup()
 
     def _run_paveway(self, extra_env=None):
         import pty
-        import select
         master, slave = pty.openpty()
         env = {
             **os.environ,
@@ -348,6 +363,12 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         self.assertEqual(code, 0, f"Expected 0, got {code}. Output:\n{output}")
         self.assertIn("正在启动后台 Runtime…", output)
 
+        status = probe_daemon(self.config.server.socket_path)
+        self.assertIsNotNone(status)
+        self.assertEqual(status["runtime_version"], __version__)
+        self.assertEqual(status["native_protocol_version"], EXPECTED_NATIVE_PROTOCOL_VERSION)
+        self.assertEqual(status["runtime_build_id"], runtime_build_id())
+
     def test_case_b_compatible_daemon_reused(self):
         """Case B: When compatible daemon is running, paveway.sh reuses it without starting another."""
         # First start daemon
@@ -365,7 +386,7 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         self.assertEqual(pid_file.read_text().strip(), pid1)
 
     def test_case_d_incompatible_build_id_rejects_and_does_not_modify_state(self):
-        """Case D: When running daemon has mismatched build_id, paveway.sh fails with code != 0 and does not launch OMP."""
+        """Case D: Reject a mismatched client build without changing the live daemon or persisted state."""
         # Start daemon normally
         code1, _ = self._run_paveway()
         self.assertEqual(code1, 0)
@@ -386,11 +407,25 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         )
         fake_python.chmod(0o755)
 
+        status_before = probe_daemon(self.config.server.socket_path)
+        self.assertIsNotNone(status_before)
+        socket_inode = Path(self.config.server.socket_path).stat().st_ino
+
+        def persisted_files():
+            # SQLite's shared-memory read marks are not persisted application state.
+            return {path.relative_to(self.root): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in self.root.rglob("*") if path.is_file() and not path.name.endswith("-shm")}
+
+        files_before = persisted_files()
         code2, output2 = self._run_paveway(extra_env={"PAVEWAY_PYTHON": str(fake_python)})
         self.assertNotEqual(code2, 0)
         self.assertIn("检测到运行中的 Paveway daemon 与当前代码不一致", output2)
         self.assertIn("当前版本与 daemon 版本相同，但代码构建指纹不同", output2)
         self.assertIn("pgrep -fa \"oicoach_runtime serve\"", output2)
+        self.assertNotIn("正在启动后台 Runtime…", output2)
+        self.assertEqual(probe_daemon(self.config.server.socket_path), status_before)
+        self.assertEqual(Path(self.config.server.socket_path).stat().st_ino, socket_inode)
+        self.assertEqual(persisted_files(), files_before)
 
 
 if __name__ == "__main__":
