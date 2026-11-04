@@ -11,7 +11,17 @@ export function registerManagement(pi, config, requestSwitch) {
             "--config", config.config_path, "--json"], {timeout: 30000});
         if (result.code) {
             let message = "Operation failed or outcome is unknown; inspect state before retrying";
-            try { message = JSON.parse(result.stderr).error.message; } catch {}
+            try { message = JSON.parse(result.stderr).error.message; } catch {
+                try {
+                    const report = JSON.parse(result.stdout);
+                    if (report.api_version === 1 && ["linux", "windows"].includes(report.backend)) {
+                        message = ({command_missing: report.backend === "linux" ? "未找到 notify-send，请安装 libnotify-bin" : "未找到 powershell.exe，请检查 WSL Windows 互操作",
+                            desktop_rejected: "系统未接受桌面通知，请检查桌面会话和通知权限",
+                            desktop_unreachable: "无法启动桌面通知程序，请检查运行环境",
+                            notification_timeout: "桌面通知结果未知，请查看通知中心"})[report.code] || message;
+                    }
+                } catch {}
+            }
             throw new Error(message);
         }
         try { return JSON.parse(result.stdout); }
@@ -251,6 +261,18 @@ export function registerManagement(pi, config, requestSwitch) {
     }, page);
     actions.settings = async ctx => openSettingsPage(ctx, "settings");
     actions.tijian = async ctx => openSettingsPage(ctx, "tijian");
+    actions.notifications = async ctx => {
+        const action = await ctx.ui.select("定时任务桌面弹窗", ["status", "test popup", "enable", "enable (hide body)", "disable"]);
+        if (!action) return;
+        if (action.startsWith("enable")) {
+            const backend = await ctx.ui.select("通知环境", ["auto", "linux", "windows"]);
+            if (!backend) return;
+            await cli(["notifications", "enable", "--backend", backend, ...(action === "enable (hide body)" ? ["--hide-body"] : [])]);
+            await cli(["notifications", "install", "--now", "--replace"]);
+            show(ctx, await cli(["notifications", "status"]));
+        } else show(ctx, await cli(["notifications", action === "test popup" ? "test" : action]));
+    };
+
     actions.service = async ctx => {
         const action = await ctx.ui.select("Runtime systemd service", ["status", "logs", "install", "start", "stop", "restart", "enable", "disable", "uninstall"]);
         if (!action) return;

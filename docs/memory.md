@@ -70,6 +70,8 @@ kind 是 `fact | preference | summary | hypothesis`。这是笔记作者的分�
 
 仅在 workflow.memory_enabled=true 时，派发前读取有效笔记，注入系统 prompt 的 `Runtime memory snapshot` 数据段。快照含 `contract_version=1`、`notes`、`truncated`、`token_limit=null`、`byte_limit=65536` 和可信度说明。pinned、task 专属及近期更新优先，最多检查 101 条候选；超出 64 KiB 传输边界的笔记可经 list/show 查询。单条笔记仍最多 4096 UTF-8 字节，记忆总库不受快照大小限制。
 
+原生前台的系统提示词快照在启动 OMP 时生成，不会随着数据库变化实时替换。启动后保存的新笔记立即可用 `paveway_memory_list/show` 查询，写入工具结果也进入当前回合；重新启动原生进程时加载新的系统快照。后台每次派发仍读取当时有效笔记。应区分“数据库已保存”“当前启动快照已包含”和“模型已调用工具读到”，不能把三者视为同一件事。自动维护依赖 GPT 实际调用工具，不是把每句话自动转换为笔记。
+
 ### 对话窗口
 
 2026-10-30 用户明确取消固定 10k token 限制。Runtime 不再自动加载 `context-window.mjs`，不再截短用户输入／工具结果或要求 `paveway_context_ready` 握手；对话上下文及压缩由 OMP 和所选模型管理。旧算法文件及故障探针仅保留作历史回归资料，不代表当前运行策略。及时维护记忆及历史检索要求继续有效；模型原生上下文窗口仍有自身上限。

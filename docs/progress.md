@@ -402,7 +402,6 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 
 依据契约 D4 保留旧入口，M1–M6 不提前验收；未修改生产 schema、用户数据、OMP／Tijian 上游或默认启动器。Windows Tijian MCP、真实模型、Browser／Subagent 未测试。复现命令、日志、失败样例与回退边界见 [本机复验记录](verification/omp-m0-wsl-2026-10-30.md)。
 
-
 ## 2026-10-30 — M0 范围变更：取消固定 10k 限制
 
 用户在原生重构期间明确回复「取消 10k limit」，取代先前固定 Guard 门槛。后台不再加载预算扩展，只验证原生 RPC ready/protocol；prompt 不再宣称 10k 裁剪，记忆快照去掉 token 上限，仅保留 64 KiB IPC 字节边界。用户自定义 prompt、Skill、既存 event.md 和历史原文均未改写。旧预算算法仅保留历史探针，不进入默认路径。
@@ -617,6 +616,56 @@ Managed 的权限执行由 Tijian 原生 MCP Server 负责，Paveway 只保存�
 目前设置页只保证配置已保存；真实服务可用性及实际工具权限仍需重启后由 OMP 与 MCP 完成握手确认，没有实现热重载。
 
 对应提交：`ea72b9f`。
+
+## 2026-11-03 — 启动时提供异常会话恢复入口
+
+用户实际启动提示 Native conversation has an active or uncertain owner。后台及配置均正常；阻碍是异常结束后留下的 uncertain 登记。现场检查确认旧 guardian/OMP 均退出、文件锁空闲、历史持久化有效后，先将原生 Session 复制到私密 recovery-backups，再通过既有 frontend.recover 接口解除登记。未重播请求、重试任务或修改 Tijian；未把实际用户历史、路径标识和内容写入源码。实际项目 ./paveway.sh 的无提示词 PTY smoke 随后进入原生 UI，/exit 正常返回 0。
+
+修正原生启动 UX：同一 workflow/task 的最近或显式 Conversation 未释放时，提供原生启动前恢复选择。uncertain 提供明确恢复、新建和取消；其他未释放状态没有恢复选项。恢复仍调用 Runtime 的原进程／启动身份／文件锁／档案完整性检查，后端拒绝时不会自动新建或重发；新建不修改旧记录，跨 scope 恢复被拒绝。此修复在客户端加载，不需要为此重启正在正常工作的 daemon。
+
+所有权／启动选择定向单元 **9 项通过（0.186 秒）**，`/tmp/paveway-startup-recovery-unit.log`。真实 OMP + 隔离 provider 的故障恢复 **3 项通过（15.085 秒）**，`/tmp/paveway-startup-recovery-native.log`，包括恢复对话框接续原 Session、模型请求数不增加，以及活会话不可接管的原检查。原生管理回归 **6 项通过（20.892 秒）**，`/tmp/paveway-recovery-management-regression.log`。此处实际用户环境 smoke 未发送模型输入；已有异常执行的外部副作用仍由用户核对，不宣称 exactly-once。
+
+## 2026-11-03 — 记忆链路复验
+
+按用户要求检查记忆启用、系统注入、SQLite 持久化及原生 AgentTool。实际运行会话启用 memory，系统含记忆工具指引及启动快照，token_limit=null、byte_limit=65536。通过当前 owner/generation 绑定的 native_memory.show 逐条只读回验，版本／正文与 recall 一致；未在正式笔记库创建、修改或删除任何内容。现场笔记数量、正文、key 和用户历史不记录到源码。历史读取错误需区分创建前的 not_found 与已解决的旧 daemon Skill 校验问题，不把它们误报为本轮持久化失败。
+
+Memory／后台重启与禁用权限定向回归 **9 项通过（1.838 秒）**，日志 `/tmp/paveway-memory-audit-unit.log`。强化真实 OMP + 本地 fixture 验收：原生 put 后停止并重启 daemon，在全新 Conversation 的 SYSTEM 快照中找到持久笔记，确认不是旧聊天历史回放；另完整驱动 put/show/update/旧版本写入拒绝/delete/list 工具链，核对 v3 tombstone、删除后 recall 不再注入。原生 **2 项全部通过（7.951 秒）**，`/tmp/paveway-memory-audit-native.log`。没有付费模型调用。
+
+限制已明确写入 memory.md：原生 SYSTEM 记忆为进程启动时快照，新增笔记能立刻通过工具读取，但不会热替换 SYSTEM；重启原生进程刷新，后台每次派发读取当时笔记。快照 64KiB、单条 4096 字节，无固定 10k token 裁剪；自动记笔记仍依赖 GPT 成功调用工具，不等同于逐句自动提取。
+
+## 2026-11-03 — 在线唤醒消息的可见提示
+
+用户反馈唤醒异常。只读核查近期事件已有 prompt_result completed、settled、正常退出及非空提醒／结果持久化，队列不在熔断；不能把历史错误码当作本次执行失败。发现原生扩展轮询只更新 Inbox 数字，用户未主动打开收件箱时缺少明显的到达提示。本轮没有向正式队列插入事件、重发已有任务、确认用户已读或中断原生前台。
+
+新增原生 UI 到达通知：首次刷新仅记录现有消息，后续轮询遇到新的未确认 delivery_id 时发一次不含正文的通知，引导 /inbox 查看。按 ID 防重复，状态只到 offered，不自动 acknowledged，不 sendMessage 或 triggerTurn，不向模型上下文注入通知，不在重连时重播历史；观察集合有大小界限。UI 关闭时原持久 Inbox 行为不变，原生扩展需重新进入 UI 加载，daemon 及已有排程无需重启／重建。
+
+真实 OMP／PTY 管理与唤醒回归 **10 项全部通过（48.470 秒）**，`/tmp/paveway-wakeup-notice-regression.log`。新用例覆盖到期通知、未发送草稿在通知后仍可原样提交、通知不进模型请求、/inbox 读取并取消确认不变成已读、重新进入不播报旧通知，保留 UI 退出后执行与 daemon 重启恢复场景。唤醒／Inbox 单元 **4 项通过（0.198 秒）**，`/tmp/paveway-wakeup-notice-unit.log`。新测试模型仅本地 fixture；具体用户提醒内容、事件 ID 和执行结果不进入源码。
+
+## 2026-11-03 — 直接展示后台定时回复
+
+用户进一步澄清，希望看到提醒之后 GPT 说话，而不仅是收件箱数字或“去查看”提示。原机制在独立后台 Session 生成最终回复后已持久化，但前台未展示正文；此前增加数量通知仍未充分满足这一体验。现把新到达的提醒／结果按创建顺序展示正文，明确标为后台定时回复或执行状态，超长标记节选并保留 /inbox 全文入口。过滤终端控制字符，继续按 delivery_id 防重复，不自动确认已读。
+
+显示依旧仅为 UI 通知，不 sendMessage、不再次调用模型、不改写原生 Session，也不冒充前后台共享对话上下文；旧 Inbox 不因重连重复显示。实际 OMP／PTY 定向用例 **1 项通过（13.969 秒）**，`/tmp/paveway-wakeup-reply-preview.log`：后台实际回复标记出现在屏幕，未发送草稿保持原样；用户随后提交的前台请求中没有后台回复或通知文字；/inbox 可查看，取消确认不改变已读，重新进入不重播。测试模型仅本地 fixture，没有修改或重发正式任务。
+
+## 2026-11-04 — 0.22.0 定时任务桌面弹窗（Ubuntu／WSL）
+
+用户明确需求为定时任务到期提醒。新增独立通知用户服务，监听已有 reminder 意图事件的到期时间，不依赖前台 UI、主 Runtime dispatcher 或模型 Run 槽位。主服务／活前台未被重启；桌面设置保存在私密设备本地文件。默认关闭，显式启用后覆盖未来到期提醒，不重播启用前已过期历史。到期提醒与发送意图同事务持久化，按事件／到期时间去重；显式重排可产生新时间的提醒。未知结果不盲目重试、不确认已读、不改 Run／事件执行状态，系统失败时 Inbox 仍有提醒。
+
+Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显示 Toast，JSON 数据走 stdin／XML 文本节点；未安装模块或改注册表。首次探针发现 PowerShell 的 WinRT Setting 属性可能为空，已修复类型加载及空值处理，随后 API 接受且用户确认桌面弹窗正常。另以隔离 SQLite、真实 systemd 用户服务和两秒到期事件完成 Windows 弹窗链路实测，无前台、无主 Runtime、无模型调用，临时验证服务已卸载。Ubuntu 使用 notify-send／freedesktop DBus；本机 WSLg 没有原生通知服务，Linux 路径通过进程 fixture 验证，未冒充原生 GNOME 画面实测。
+
+新增 notifications enable/disable/status/test/run/install 及 `/paveway notifications` 菜单；UI 给出缺少通知程序、桌面拒绝和超时的具体提示。独立 unit 不加载模型凭据环境文件，子进程只继承桌面必要环境，不将 API key／代理值传到通知程序。Windows 用户服务可探测有效 WSL interop socket，Linux 可探测当前用户 session bus。
+
+最终完整回归 **328 项：291 通过、37 条件跳过，105.857 秒，无失败**，日志 `/tmp/paveway-desktop-complete-regression.log`。最终通知／Inbox／部署定向 **30 项通过（3.379 秒）**，`/tmp/paveway-desktop-final-checks.log`，涵盖队列忙碌仍到期、UI 关闭、取消／重排、重启去重、未知发送结果、正文隐藏与凭据隔离。原生 UI 原有提醒回归 **1 项通过（14.803 秒）**，`/tmp/paveway-desktop-native-regression.log`；随后新增 UI 环境失败诊断 **1 项通过（2.489 秒）**，`/tmp/paveway-desktop-menu-validation.log`。全部自动化模型测试仅本地 fixture。0.22.0 wheel 构建通过并核对包含 PowerShell 资源及通知 worker，无私密运行文件。
+
+本机独立通知服务已显式启用／安装，active/enabled，worker 0.22.0；更新通知服务前后原生前台 generation／状态一致。主 Runtime 保持原进程运行，新功能无需结束当前 GPT 会话。具体启停与环境边界见 [桌面提醒](desktop-notifications.md)。不提供手机推送或在 Windows／WSL 关闭、休眠时唤醒系统的能力；accepted 是系统接收，不是用户已读。
+
+## 2026-11-04 — 合并远端提示词／设置重构并同步源码
+
+同步前本地 main 为 bb4a015，远端更新至 520643d：本地 5 个提交、远端 8 个提交分叉，采用保留双方历史的 merge。人工合并版本导出、新设置页／Tijian 入口与桌面通知菜单、PTY 测试驱动及异常恢复测试，保持应用版本 0.22.0，同时保留远端 runtime_build_id、分层 Core／base Prompt 架构、受管 MCP 权限和设置页修复。新增 Windows 通知脚本的构建指纹覆盖，避免 PowerShell 资源变化被漏检；README 同步为最终模板架构。
+
+初始本地原生夹具依赖旧 Identity 文本，合并后按实际提交请求及新 Core 识别主请求，保留原文持久化、无重复模型调用及提示词隔离断言。停止修改运行代码后统一复验：全量 **412 项，360 通过、52 条件跳过，115.838 秒**，`/tmp/paveway-git-merge-full.log`；原生设置／恢复／记忆／唤醒 **28 项全部通过（147.007 秒）**，`/tmp/paveway-git-merge-native-final.log`；构建兼容与桌面通知 **29 项通过（3.914 秒）**，`/tmp/paveway-git-merge-compat.log`。原生模型响应仅本地 fixture，未调用私人付费 Provider。
+
+本次仅同步源码；未重启正式 Runtime、通知服务或活前台，未修改私密 Prompt、Skills、event.md 或用户数据 Git。远端新增严格版本／构建匹配检查，已运行的旧 daemon 需要在前台退出、任务空闲后按启动器指引重启，再加载合并后的新架构。
 
 ## 2026-11-04 — 一键启动会话选择与原生退出恢复修复
 

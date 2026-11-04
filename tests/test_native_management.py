@@ -24,7 +24,7 @@ except ImportError:
 
 
 class NativeManagementTests(NativeFixture):
-    def open_ui(self, launcher=False, *, columns=120, screen=None, args=()):
+    def open_ui(self, launcher=False, recover=False, *, columns=120, screen=None, args=()):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, columns, 0, 0))
         stream = pyte.ByteStream(screen) if screen is not None else None
@@ -78,6 +78,9 @@ class NativeManagementTests(NativeFixture):
                 pump()
             process.wait(timeout=5)
             self.assertEqual(process.returncode, 0, raw.decode(errors="replace")[-2000:])
+        if recover:
+            until("Session recovery")
+            send(b" \t\r")
         until("OMP native")
         return process, raw, send, until, pump, exit_ui
 
@@ -423,6 +426,59 @@ class NativeManagementTests(NativeFixture):
         self.assertIn("旧 [tijian] 配置已保留但不再执行".encode(), raw)
         self.assertEqual(self.path.read_text(), original)
         self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
+
+    def test_due_inbox_notice_preserves_draft_and_does_not_ack_or_replay(self):
+        def response(body):
+            background = "UI_NOTICE_FIXTURE" in json.dumps(body["messages"][-1])
+            return [({"role": "assistant", "content": "BACKGROUND_UI_REPLY_SENTINEL" if background else "M0_REPLY"}, "stop")]
+        self.server.response_factory = response
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/wakeup in 1s UI_NOTICE_FIXTURE\r")
+        until("native_wakeup")
+        draft = "UNSENT_DRAFT_MUST_SURVIVE_NOTICE"
+        send(draft)
+        until("新的唤醒消息", lambda: len(request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]) >= 2)
+        until("BACKGROUND_UI_REPLY_SENTINEL")
+        self.assertIn("GPT · 后台定时任务回复".encode(), raw)
+        self.assertFalse(any(draft in json.dumps(body["messages"]) for body in self.server.requests))
+        send("\r")
+        until("M0_REPLY", lambda: any(draft in json.dumps(body["messages"]) for body in self.server.requests) and
+            request(self.config.server.socket_path, "frontend.list")[0]["status"] == "idle")
+        self.assertFalse(any("新的唤醒消息" in json.dumps(body["messages"], ensure_ascii=False) for body in self.server.requests))
+        main = [body for body in self.server.requests if self.is_prompt_request(body, draft)]
+        self.assertTrue(main)
+        self.assertTrue(all("BACKGROUND_UI_REPLY_SENTINEL" not in json.dumps(body["messages"]) for body in main))
+        send("/inbox\r")
+        until("Paveway Inbox")
+        send("\r")
+        until("Acknowledge this message?")
+        send(b"\x1b")
+        for _ in range(3): pump(.1)
+        exit_ui()
+        rows = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]
+        self.assertEqual({row["kind"] for row in rows}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] != "acknowledged" for row in rows))
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        for _ in range(3): pump(.1)
+        self.assertNotIn("新的唤醒消息".encode(), raw)
+        self.assertNotIn(b"BACKGROUND_UI_REPLY_SENTINEL", raw)
+        exit_ui()
+
+    def test_desktop_notification_failure_is_visible_without_a_model_turn(self):
+        from oicoach_runtime.notifications import configure
+        configure(self.config, True, backend="linux")
+        binary = self.root / "bin/notify-send"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\nexit 2\n")
+        binary.chmod(0o700)
+        self.env["PATH"] = str(binary.parent) + os.pathsep + self.env["PATH"]
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway notifications\r")
+        until("定时任务桌面弹窗")
+        send(b"\x1b[B\r")
+        until("系统未接受桌面通知")
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
 
     def test_prompt_dialog_saves_privately_without_a_model_turn(self):
         screen, raw, send, until, pump, exit_ui = self.open_settings_ui()

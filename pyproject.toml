@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oicoach-runtime"
-version = "0.21.2"
+version = "0.22.0"
 description = "Durable, workflow-independent OI agent runtime infrastructure"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,4 +21,4 @@ oicoach-runtime = "oicoach_runtime.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs", "bundled/skills/*/SKILL.md"]
+oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs", "bundled/*.ps1", "bundled/skills/*/SKILL.md"]

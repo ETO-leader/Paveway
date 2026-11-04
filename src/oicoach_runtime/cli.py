@@ -85,6 +85,18 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--with-model", action="store_true", help="Run three small model turns to verify resume and task isolation")
     common(commands.add_parser("serve", help="Run the persistent foreground daemon"))
     common(commands.add_parser("status", help="Query daemon, queue and adapter status"))
+    notifications = commands.add_parser("notifications", help="Desktop due reminders on Ubuntu and WSL/Windows")
+    notification_actions = notifications.add_subparsers(dest="operation", required=True)
+    for action in ("status", "enable", "disable", "test", "run", "install"):
+        child = notification_actions.add_parser(action)
+        common(child)
+        if action in ("enable", "test"):
+            child.add_argument("--backend", choices=("auto", "linux", "windows"), default=None)
+        if action == "enable":
+            child.add_argument("--hide-body", action="store_true", help="Only show a generic due notice on the desktop")
+        if action == "install":
+            child.add_argument("--replace", action="store_true")
+            child.add_argument("--now", action="store_true", help="Enable and start the independent user notification service")
     ui = commands.add_parser("ui", help="Open the interactive terminal interface backed by CLI subprocesses")
     common(ui)
     ui.add_argument("--workflow", help="Initially selected workflow; otherwise choose in the UI")
@@ -585,6 +597,28 @@ def main(argv: list[str] | None = None) -> int:
             from .proxy import child_environment
             os.environ.update(child_environment(path))
             report = asyncio.run(verify_omp(load_config(path), with_model=args.with_model))
+        elif args.command == "notifications":
+            from . import notifications, service
+            config = load_config(path)
+            if args.operation == "run":
+                asyncio.run(notifications.run(config))
+                return 0
+            elif args.operation == "install":
+                report = service.install(path, name=notifications.UNIT, replace=args.replace, command=("notifications", "run"))
+                if args.now:
+                    report["activation"] = service.control(path, "enable", name=notifications.UNIT, now=True, sync_proxy=False)
+                    report["enabled_or_started"] = True
+            elif args.operation in ("enable", "disable"):
+                report = notifications.configure(config, args.operation == "enable", getattr(args, "backend", None),
+                                                 not args.hide_body if args.operation == "enable" else None)
+            elif args.operation == "test":
+                report = {"api_version": 1, **asyncio.run(notifications.send(backend=args.backend or notifications.settings(config)["backend"],
+                    title="Paveway · 弹窗测试", body="定时任务到期提醒测试。此消息不创建任务、不调用模型。")), "accepted_is_not_user_seen": True}
+                print(json.dumps(report, ensure_ascii=False))
+                return 0 if report["status"] == "accepted" else 1
+            else:
+                report = notifications.status(config)
+                report["service"] = service.status(path, name=notifications.UNIT)
         elif args.command == "service":
             from . import service
             service.unit_name(args.name)

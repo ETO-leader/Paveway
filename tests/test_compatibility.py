@@ -70,6 +70,13 @@ class BuildIdComputationTests(unittest.TestCase):
         digest2 = compute_build_id(self.root)
         self.assertNotEqual(digest1, digest2)
 
+    def test_build_id_tracks_windows_notification_script(self):
+        target = self.root / "desktop-notification.ps1"
+        target.write_text("Write-Output 'first'", encoding="utf-8")
+        before = compute_build_id(self.root)
+        target.write_text("Write-Output 'updated'", encoding="utf-8")
+        self.assertNotEqual(before, compute_build_id(self.root))
+
     def test_build_id_ignores_pyc_cache_and_runtime_data(self):
         """Build ID ignores .pyc files, __pycache__, .git, and .runtime directories."""
         (self.root / "module.py").write_text("v = 1\n", encoding="utf-8")

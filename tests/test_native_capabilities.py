@@ -1,11 +1,15 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
+import time
 import unittest
 from dataclasses import replace
 
 from test_native_omp import NativeFixture
 from oicoach_runtime.config import config_text
 from oicoach_runtime.ipc import request
+from oicoach_runtime.errors import RuntimeContractError
 
 
 class NativeCapabilityTests(NativeFixture):
@@ -65,6 +69,54 @@ await browser.close({{all:true,kill:true}});'''
         saved = request(self.config.server.socket_path, "memory.show", {"workflow_id": "native-test", "key": "fixture-fact"})
         self.assertEqual(saved["content"], "MEMORY_NATIVE_OK")
         self.assertEqual(saved["version"], 1)
+        self.stop_daemon()
+        self.daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
+            env=self.env, stdout=self.log, stderr=self.log)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                request(self.config.server.socket_path, "status")
+                break
+            except RuntimeContractError:
+                time.sleep(.03)
+        else:
+            self.fail("Isolated daemon did not restart")
+        count = len(self.server.requests)
+        self.chat("MEMORY_FRESH_SESSION_PROBE", new=True)
+        main = next(body for body in self.server.requests[count:] if
+            self.is_prompt_request(body, "MEMORY_FRESH_SESSION_PROBE"))
+        system = json.dumps([m for m in main["messages"] if m["role"] == "system"])
+        self.assertIn("Runtime memory snapshot", system)
+        self.assertIn("MEMORY_NATIVE_OK", system)
+        self.assertNotIn("NATIVE_MEMORY_PROBE", json.dumps(main["messages"]))
+
+    def test_native_memory_tool_crud_loop_enforces_versions_and_tombstone(self):
+        self.enable_tools()
+        manifest = self.config.workflow_root / "native-test/workflow.toml"
+        manifest.write_text(manifest.read_text().replace("memory_enabled = false", "memory_enabled = true"))
+        steps = [("put", {"key": "cycle", "title": "Fixture", "content": "MEMORY_CYCLE_V1", "expected_version": 0}),
+                 ("show", {"key": "cycle"}),
+                 ("put", {"key": "cycle", "title": "Fixture", "content": "MEMORY_CYCLE_V2", "expected_version": 1}),
+                 ("put", {"key": "cycle", "title": "Stale", "content": "MUST_NOT_OVERWRITE", "expected_version": 1}),
+                 ("delete", {"key": "cycle", "expected_version": 2}),
+                 ("list", {"query": "Fixture"})]
+        def response(body):
+            if "MEMORY_CYCLE_PROBE" in json.dumps(body["messages"]) and any(m.get("role") == "system" and "# Paveway Core" in str(m.get("content")) for m in body["messages"]):
+                step = sum(m.get("role") == "tool" for m in body["messages"])
+                if step < len(steps):
+                    operation, parameters = steps[step]
+                    return [({"role": "assistant", "tool_calls": [{"index": 0, "id": "memory-cycle-" + str(step), "type": "function",
+                        "function": {"name": "paveway_memory_" + operation, "arguments": json.dumps(parameters)}}]}, "tool_calls")]
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+        self.server.response_factory = response
+        self.chat("MEMORY_CYCLE_PROBE", evidence=lambda: any(sum(m.get("role") == "tool" for m in b["messages"]) >= len(steps) for b in self.server.requests))
+        note = request(self.config.server.socket_path, "memory.show", {"workflow_id": "native-test", "key": "cycle"})
+        self.assertEqual(note["version"], 3)
+        self.assertTrue(note["deleted"])
+        self.assertEqual(note["content"], "")
+        self.assertEqual(request(self.config.server.socket_path, "memory.recall", {"workflow_id": "native-test", "task_id": "training"})["notes"], [])
+        tools = [m for b in self.server.requests for m in b["messages"] if m.get("role") == "tool"]
+        self.assertTrue(any("Memory version changed" in json.dumps(m) for m in tools))
 
     def test_native_mcp_discovers_and_invokes_stdio_server(self):
         self.enable_tools()

@@ -4,7 +4,7 @@
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
 
-当前版本 **0.21.2**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
+当前版本 **0.22.0**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
 
 ## 环境与安装
 
@@ -55,6 +55,7 @@ omp --version
 | `/paveway legacy` | 进入原管理 UI；退出后恢复原生对话 |
 | `/paveway status`、`/coach` | Runtime 状态、绑定 Profile 与 Session |
 | `/wakeup`、`/inbox` | 排程与持久消息，见下文 |
+| `/paveway notifications` | Ubuntu／WSL 桌面到期弹窗的启停、状态和测试 |
 
 Paveway 不覆盖 OMP 原生 `/memory`、`/skills` 等命令。OMP 原生 Memory 和 Paveway 笔记是不同存储。当前只精确加载随包的 trusted extension，不自动发现其他用户 Extension；原生工具、Workspace MCP、Skills 和 Rules 继续受配置权限控制。
 
@@ -74,7 +75,7 @@ oicoach-runtime native --coach alpha --new --config "$PAVEWAY_CONFIG"
 
 新 Profile 不隐式复制源 Profile 的私人数据。`coach state show/put` 可维护带版本的通用状态；框架不擅自制定情绪或训练策略。
 
-前台和后台共用 Prompt Composer，将框架事实、Workflow 指令、用户 Prompt、Persona 与记忆生成私密不可变快照，记录版本和摘要。旧 append/replace 文本及模式保留；使用原生 SYSTEM 加载，不继承默认 Coding Assistant 身份。GPT 使用 GPT 或第一人称自称；不会重写用户的 `event.md` 或自定义正文。
+前台和后台共用 Prompt Composer，按 Paveway Core、可选 base 角色策略、用户 Prompt、Persona 与记忆生成私密不可变快照，记录版本和摘要；通过原生 `--system-prompt-template` 展开工具、Skill 与 Rule 能力。旧 append/replace 文本及模式保留，不继承默认 Coding Assistant 身份。Workflow 提供事件数据，旧 event.md 前缀不再自动混入系统指令；用户文件原文保留。GPT 使用 GPT 或第一人称自称。
 
 Skills 分为 **OI Introduce、user information、personal skill**，三类同时参与发现。上下文先包含索引与描述，正文由 OMP 按需读取；没有把所有正文固定塞入每一轮。每条 Prompt／Skill 正文上限为 64KiB，区别于已经取消的 token 预算。新 Prompt／Skill 快照在下次原生启动加载；**Persona 改动要求新的 Paveway Conversation**，原生 `/new` 仅创建当前快照下的另一个 OMP Session。
 
@@ -118,7 +119,18 @@ OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀�
 
 **前台没有严格 `after_turn_settled` 锚点**，不会将 `agent_end` 当作 settled；原有后台 CLI 的 `schedule --after-turn SECONDS --run-id RUN_ID` 保持严格 RPC 完成契约。
 
-明确提醒在到期领取时先持久化，后台模型失败不会删除提醒；模型执行结果另存。created、offered、用户明确 acknowledged 分开，Run 成功不等于用户已读。当前使用持久 Inbox，重新打开 `/inbox` 查看；没有外部桌面／手机推送，也不自动向前台注入或重播消息。
+明确提醒在到期时先持久化，后台模型失败不会删除提醒；模型执行结果另存。created、offered、用户明确 acknowledged 分开，Run 成功不等于用户已读。在线 UI 可显示新提醒和后台回复正文，持久 Inbox 可随时 `/inbox` 查看；不自动重发模型消息。
+
+可用 `/paveway notifications` 启用系统桌面弹窗，或运行：
+
+```bash
+oicoach-runtime notifications enable --backend auto --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications install --now --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications test --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications status --config "$PAVEWAY_CONFIG" --json
+```
+
+Ubuntu 使用 `notify-send`，WSL 优先通过 Windows PowerShell 发送 Windows 原生通知。独立用户服务监听到期时间，关闭 UI 或模型忙碌时仍可提醒；不调用模型、不确认已读。首次启用不重播已过期任务，未来已排程提醒会正常触发。需要系统／WSL 实例运行、桌面会话可用。详细配置、隐藏正文及禁用方法见 [桌面提醒](docs/desktop-notifications.md)；目前没有手机推送。
 
 ## Tijian 与 VJudge
 
@@ -209,6 +221,7 @@ flowchart LR
 - `daemon_unavailable`：确认 CLI/UI 使用同一配置，检查 `service status/logs` 或前台 `serve`。升级旧 daemon 时应先确认空闲，再重启；不打断活动请求来加载新协议。
 - 旧 `[tijian]` 配置：0.21.1 起兼容读取并在配置重写时保留已有字段，但不启动已删除的 CLI 桥接器。一键启动会提示停用状态；通过 `/paveway tijian` 或 `workflow connect-tijian` 配置原生 MCP，不需要删除整份旧配置或重建历史。
 - `uncertain`：先检查历史及外部副作用，不自动重发。`frontend list/show/recover` 在验证旧进程死亡及锁释放后显式恢复原生所有权；若 Session 未落盘／损坏，保留旧记录并用 `native --new`。
+- 默认接续遇到旧 owner 未释放时，启动器提供恢复／新建／取消选择；仍活跃的 owner 不提供恢复接管。恢复需用户明确选择并经过上述检查，避免反复只报抽象的 conflict。
 - Profile／Persona 或 Workflow revision 变化：新建 Conversation，旧对话和快照保留。
 - 模型／MCP 不可用：检查原生连接状态及配置，排程成功不证明模型或工具已执行。
 - 回退界面：`./paveway.sh --legacy-ui` 或 `PAVEWAY_UI=legacy ./paveway.sh`；旧 `ui`、CLI 和 RPC 都保留。

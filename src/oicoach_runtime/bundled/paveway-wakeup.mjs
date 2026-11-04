@@ -47,6 +47,8 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
     let upcoming = [];
     let unread = 0;
     let unavailable = false;
+    let inboxInitialized = false;
+    const observedDeliveries = new Set();
     const status = () => {
         if (!context) return;
         if (unavailable) return context.ui.setStatus("paveway-wakeup", "Runtime unavailable or owner uncertain · no automatic replay");
@@ -61,6 +63,24 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
             upcoming = await call("list", {});
             const inbox = await inboxCall("list");
             unread = inbox.unacknowledged;
+            const fresh = inbox.messages.filter(row => !observedDeliveries.has(row.delivery_id) && row.state !== "acknowledged");
+            for (const row of inbox.messages) observedDeliveries.add(row.delivery_id);
+            // Existing Inbox contents remain visible on reconnect without
+            // replaying old notifications. A notice is not acknowledgement,
+            // a model message, or evidence that the user has seen the result.
+            if (inboxInitialized && fresh.length && context) {
+                const previews = [...fresh].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.delivery_id.localeCompare(b.delivery_id)).map(row => {
+                    const title = row.kind === "reminder" ? "定时提醒" : "GPT · 后台定时任务回复／执行状态";
+                    const text = row.text.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+                    return `${title}${row.truncated ? "（节选）" : ""}\n${text}`;
+                });
+                context.ui.notify(`Paveway · 新的唤醒消息\n\n${previews.join("\n\n")}\n\n/inbox 查看完整记录或确认已读。`, "info");
+            }
+            inboxInitialized = true;
+            if (observedDeliveries.size > 1000) {
+                observedDeliveries.clear();
+                for (const row of inbox.messages) observedDeliveries.add(row.delivery_id);
+            }
             unavailable = false;
             status();
         } catch (error) { unavailable = true; status(); throw error; }

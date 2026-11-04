@@ -23,6 +23,7 @@ EXCLUDED_SUFFIXES = {
 INCLUDED_SUFFIXES = {
     ".py",
     ".mjs",
+    ".ps1",
     ".js",
     ".md",
     ".sql",

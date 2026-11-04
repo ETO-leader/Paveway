@@ -111,7 +111,7 @@ def quote(value, *, expand_environment=False):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def render(config_path, *, working_directory=None):
+def render(config_path, *, working_directory=None, command=("serve",)):
     path = Path(config_path).absolute()
     load_config(path)
     directory = Path(working_directory).absolute() if working_directory else path.parent
@@ -122,13 +122,15 @@ def render(config_path, *, working_directory=None):
         raise RuntimeContractError("Choose a service working directory without backslashes or trailing whitespace")
     interpreter = str(Path(sys.executable).absolute())  # Do not resolve away the venv symlink.
     search_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    argv = [interpreter, "-m", "oicoach_runtime", "serve", "--config", str(path)]
+    if command not in (("serve",), ("notifications", "run")):
+        raise RuntimeContractError("Unsupported managed service command")
+    argv = [interpreter, "-m", "oicoach_runtime", *command, "--config", str(path)]
     text = MARKER + json.dumps(str(path)) + "\n" + "\n".join([
-        "[Unit]", "Description=Paveway OI Agent Runtime", "StartLimitIntervalSec=60", "StartLimitBurst=5", "",
+        "[Unit]", "Description=" + ("Paveway Desktop Reminders" if command == ("notifications", "run") else "Paveway OI Agent Runtime"), "StartLimitIntervalSec=60", "StartLimitBurst=5", "",
         "[Service]", "Type=simple", "ExecStart=" + " ".join(quote(arg, expand_environment=True) for arg in argv),
         "WorkingDirectory=" + str(directory).replace("%", "%%"), 'Environment="PYTHONUNBUFFERED=1"',
         # EnvironmentFile takes a literal path, not ExecStart-style quoted words.
-        "EnvironmentFile=-" + str(environment_path(path)).replace("%", "%%"),
+        *(["EnvironmentFile=-" + str(environment_path(path)).replace("%", "%%")] if command == ("serve",) else []),
         "Environment=" + quote("PATH=" + search_path), "UMask=0077", "Restart=on-failure", "RestartSec=3",
         "TimeoutStopSec=60", "KillMode=control-group", "StandardOutput=journal", "StandardError=journal", "",
         "[Install]", "WantedBy=default.target", ""])
@@ -156,9 +158,11 @@ def _owned(path, config_path):
         return False
 
 
-def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=False, capture_env=()):
+def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=False, capture_env=(), command=("serve",)):
+    if command != ("serve",) and capture_env:
+        raise RuntimeContractError("Desktop notification service does not capture model credentials")
     name = unit_name(name)
-    text = render(config_path, working_directory=working_directory)
+    text = render(config_path, working_directory=working_directory, command=command)
     directory = unit_directory()
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / name
@@ -175,10 +179,11 @@ def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=F
             stream.flush()
             os.fsync(stream.fileno())
             _run(["systemd-analyze", "--user", "verify", str(temporary)])
-            from .proxy import synchronize
-            synchronize(config_path, check=False)
-            if capture_env:
-                capture_environment(config_path, capture_env)
+            if command == ("serve",):
+                from .proxy import synchronize
+                synchronize(config_path, check=False)
+                if capture_env:
+                    capture_environment(config_path, capture_env)
             if exists:
                 if destination.read_text() != text:
                     os.replace(temporary, destination)
@@ -188,7 +193,7 @@ def install(config_path, *, name=DEFAULT_NAME, working_directory=None, replace=F
             temporary.unlink(missing_ok=True)
     _run(["systemctl", "--user", "daemon-reload"])
     return {"api_version": 1, "unit": name, "path": str(destination), "installed": True,
-            "environment_file": str(environment_path(config_path)), "captured_environment": list(capture_env),
+            "environment_file": str(environment_path(config_path)) if command == ("serve",) else None, "captured_environment": list(capture_env),
             "enabled_or_started": False, "next_commands": [
                 ["systemctl", "--user", "enable", "--now", name],
                 ["systemctl", "--user", "status", name],
@@ -202,14 +207,14 @@ def require_owned(config_path, name):
     return path
 
 
-def control(config_path, action, *, name=DEFAULT_NAME, now=False):
+def control(config_path, action, *, name=DEFAULT_NAME, now=False, sync_proxy=True):
     if action not in ("start", "stop", "restart", "enable", "disable", "uninstall"):
         raise RuntimeContractError("Unsupported service action")
     if now and action not in ("enable", "disable"):
         raise RuntimeContractError("--now is only valid for enable/disable")
     path = require_owned(config_path, name)
     proxy = None
-    if action in ("start", "restart") or (action == "enable" and now):
+    if sync_proxy and (action in ("start", "restart") or (action == "enable" and now)):
         from .proxy import synchronize
         proxy = synchronize(config_path)
     argv = ["systemctl", "--user", "disable", "--now", name] if action == "uninstall" else (
