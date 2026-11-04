@@ -70,14 +70,21 @@ class ProxyTests(unittest.TestCase):
         self.addCleanup(listener.close)
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        os.environ["HTTPS_PROXY"] = "http://user:password@127.0.0.1:" + str(listener.getsockname()[1])
-        report = proxy.synchronize(self.path)
-        self.assertTrue(report["checks"][0]["tcp_reachable"])
+        endpoint = listener.getsockname()
+        os.environ["HTTPS_PROXY"] = "http://user:password@127.0.0.1:" + str(endpoint[1])
+        reachable_report = proxy.synchronize(self.path)
+        self.assertTrue(reachable_report["checks"][0]["tcp_reachable"])
         listener.close()
-        report = proxy.status(self.path)
-        self.assertFalse(report["checks"][0]["tcp_reachable"])
+        # Inject refusal rather than relying on a closed port becoming unreachable.
+        with patch.object(proxy.socket, "create_connection",
+                          side_effect=ConnectionRefusedError("connection refused")) as connect:
+            report = proxy.status(self.path)
+            self.assertIs(report["checks"][0]["tcp_reachable"], False)
+            connect.assert_called_once_with(endpoint, timeout=1)
         self.assertIn("端口不可达", proxy.summary(report))
-        self.assertNotIn("password", json.dumps(report))
+        for result in (reachable_report, report):
+            for secret in ("user", "password", os.environ["HTTPS_PROXY"]):
+                self.assertNotIn(secret, json.dumps(result))
 
     def test_dns_probe_has_an_overall_timeout(self):
         release = threading.Event()

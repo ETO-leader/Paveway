@@ -697,3 +697,10 @@ Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显
 - 本地 Python 3.14.4 定向测试通过（17 项）；独立 smoke 在无真实 OMP 的 PATH 和临时 HOME 下验证启动、复用、不兼容拒绝，以及清理后的进程退出、锁释放和 socket 删除。
 - 本机未找到 Python 3.11、3.12、3.13，未验证这三个版本，也未宣称 GitHub Actions 已通过。
 - 完整回归实际运行 392 项：337 通过、54 项按既有条件跳过、1 项失败。唯一失败为 `test_proxy.py:78` 的关闭 listener 后 TCP 不可达断言；单独运行代理测试同样失败，独立原始 socket 场景亦出现关闭 listener 后仍能连接。本次未修改无关代理代码或放宽其断言。
+
+## 2026-11-05 — 代理 TCP 测试确定性修复
+
+- 仅调整 `tests/test_proxy.py` 的 TCP 用例：正向保留真实本地临时端口和 `proxy.synchronize()`；负向对 `socket.create_connection()` 注入 `ConnectionRefusedError`，不再假定关闭 listener 后端口立即不可达。
+- 在 patch 作用域内核对不可达结果和原代理端点调用，正负报告均检查用户名、密码及完整代理 URL 不泄露；生产代理逻辑、超时和返回语义不变。
+- 本地 Python 3.14.4：代理定向测试 6 项通过，TCP 用例在 10 个独立进程中重复执行全部通过，当前兼容性定向测试 18 项通过。独立 smoke 确认真实正向连接、负向拒绝、线程执行完成及临时资源清理。
+- 完整回归通过：413 项，355 通过、58 项按既有条件跳过，无失败；未新增跳过逻辑。结果仅代表本地 Python 3.14.4，未验证远端 GitHub Actions。
