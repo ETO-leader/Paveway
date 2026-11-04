@@ -522,3 +522,15 @@ Memory／后台重启与禁用权限定向回归 **9 项通过（1.838 秒）**�
 用户进一步澄清，希望看到提醒之后 GPT 说话，而不仅是收件箱数字或“去查看”提示。原机制在独立后台 Session 生成最终回复后已持久化，但前台未展示正文；此前增加数量通知仍未充分满足这一体验。现把新到达的提醒／结果按创建顺序展示正文，明确标为后台定时回复或执行状态，超长标记节选并保留 /inbox 全文入口。过滤终端控制字符，继续按 delivery_id 防重复，不自动确认已读。
 
 显示依旧仅为 UI 通知，不 sendMessage、不再次调用模型、不改写原生 Session，也不冒充前后台共享对话上下文；旧 Inbox 不因重连重复显示。实际 OMP／PTY 定向用例 **1 项通过（13.969 秒）**，`/tmp/paveway-wakeup-reply-preview.log`：后台实际回复标记出现在屏幕，未发送草稿保持原样；用户随后提交的前台请求中没有后台回复或通知文字；/inbox 可查看，取消确认不改变已读，重新进入不重播。测试模型仅本地 fixture，没有修改或重发正式任务。
+
+## 2026-11-04 — 0.22.0 定时任务桌面弹窗（Ubuntu／WSL）
+
+用户明确需求为定时任务到期提醒。新增独立通知用户服务，监听已有 reminder 意图事件的到期时间，不依赖前台 UI、主 Runtime dispatcher 或模型 Run 槽位。主服务／活前台未被重启；桌面设置保存在私密设备本地文件。默认关闭，显式启用后覆盖未来到期提醒，不重播启用前已过期历史。到期提醒与发送意图同事务持久化，按事件／到期时间去重；显式重排可产生新时间的提醒。未知结果不盲目重试、不确认已读、不改 Run／事件执行状态，系统失败时 Inbox 仍有提醒。
+
+Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显示 Toast，JSON 数据走 stdin／XML 文本节点；未安装模块或改注册表。首次探针发现 PowerShell 的 WinRT Setting 属性可能为空，已修复类型加载及空值处理，随后 API 接受且用户确认桌面弹窗正常。另以隔离 SQLite、真实 systemd 用户服务和两秒到期事件完成 Windows 弹窗链路实测，无前台、无主 Runtime、无模型调用，临时验证服务已卸载。Ubuntu 使用 notify-send／freedesktop DBus；本机 WSLg 没有原生通知服务，Linux 路径通过进程 fixture 验证，未冒充原生 GNOME 画面实测。
+
+新增 notifications enable/disable/status/test/run/install 及 `/paveway notifications` 菜单；UI 给出缺少通知程序、桌面拒绝和超时的具体提示。独立 unit 不加载模型凭据环境文件，子进程只继承桌面必要环境，不将 API key／代理值传到通知程序。Windows 用户服务可探测有效 WSL interop socket，Linux 可探测当前用户 session bus。
+
+最终完整回归 **328 项：291 通过、37 条件跳过，105.857 秒，无失败**，日志 `/tmp/paveway-desktop-complete-regression.log`。最终通知／Inbox／部署定向 **30 项通过（3.379 秒）**，`/tmp/paveway-desktop-final-checks.log`，涵盖队列忙碌仍到期、UI 关闭、取消／重排、重启去重、未知发送结果、正文隐藏与凭据隔离。原生 UI 原有提醒回归 **1 项通过（14.803 秒）**，`/tmp/paveway-desktop-native-regression.log`；随后新增 UI 环境失败诊断 **1 项通过（2.489 秒）**，`/tmp/paveway-desktop-menu-validation.log`。全部自动化模型测试仅本地 fixture。0.22.0 wheel 构建通过并核对包含 PowerShell 资源及通知 worker，无私密运行文件。
+
+本机独立通知服务已显式启用／安装，active/enabled，worker 0.22.0；更新通知服务前后原生前台 generation／状态一致。主 Runtime 保持原进程运行，新功能无需结束当前 GPT 会话。具体启停与环境边界见 [桌面提醒](desktop-notifications.md)。不提供手机推送或在 Windows／WSL 关闭、休眠时唤醒系统的能力；accepted 是系统接收，不是用户已读。

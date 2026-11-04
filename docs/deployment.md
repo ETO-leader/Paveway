@@ -1,5 +1,7 @@
 # Linux systemd user 部署（M4，0.9.0）
 
+0.22.0 的桌面到期提醒使用独立 `paveway-notifications.service`，可在不重启主 Runtime 的情况下安装／启用，详见 [桌面提醒](desktop-notifications.md)。主服务的模型凭据环境文件不会加载到通知服务。
+
 需要可用的 user manager、systemctl、systemd-analyze 和 journalctl。先安裝套件、init、workflow create，再執行 doctor／verify-omp。venv、配置、workspace 和 state 放在可持久使用的絕對路徑。
 
 ```bash

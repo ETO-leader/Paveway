@@ -4,7 +4,7 @@
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
 
-当前版本 **0.21.2**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
+当前版本 **0.22.0**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
 
 ## 环境与安装
 
@@ -50,6 +50,7 @@ omp --version
 | `/paveway legacy` | 进入原管理 UI；退出后恢复原生对话 |
 | `/paveway status`、`/coach` | Runtime 状态、绑定 Profile 与 Session |
 | `/wakeup`、`/inbox` | 排程与持久消息，见下文 |
+| `/paveway notifications` | Ubuntu／WSL 桌面到期弹窗的启停、状态和测试 |
 
 Paveway 不覆盖 OMP 原生 `/memory`、`/skills` 等命令。OMP 原生 Memory 和 Paveway 笔记是不同存储。当前只精确加载随包的 trusted extension，不自动发现其他用户 Extension；原生工具、Workspace MCP、Skills 和 Rules 继续受配置权限控制。
 
@@ -113,7 +114,18 @@ OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀�
 
 **前台没有严格 `after_turn_settled` 锚点**，不会将 `agent_end` 当作 settled；原有后台 CLI 的 `schedule --after-turn SECONDS --run-id RUN_ID` 保持严格 RPC 完成契约。
 
-明确提醒在到期领取时先持久化，后台模型失败不会删除提醒；模型执行结果另存。created、offered、用户明确 acknowledged 分开，Run 成功不等于用户已读。当前使用持久 Inbox，重新打开 `/inbox` 查看；没有外部桌面／手机推送，也不自动向前台注入或重播消息。
+明确提醒在到期时先持久化，后台模型失败不会删除提醒；模型执行结果另存。created、offered、用户明确 acknowledged 分开，Run 成功不等于用户已读。在线 UI 可显示新提醒和后台回复正文，持久 Inbox 可随时 `/inbox` 查看；不自动重发模型消息。
+
+可用 `/paveway notifications` 启用系统桌面弹窗，或运行：
+
+```bash
+oicoach-runtime notifications enable --backend auto --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications install --now --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications test --config "$PAVEWAY_CONFIG"
+oicoach-runtime notifications status --config "$PAVEWAY_CONFIG" --json
+```
+
+Ubuntu 使用 `notify-send`，WSL 优先通过 Windows PowerShell 发送 Windows 原生通知。独立用户服务监听到期时间，关闭 UI 或模型忙碌时仍可提醒；不调用模型、不确认已读。首次启用不重播已过期任务，未来已排程提醒会正常触发。需要系统／WSL 实例运行、桌面会话可用。详细配置、隐藏正文及禁用方法见 [桌面提醒](docs/desktop-notifications.md)；目前没有手机推送。
 
 ## Tijian 与 VJudge
 

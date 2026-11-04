@@ -13,22 +13,26 @@ class Inbox:
         self.store = store
 
     def create(self, event, kind, text, run_id=None):
-        key = hashlib.sha256(canonical_json([event["event_id"], kind, run_id]).encode()).hexdigest()
         with self.store.transaction() as db:
-            existing = self.store.metadata(PREFIX + key)
-            if existing:
-                return existing
-            record = {"delivery_id": key, "event_id": event["event_id"], "run_id": run_id,
-                "workflow_id": event["workflow_id"], "task_id": event["task_id"],
-                "conversation_id": event["payload"].get("conversation_id"), "kind": kind,
-                "text": text, "state": "created", "version": 1, "created_at": self.store.timestamp()}
-            self.store._set_metadata(db, PREFIX + key, record)
+            return self._create(db, event, kind, text, run_id)
+
+    def _create(self, db, event, kind, text, run_id=None):
+        key = hashlib.sha256(canonical_json([event["event_id"], kind, run_id]).encode()).hexdigest()
+        existing = self.store.metadata(PREFIX + key)
+        if existing:
+            return existing
+        record = {"delivery_id": key, "event_id": event["event_id"], "run_id": run_id,
+            "workflow_id": event["workflow_id"], "task_id": event["task_id"],
+            "conversation_id": event["payload"].get("conversation_id"), "kind": kind,
+            "text": text, "state": "created", "version": 1, "created_at": self.store.timestamp()}
+        self.store._set_metadata(db, PREFIX + key, record)
         return record
 
-    def due(self, event):
+    def due(self, event, *, db=None):
         if event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder":
             value = event["payload"].get("message")
-            return self.create(event, "reminder", value if isinstance(value, str) and value else event["reason"])
+            text = value if isinstance(value, str) and value else event["reason"]
+            return self._create(db, event, "reminder", text) if db is not None else self.create(event, "reminder", text)
 
     def collect(self):
         # Project terminal evidence only; this does not start or replay a prompt.

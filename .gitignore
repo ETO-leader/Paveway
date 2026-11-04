@@ -21,3 +21,5 @@ user-data-git/
 *.sqlite3-shm
 vjudge_session.json
 vjudge_credentials.json
+desktop-notifications.json
+desktop-notifications.lock

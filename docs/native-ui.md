@@ -38,6 +38,7 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 | vjudge | 状态／测试／密码或 Cookie 登录／清除；隐藏输入、私密文件传递，不进聊天 |
 | tijian | 连接原生 MCP，明确选择只读或读写；保存后重启原生 Session 加载 |
 | service | 已有 systemd 管理功能；操作服务生命周期时保留未知状态的恢复语义 |
+| notifications | Ubuntu／WSL 桌面到期弹窗的启停、隐藏正文、状态及测试；独立服务不打断当前 GPT |
 | agent | 后台 worker 重启及不重播说明 |
 | legacy | 正常释放原生进程后进入原管理 UI；退出后恢复原生 Conversation，覆盖其余低频旧操作 |
 
@@ -65,7 +66,7 @@ Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当�
 
 更新代码后仍运行的旧 daemon 不会自动重载 Python。保存草稿并退出原生 UI 后，在空闲时重启 Runtime 再进入界面；`invalid_workflow` 等 blocked 事件需要核查并明确重新安排，不因服务升级自动重发。
 
-明确提醒在到期领取时先持久化，后台 GPT 执行结果另存一条消息。created、offered、用户明确 acknowledged 分开；模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；目前没有外部桌面／手机推送，也不自动把消息重注入 Agent。
+明确提醒在到期时先持久化，后台 GPT 执行结果另存一条消息。created、offered、用户明确 acknowledged 分开；模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；可用 `/paveway notifications` 启用 [Ubuntu／WSL 桌面弹窗](desktop-notifications.md)，目前没有手机推送，也不自动把消息重注入 Agent。
 
 UI 在线时轮询到新的提醒／结果，会直接显示提醒正文及“GPT · 后台定时任务回复／执行状态”，并保留 `/inbox` 查看与确认入口。超过预览长度时明确标记“节选”，完整内容在收件箱中；正文过滤终端控制字符。显示不会触发模型、确认已读或清空输入草稿；重新打开 UI 只显示已有未确认数，不重播旧通知。前后台 Session 仍分离，UI 展示不代表内容已加入当前模型上下文。后台刷新间隔约 10 秒，后台执行结果可能晚于到期提醒。更新这部分扩展后，保存草稿并重新进入原生 UI 生效，不必为此重启 daemon 或重新排程已有任务。
 

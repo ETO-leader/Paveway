@@ -120,6 +120,22 @@ class NativeManagementTests(NativeFixture):
         self.assertNotIn(b"BACKGROUND_UI_REPLY_SENTINEL", raw)
         exit_ui()
 
+    def test_desktop_notification_failure_is_visible_without_a_model_turn(self):
+        from oicoach_runtime.notifications import configure
+        configure(self.config, True, backend="linux")
+        binary = self.root / "bin/notify-send"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\nexit 2\n")
+        binary.chmod(0o700)
+        self.env["PATH"] = str(binary.parent) + os.pathsep + self.env["PATH"]
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway notifications\r")
+        until("定时任务桌面弹窗")
+        send(b"\x1b[B\r")
+        until("系统未接受桌面通知")
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
+
     def test_prompt_dialog_saves_privately_without_a_model_turn(self):
         process, raw, send, until, pump, exit_ui = self.open_ui()
         send("/paveway prompt\r")
