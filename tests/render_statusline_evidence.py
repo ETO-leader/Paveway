@@ -18,6 +18,11 @@ import unicodedata
 from PIL import Image, ImageDraw, ImageFont
 
 
+# Captured "default" cells inherit the real terminal; this is only the evidence
+# backdrop, not a status-line token.
+DEFAULT_BACKGROUND = "#000000"
+DEFAULT_FOREGROUND = "#dae7f3"
+
 ANSI = {
     "black": "#000000", "red": "#cd0000", "green": "#00cd00", "brown": "#cdcd00",
     "blue": "#0000ee", "magenta": "#cd00cd", "cyan": "#00cdcd", "white": "#e5e5e5",
@@ -47,13 +52,13 @@ def render_capture(path, font, wide_font, size):
     ascent, descent = font.getmetrics()
     cell_width, cell_height = round(font.getlength("M")), ascent + descent
     start, stop = max(0, status - 9), min(data["rows"], status + 2)
-    image = Image.new("RGB", (columns * cell_width, (stop - start) * cell_height), "#161d30")
+    image = Image.new("RGB", (columns * cell_width, (stop - start) * cell_height), DEFAULT_BACKGROUND)
     draw = ImageDraw.Draw(image)
     rows = data["cells"][start:stop]
     for y, row in enumerate(rows):
         for x, cell in enumerate(row):
-            foreground = color(cell["fg"], "#dae7f3")
-            background = color(cell["bg"], "#161d30")
+            foreground = color(cell["fg"], DEFAULT_FOREGROUND)
+            background = color(cell["bg"], DEFAULT_BACKGROUND)
             if cell.get("reverse"):
                 foreground, background = background, foreground
             draw.rectangle((x * cell_width, y * cell_height,
@@ -64,7 +69,7 @@ def render_capture(path, font, wide_font, size):
             if not text or text.isspace():
                 continue
             foreground = color(cell["bg"] if cell.get("reverse") else cell["fg"],
-                               "#161d30" if cell.get("reverse") else "#dae7f3")
+                               DEFAULT_BACKGROUND if cell.get("reverse") else DEFAULT_FOREGROUND)
             glyph_font = wide_font if wide_font and unicodedata.east_asian_width(text[0]) in "WF" else font
             # Draw the captured glyph itself, including the real Nerd Font cap.
             # The image never draws replacement polygons, bubbles or meter cells.
@@ -119,7 +124,7 @@ def main():
         row_height = font.getmetrics()[0] + font.getmetrics()[1]
         strips = [image.crop((0, image.height - 2 * row_height, image.width, image.height))
                   for image in selected]
-        sheet = Image.new("RGB", (strips[0].width, sum(image.height for image in strips)), "#161d30")
+        sheet = Image.new("RGB", (strips[0].width, sum(image.height for image in strips)), DEFAULT_BACKGROUND)
         top = 0
         for strip in strips:
             sheet.paste(strip, (0, top))

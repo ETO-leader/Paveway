@@ -21,7 +21,7 @@
 | Runtime／未知状态 | `#633c4b` | 浅色粗体异常提示，最高保留优先级 |
 
 - 删除 `fields` 连续色带、共享 `connection`、右侧纯文字 `metadata` 和单独的窄屏纯文字分支。
-- `bubble(item, content)` 同时负责左右两组：`paint(leftCap, night, item.background)` + 内边距／内容 + `paint(rightCap, night, item.background)`。左右圆帽前景等于自身胶囊背景，不借用相邻组件背景。
+- `bubble(item, content)` 同时负责左右两组：`paint(leftCap, null, item.background)` + 内边距／内容 + `paint(rightCap, null, item.background)`；`null` 是终端默认背景，不再写死夜色。左右圆帽前景等于自身胶囊背景，不借用相邻组件背景。
 - 常规胶囊两侧各一列内边距，胶囊间一列底色；左右组之间的余量用于对齐。预算先包含完整边框再分配内容，最终不对成品 ANSI 行进行截断。
 - 异常、未知 Inbox、非零未确认数先分配，再是模型和 Context；品牌、Workflow、费用使用余量。80 列以上长模型至少先争取 20 列内容，再恢复身份细节；不是把宽屏结果直接切短。极端 1–2 列只能保留裸 `!`，3 列起异常可使用完整短胶囊，不输出半个圆帽。
 - Wakeup `none`／明确无事件与 Inbox 0 不生成胶囊；待执行为 `◷ 1m20s`，执行中为 `◷ Running`；不可用为 `Wakeup !`，尚未知为 `Wakeup ?`，未知收件箱为 `Inbox ?`，从不伪造零。
@@ -83,13 +83,15 @@
 
 [95% 真实高占用](bubble-high-context.png) 来自对 4K fixture 窗口提交实际长输入；该用例关闭自动压缩以观察边界，不改变应用统计。
 
-### 无 Nerd Font 降级
+### Powerline 圆帽与 symbol preset 解耦
 
-![真实 Unicode preset](bubble-unicode-empty-120.png)
+![旧版 Unicode 半圆](bubble-unicode-empty-120.png)
 
-![真实 ASCII preset](bubble-ascii-empty-120.png)
+![旧版 ASCII 括号](bubble-ascii-empty-120.png)
 
-这是实际宿主设置启动的 TUI，而非图片替换字形。Unicode 不输出 PUA，使用对称 `◖`／`◗`；ASCII 使用括号、ASCII 分隔及提示。当前证据字体的普通 Unicode 半圆比 Nerd 圆帽矮，保留为字体降级的真实限制，不用绘制几何圆帽掩盖。256 色、无色、错误宽度字形回退另有实际 renderer 行为测试。
+上面两张图保留的是修复前的 Unicode 半圆降级记录，不再代表当前默认行为。Unicode preset 现在与 Nerd preset 一样输出标准 Powerline ``／``，不再用 `◖`／`◗` 模拟完整胶囊。终端是否画出实色圆帽取决于其字形能力；状态栏不根据 `TERM`、`COLORTERM`、操作系统或终端品牌猜测字形。
+
+当前行为由 `tests/test_native_statusline.py` 的真实 PTY 用例覆盖：Nerd 与 Unicode 的圆帽码点逐项相同，ASCII preset 与 `[statusline] cap_style = "plain"` 不输出 PUA，256 色与 True Color 使用同一套 Powerline 圆帽。ASCII 使用括号、ASCII 分隔及提示；显式 `cap_style = "powerline"` 才允许 ASCII preset 输出 PUA。本轮未在 Windows Terminal 窗口做像素截图，PTY 只验证字符与颜色。
 
 ## 旧版对比与修正记录
 
@@ -150,8 +152,8 @@ curl --fail --location \
 
 ## 仍有的限制
 
-- 图片是实际 PTY 单元的字体重绘，不是某个桌面终端或硬件栅格器认证；终端字体、行高、字形外观可能不同。Nerd preset 需要对应字体；不具备时选择 Unicode／ASCII，应用不能可靠探测终端实际安装的字形。
-- 普通 Unicode 半圆高度由字体决定，不能保证与 Nerd 字形一样满高；ASCII 降级是括号而非实心圆帽。不会假称不支持字形的环境也拥有相同外观。
+- 图片是实际 PTY 单元的字体重绘，不是某个桌面终端或硬件栅格器认证；终端字体、行高、字形外观可能不同。状态栏默认请求标准 Powerline 字形，但应用不能可靠探测终端或字体是否真的绘制它；显式 `cap_style = "plain"` 是唯一可靠的纯文本退路。
+- Nerd preset 不再是使用 Powerline 圆帽的前提：部分终端内置绘制 U+E0B6／U+E0B4，无需安装 Nerd Font。若环境确实不绘制这些字形，字符仍会占用布局列，外观由终端决定；本次无法在 Windows Terminal GUI 做像素验收。
 - 极窄屏幕无法同时容纳所有信息；优先保留异常、未读、模型与 Context，允许隐藏低优先级项。粗粒度容量条中重合的 Compaction 标记可能落在同一格；较宽且有余量时显示完整数值边界。
 - 真实故障是隔离 Runtime socket 失联，不是对用户所有权作破坏性测试；未知状态的其他组合由确定性行为测试覆盖。
 - 保持既有 OMP 18.16.0／Linux 隔离宿主边界；没有宣称支持其他宿主版本或修改 Alternate Screen 策略。

@@ -149,7 +149,7 @@ def _run_owned(config, config_path, workflow, lease, lock):
                 "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled,
                 "memory_enabled": workflow.memory_enabled,
                 "cli_prefix": [sys.executable, "-m", "oicoach_runtime"], "config_path": str(config_path),
-                "switch_path": str(switch_path)}
+                "switch_path": str(switch_path), "statusline": {"cap_style": config.statusline.cap_style}}
     private = root / (launch_id + ".json")
     private.write_text(json.dumps(settings), encoding="utf-8")
     private.chmod(0o600)

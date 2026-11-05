@@ -45,6 +45,8 @@ function terminalCells(line) {
                 if (code === 0) { background = "default"; foreground = "default"; bold = false; }
                 else if (code === 1) bold = true;
                 else if (code === 22) bold = false;
+                else if (code === 39) foreground = "default";
+                else if (code === 49) background = "default";
                 else if ((code === 48 || code === 38) && codes[index + 1] === 2) {
                     const color = "#" + codes.slice(index + 2, index + 5).map(value => value.toString(16).padStart(2, "0")).join("");
                     if (code === 48) background = color; else foreground = color;
@@ -67,12 +69,12 @@ function meterFromLine(line, label = "50% · 500K") {
     expect(labelStart).toBeGreaterThan(1);
     // Read capacity from the bubble boundary, not a color boundary: idle unused
     // capacity must share the capsule surface rather than cut a hole in it.
-    const opening = cells.findLastIndex((cell, index) => index < labelStart && ["◖", "\ue0b6", "("].includes(cell.text));
+    const opening = cells.findLastIndex((cell, index) => index < labelStart && ["\ue0b6", "("].includes(cell.text));
     expect(opening).toBeGreaterThanOrEqual(0);
     expect(cells[opening + 1].text).toBe(" ");
     return cells.slice(opening + 2, labelStart - 1);
 }
-function bubblesFromLine(line, opening = "◖", closing = "◗") {
+function bubblesFromLine(line, opening = "\ue0b6", closing = "\ue0b4") {
     const cells = terminalCells(line);
     const bubbles = [];
     for (let start = 0; start < cells.length; start++) {
@@ -87,7 +89,7 @@ function bubblesFromLine(line, opening = "◖", closing = "◗") {
     expect(cells.filter(cell => cell.text === closing)).toHaveLength(bubbles.length);
     return bubbles;
 }
-function expectIndependentBubbles(line, {opening = "◖", closing = "◗", night = "#161d30"} = {}) {
+function expectIndependentBubbles(line, {opening = "\ue0b6", closing = "\ue0b4"} = {}) {
     const cells = terminalCells(line);
     const bubbles = bubblesFromLine(line, opening, closing);
     expect(bubbles.length).toBeGreaterThan(0);
@@ -97,17 +99,18 @@ function expectIndependentBubbles(line, {opening = "◖", closing = "◗", night
         expect(bubble.inner.at(-1).text).toBe(" ");
         const surface = bubble.inner[0].background;
         expect(bubble.inner.at(-1).background).toBe(surface);
-        expect(bubble.left.background).toBe(night);
-        expect(bubble.right.background).toBe(night);
+        // Terminal default, never a guessed bar color behind the caps.
+        expect(bubble.left.background).toBe("default");
+        expect(bubble.right.background).toBe("default");
         expect(bubble.left.foreground).toBe(surface);
         expect(bubble.right.foreground).toBe(surface);
         const previous = bubbles[index - 1];
         if (previous) {
             expect(bubble.start - previous.end).toBeGreaterThan(1);
-            expect(cells.slice(previous.end + 1, bubble.start).every(cell => cell.text === " " && cell.background === night)).toBe(true);
+            expect(cells.slice(previous.end + 1, bubble.start).every(cell => cell.text === " " && cell.background === "default")).toBe(true);
         }
     }
-    expect(cells.slice(bubbles.at(-1).end + 1).every(cell => cell.text === " " && cell.background === night)).toBe(true);
+    expect(cells.slice(bubbles.at(-1).end + 1).every(cell => cell.text === " " && cell.background === "default")).toBe(true);
     return bubbles;
 }
 
@@ -181,6 +184,9 @@ describe("motion belongs only to unused capacity", () => {
         const later = line.render(160, snapshot({phase: 8}));
         expect(plain(later)).toBe(plain(first));
         expect(visibleWidth(later)).toBe(160);
+        const capCells = value => terminalCells(value).filter(cell => ["\ue0b6", "\ue0b4"].includes(cell.text))
+            .map(cell => [cell.text, cell.background]);
+        expect(capCells(later)).toEqual(capCells(first));
         const before = terminalCells(first), after = terminalCells(later);
         const end = plain(first).indexOf("50% · 500K") - 1;
         const start = end - meterFromLine(first).length;
@@ -188,6 +194,21 @@ describe("motion belongs only to unused capacity", () => {
         expect(after.slice(end)).toEqual(before.slice(end));
         expect(after.slice(start + 8, end)).not.toEqual(before.slice(start + 8, end));
         expect(line.render(160, snapshot({phase: 0}))).toBe(first);
+    });
+    test("256-color motion changes cyan steps without touching caps or text", () => {
+        const line = createStatusLine(() => paveway(), host("256color", "unicode"));
+        const idle = snapshot({percent: 0, phase: 0});
+        const first = line.render(160, idle);
+        const later = line.render(160, snapshot({percent: 0, phase: 8}));
+        expect(plain(later)).toBe(plain(first));
+        expect(visibleWidth(later)).toBe(160);
+        expect(later).not.toBe(first);
+        const caps = value => terminalCells(value).filter(cell => ["\ue0b6", "\ue0b4"].includes(cell.text))
+            .map(cell => [cell.text, cell.background]);
+        expect(caps(later)).toEqual(caps(first));
+        const surfaces = meterFromLine(first, "0% · 500K").map(cell => cell.background);
+        expect(surfaces.every(surface => /^256:(23|24|30|31|37|38|44|45|51|80|116|152|159|195)$/u.test(surface))).toBe(true);
+        expect(new Set(surfaces).size).toBeGreaterThan(1);
     });
     test("a smooth traveling crest moves left to right and wraps continuously", () => {
         const crest = phase => {
@@ -250,7 +271,7 @@ describe("independent responsive bubbles", () => {
             expect(text).toContain("50% · 500K");
             expect(text).toContain("✉ 3");
             expect(text).not.toContain("gpt-test");
-            expect(rendered).not.toMatch(/[\r\n\uE000-\uF8FF]/u);
+            expect(rendered).not.toMatch(/[\r\n\ufffd◖◗\ue0b0\ue0b2]/u);
             expectIndependentBubbles(rendered);
             const meter = meterFromLine(rendered);
             if (width === 160) expect(meter).toHaveLength(16);
@@ -271,18 +292,17 @@ describe("independent responsive bubbles", () => {
         }
     });
     for (const mode of ["truecolor", "256color"]) {
-        test(`${mode} paints both Nerd caps onto outside background for every component`, () => {
+        test(`${mode} paints both Powerline caps onto terminal default background for every component`, () => {
             const ui = host(mode, "nerd");
             // Connected host separators must not turn independent bubbles into a band.
             ui.theme.sep = {powerlineCapLeft: "\ue0b2", powerlineLeft: "\ue0b0"};
-            const night = mode === "truecolor" ? "#161d30" : "256:235";
             const expected = mode === "truecolor"
                 ? {PAVEWAY: "#8475cc", "Test model": "#35577f", "analyst/task": "#29384e", "50%": "#203f49", "$0.12": "#222c40", "Wakeup !": "#633c4b"}
-                : {PAVEWAY: "256:140", "Test model": "256:240", "analyst/task": "256:237", "50%": "256:237", "$0.12": "256:236", "Wakeup !": "256:239"};
+                : {PAVEWAY: "256:98", "Test model": "256:60", "analyst/task": "256:17", "50%": "256:23", "$0.12": "256:235", "Wakeup !": "256:95"};
             const rendered = renderer(paveway({wakeup: {unavailable: true}}), ui).render(160, snapshot());
             expect(visibleWidth(rendered)).toBe(160);
-            expect(rendered).not.toMatch(/[\ue0b0\ue0b2]/u);
-            const bubbles = expectIndependentBubbles(rendered, {opening: "\ue0b6", closing: "\ue0b4", night});
+            expect(rendered).not.toMatch(/[\ue0b0\ue0b2◖◗]/u);
+            const bubbles = expectIndependentBubbles(rendered);
             for (const [label, surface] of Object.entries(expected)) {
                 const bubble = bubbles.find(item => item.inner.map(cell => cell.text).join("").includes(label));
                 expect(bubble, `missing ${label} bubble`).toBeDefined();
@@ -291,40 +311,125 @@ describe("independent responsive bubbles", () => {
             const error = bubbles.find(item => item.inner.map(cell => cell.text).join("").includes("Wakeup !"));
             expect(error.inner.find(cell => cell.text === "!").foreground).toBe(mode === "truecolor" ? "#f5dce0" : "256:224");
             const labelStart = plain(rendered).indexOf("50% · 500K");
-            expect(terminalCells(rendered)[labelStart].foreground).toBe(mode === "truecolor" ? "#67cbd0" : "256:116");
+            expect(terminalCells(rendered)[labelStart].foreground).toBe(mode === "truecolor" ? "#67cbd0" : "256:80");
             if (mode === "256color") expect(rendered).not.toContain(";2;");
         });
     }
-    test("non-Nerd fallback uses symmetric Unicode caps without trusting private-use host separators", () => {
-        const ui = host();
+    test("256-color quantization keeps the four semantic surfaces distinct", () => {
+        const rendered = renderer(paveway({wakeup: {unavailable: true}}), host("256color")).render(160, snapshot());
+        const surfaces = expectIndependentBubbles(rendered).map(bubble => bubble.inner[0].background);
+        const semantic = ["256:98", "256:60", "256:17", "256:23"];
+        for (const surface of semantic) expect(surfaces).toContain(surface);
+        expect(new Set(semantic).size).toBe(4);
+    });
+    test("Unicode preset uses Powerline caps without trusting host separators", () => {
+        const ui = host("truecolor", "unicode");
         ui.theme.sep = {powerlineCapLeft: "\ue0b6", powerlineLeft: "\ue0b0"};
         const rendered = renderer(paveway(), ui).render(160, snapshot());
-        expect(rendered).not.toMatch(/[\uE000-\uF8FF]/u);
+        expect(rendered).toContain("\ue0b6");
+        expect(rendered).toContain("\ue0b4");
+        expect(rendered).not.toMatch(/[◖◗\ue0b0\ue0b2]/u);
         expectIndependentBubbles(rendered);
     });
-    test("wide Unicode cap glyphs fall back to complete ASCII pairs", () => {
+    test("wide measured Powerline glyphs fall back to complete ASCII pairs", () => {
         const ui = host();
-        ui.visibleWidth = value => visibleWidth(value) + (plain(value).match(/[◖◗]/gu) ?? []).length;
+        ui.visibleWidth = value => visibleWidth(value) + (plain(value).match(/[\ue0b6\ue0b4]/gu) ?? []).length;
         const rendered = renderer(paveway(), ui).render(100, snapshot());
-        expect(rendered).not.toMatch(/[◖◗]/u);
+        expect(rendered).not.toMatch(/[\ue0b6\ue0b4]/u);
         expect(visibleWidth(rendered)).toBe(100);
         expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
     });
-    for (const dumb of [false, true]) {
-        test(`${dumb ? "TERM=dumb" : "ASCII preset"} uses symmetric parentheses and plain instruments`, () => {
-            if (dumb) process.env.TERM = "dumb";
-            const rendered = renderer(paveway(), host("truecolor", dumb ? "nerd" : "ascii")).render(100, snapshot());
-            const text = plain(rendered);
-            expect(visibleWidth(rendered)).toBe(100);
-            expect(text).not.toMatch(/[^\x20-\x7e]/u);
-            expect(text).toContain("Wake");
-            expect(text).toContain("In 3");
-            expect(text).toContain("50%");
-            const bubbles = bubblesFromLine(rendered, "(", ")");
-            expect(bubbles.length).toBeGreaterThan(0);
-            if (dumb) expect(rendered).not.toContain("\x1b");
+    for (const symbols of ["nerd", "unicode"]) {
+        test(`${symbols} preset defaults to standard Powerline caps`, () => {
+            const rendered = renderer(paveway(), host("truecolor", symbols)).render(120, snapshot());
+            expect(rendered).toContain("\ue0b6");
+            expect(rendered).toContain("\ue0b4");
+            expect(rendered).not.toMatch(/[◖◗]/u);
+            expectIndependentBubbles(rendered);
         });
     }
+    test("symbol preset changes never restore the half-circle fallback", () => {
+        let symbols = "nerd";
+        const ui = host("truecolor", symbols);
+        ui.theme.getSymbolPreset = () => symbols;
+        const line = createStatusLine(() => paveway(), ui);
+        const nerd = line.render(120, snapshot());
+        symbols = "unicode";
+        const unicode = line.render(120, snapshot());
+        expect(plain(unicode)).toBe(plain(nerd));
+        expect(unicode).toContain("\ue0b6");
+        expect(unicode).not.toMatch(/[◖◗]/u);
+        expectIndependentBubbles(unicode);
+        // A reloaded renderer with the live setting chooses the same caps.
+        const reloaded = renderer(paveway(), host("truecolor", "unicode")).render(120, snapshot());
+        expect(plain(reloaded)).toBe(plain(unicode));
+    });
+    test("explicit plain removes Powerline PUA even with the Unicode preset", () => {
+        const rendered = createStatusLine(() => paveway(), host("truecolor", "unicode"),
+            {capStyle: "plain"}).render(100, snapshot());
+        expect(rendered).not.toMatch(/[\uE000-\uF8FF]/u);
+        expect(visibleWidth(rendered)).toBe(100);
+        expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
+    });
+    test("ASCII preset stays pure ASCII unless Powerline is explicit", () => {
+        const rendered = renderer(paveway(), host("truecolor", "ascii")).render(100, snapshot());
+        expect(plain(rendered)).toMatch(/^[\x20-\x7e]*$/u);
+        expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
+        const explicit = createStatusLine(() => paveway(), host("truecolor", "ascii"),
+            {capStyle: "powerline"}).render(100, snapshot());
+        expect(explicit).toContain("\ue0b6");
+        expect(explicit).toContain("\ue0b4");
+        expectIndependentBubbles(explicit);
+    });
+    test("environment override is explicit, not guessed", () => {
+        process.env.PAVEWAY_STATUSLINE_CAPS = "plain";
+        try {
+            const rendered = renderer(paveway(), host("truecolor", "unicode")).render(100, snapshot());
+            expect(rendered).not.toMatch(/[\uE000-\uF8FF]/u);
+            expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
+        } finally { delete process.env.PAVEWAY_STATUSLINE_CAPS; }
+    });
+    test("an invalid environment value cannot mask an explicit setting", () => {
+        process.env.PAVEWAY_STATUSLINE_CAPS = "bogus";
+        try {
+            const rendered = createStatusLine(() => paveway(), host("truecolor", "unicode"),
+                {capStyle: "plain"}).render(100, snapshot());
+            expect(rendered).not.toMatch(/[\uE000-\uF8FF]/u);
+            expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
+        } finally { delete process.env.PAVEWAY_STATUSLINE_CAPS; }
+    });
+    test("256-color and True Color choose the same caps and layout at every width", () => {
+        for (const width of [80, 100, 120, 160]) {
+            const truecolor = renderer(paveway(), host("truecolor", "unicode")).render(width, snapshot());
+            const indexed = renderer(paveway(), host("256color", "unicode")).render(width, snapshot());
+            expect(plain(indexed)).toBe(plain(truecolor));
+            expect(visibleWidth(indexed)).toBe(width);
+            expectIndependentBubbles(indexed);
+            expectIndependentBubbles(truecolor);
+        }
+    });
+    test("ASCII preset uses symmetric parentheses and plain instruments", () => {
+        const rendered = renderer(paveway(), host("truecolor", "ascii")).render(100, snapshot());
+        const text = plain(rendered);
+        expect(visibleWidth(rendered)).toBe(100);
+        expect(text).not.toMatch(/[^\x20-\x7e]/u);
+        expect(text).toContain("Wake");
+        expect(text).toContain("In 3");
+        expect(text).toContain("50%");
+        const bubbles = bubblesFromLine(rendered, "(", ")");
+        expect(bubbles.length).toBeGreaterThan(0);
+    });
+    test("TERM=dumb controls ANSI only, never the Powerline cap choice", () => {
+        process.env.TERM = "dumb";
+        const rendered = renderer(paveway(), host("truecolor", "nerd")).render(100, snapshot());
+        expect(rendered).not.toContain("\x1b");
+        expect(rendered).toContain("\ue0b6");
+        expect(rendered).toContain("\ue0b4");
+        expect(visibleWidth(rendered)).toBe(100);
+        expect(plain(rendered)).toContain("Wake");
+        expect(plain(rendered)).toContain("50%");
+        bubblesFromLine(rendered);
+    });
     test("no-event wakeup and zero unread are absent, not empty instrument bubbles", () => {
         for (const wakeup of [null, {unavailable: false, running: false, timing: "none"}]) {
             const rendered = renderer(paveway({wakeup, inbox: 0})).render(160, snapshot());
@@ -397,7 +502,7 @@ describe("independent responsive bubbles", () => {
             const text = plain(rendered);
             expect(visibleWidth(rendered)).toBe(width);
             if (width <= 2) expect(text.trim()).toBe(width ? "!" : "");
-            else expect(text.replace(/◖[^◖◗]*◗/gu, "").trim()).toBe("");
+            else expect(text.replace(/\ue0b6[^\ue0b6\ue0b4]*\ue0b4/gu, "").trim()).toBe("");
             if (width > 0) expect(text).toContain("!");
             bubblesFromLine(rendered);
             if (width >= 32) {

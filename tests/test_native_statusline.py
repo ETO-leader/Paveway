@@ -20,8 +20,21 @@ import pyte
 from terminal_screen import WideScreen
 from test_native_omp import NativeFixture
 from oicoach_runtime.ipc import request
-from oicoach_runtime.config import config_text
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.workflow_setup import create
+
+
+COLOR_ENV = ("TERM", "COLORTERM", "WT_SESSION", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+             "TERMINAL", "FORCE_COLOR", "NO_COLOR", "ConEmuANSI", "ANSICON",
+             "VSCODE_INJECTION", "VTE_VERSION", "KONSOLE_VERSION", "KITTY_WINDOW_ID",
+             "WEZTERM_EXECUTABLE", "ALACRITTY_SOCKET", "PAVEWAY_STATUSLINE_CAPS")
+HOSTILE_BACKGROUND = "ff00ff"
+
+
+def color_environment(environment):
+    """Persist capability inputs only, never a real terminal/session identifier."""
+    return {key: ("present" if key == "WT_SESSION" and environment.get(key) else environment.get(key))
+            for key in COLOR_ENV}
 
 
 class Terminal:
@@ -31,6 +44,9 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, columns, 0, 0))
         self.screen = WideScreen(columns, 32)
         self.stream = pyte.ByteStream(self.screen)
+        # A missing reset must not accidentally look transparent in the decoder.
+        self.stream.feed(b"\x1b[48;2;255;0;255m")
+        case.assertEqual(self.screen.cursor.attrs.bg, HOSTILE_BACKGROUND)
         self.raw = bytearray()
         self.process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native",
             "--config", str(case.path), "--workflow", getattr(case, "workflow", "native-test")],
@@ -88,12 +104,23 @@ class Terminal:
             return
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
+        record = request(self.case.config.server.socket_path, "frontend.list")[0]
+        host_environment = dict(item.split("=", 1) for item in
+                                Path(f"/proc/{record['omp_pid']}/environ").read_text().split("\0") if "=" in item)
+        sgr = re.findall(rb"\x1b\[([0-9;]*)m", self.raw)
         data = {"columns": self.screen.columns, "rows": self.screen.lines,
                 "status_row": self.status(), "source": "isolated-native-pty",
+                "color_mode_case": getattr(self.case, "color_mode", "truecolor"),
+                "decoder_initial_background": HOSTILE_BACKGROUND,
+                "launch_color_environment": color_environment(self.case.env),
+                "observed_host_color_environment": color_environment(host_environment),
+                "observed_host_executable": Path(os.readlink(f"/proc/{record['omp_pid']}/exe")).name,
+                "observed_sgr": sorted({value.decode("ascii") for value in sgr}),
                 "cells": [[self.screen.buffer[y][x]._asdict() for x in range(self.screen.columns)]
                           for y in range(self.screen.lines)]}
-        (target / ("bubble-" + name + ".json")).write_text(json.dumps(data, ensure_ascii=False))
-        (target / ("bubble-" + name + ".ansi")).write_bytes(self.raw)
+        prefix = os.environ.get("PAVEWAY_STATUSLINE_CAPTURE_PREFIX", "bubble")
+        (target / (prefix + "-" + name + ".json")).write_text(json.dumps(data, ensure_ascii=False))
+        (target / (prefix + "-" + name + ".ansi")).write_bytes(self.raw)
 
     def resize(self, columns):
         self.screen.resize(lines=32, columns=columns)
@@ -115,14 +142,39 @@ class Terminal:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+        # Ownership release follows the child exit; do not let the next isolated
+        # launch race the old conversation and present a recovery dialog.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if all(row["status"] == "released" for row in request(
+                        self.case.config.server.socket_path, "frontend.list")):
+                    break
+            except Exception:
+                break
+            time.sleep(.05)
         if self.master is not None:
             os.close(self.master)
             self.master = None
 
 
 class NativeStatusLineTests(NativeFixture):
-    def configure(self, *, motion=True, long_names=False, context_window=128000, preset="nerd"):
-        self.env["COLORTERM"] = "truecolor"
+    def configure(self, *, motion=True, long_names=False, context_window=128000, preset="nerd",
+                  color_mode="truecolor", cap_style="auto"):
+        self.color_mode = color_mode
+        self.preset = preset
+        self.cap_style = cap_style
+        for key in COLOR_ENV:
+            self.env.pop(key, None)
+        self.env["TERM"] = "xterm-256color"
+        if color_mode == "truecolor":
+            self.env["COLORTERM"] = "truecolor"
+        elif color_mode == "wt-session":
+            self.env["WT_SESSION"] = "isolated-statusline-probe"
+        elif color_mode == "none":
+            self.env["NO_COLOR"] = "1"
+        elif color_mode != "256color":
+            raise ValueError(f"Unknown color matrix case: {color_mode}")
         path = Path(self.env["PI_CODING_AGENT_DIR"]) / "config.yml"
         data = json.loads(path.read_text())
         data.update({"tui": {"motion": motion}, "composer": {"shape": "box"}, "symbolPreset": preset})
@@ -131,21 +183,32 @@ class NativeStatusLineTests(NativeFixture):
         data = json.loads(models.read_text())
         model = data["providers"]["paveway-m0"]["models"][0]
         model["contextWindow"] = context_window
+        config = self.config
         if long_names:
             model["name"] = "Paveway reasoning model with an exceptionally long display name"
             model["id"] = "paveway-reasoning-model-with-an-exceptionally-long-identifier"
-            self.config = replace(self.config, agent=replace(self.config.agent, model="paveway-m0/" + model["id"]))
-            self.path.write_text(config_text(self.config))
+            config = replace(config, agent=replace(config.agent, model="paveway-m0/" + model["id"]))
+        if cap_style != "auto":
+            config = replace(config, statusline=replace(config.statusline, cap_style=cap_style))
+        if config is not self.config:
+            self.config = config
+            self.path.write_text(config_text(config))
+        self.assertEqual(load_config(self.path).statusline.cap_style, cap_style)
         models.write_text(json.dumps(data))
         if long_names:
             self.workflow = "native-test-with-an-exceptionally-long-workflow-name"
             create(self.config, self.workflow, self.root / "workspace", "example")
 
-    def assert_bubbles(self, terminal, preset="nerd"):
+    def cap_glyphs(self, preset, cap_style):
+        style = cap_style if cap_style != "auto" else ("plain" if preset == "ascii" else "powerline")
+        return ("(", ")") if style == "plain" else ("\ue0b6", "\ue0b4")
+
+    def assert_bubbles(self, terminal, preset=None, cap_style=None):
+        preset = getattr(self, "preset", "nerd") if preset is None else preset
+        cap_style = getattr(self, "cap_style", "auto") if cap_style is None else cap_style
         row = terminal.screen.buffer[terminal.status()]
         text = terminal.screen.display[terminal.status()]
-        opening, closing = {"nerd": ("\ue0b6", "\ue0b4"), "unicode": ("◖", "◗"),
-                            "ascii": ("(", ")")}[preset]
+        opening, closing = self.cap_glyphs(preset, cap_style)
         starts = [x for x in range(terminal.screen.columns) if row[x].data == opening]
         ends = [x for x in range(terminal.screen.columns) if row[x].data == closing]
         self.assertTrue(starts, text)
@@ -154,18 +217,19 @@ class NativeStatusLineTests(NativeFixture):
             self.assertGreater(end, start + 3, text)
             self.assertEqual(row[start + 1].data, " ", text)
             self.assertEqual(row[end - 1].data, " ", text)
-            if preset != "ascii":
-                self.assertEqual(row[start].fg, row[start + 1].bg, text)
-                self.assertEqual(row[end].fg, row[end - 1].bg, text)
-                self.assertEqual(row[start].bg, "161d30", text)
-                self.assertEqual(row[end].bg, "161d30", text)
+            self.assertEqual(row[start].fg, row[start + 1].bg, text)
+            self.assertEqual(row[end].fg, row[end - 1].bg, text)
+            self.assertEqual(row[start].bg, "default", text)
+            self.assertEqual(row[end].bg, "default", text)
             if index + 1 < len(starts):
                 self.assertGreater(starts[index + 1], end + 1, text)
                 gap = row[end + 1]
-                self.assertEqual((gap.data, gap.bg), (" ", "161d30"), text)
+                self.assertEqual((gap.data, gap.bg), (" ", "default"), text)
         self.assertNotIn("\ufffd", text)
         self.assertNotIn("\ue0b0", text)
         self.assertNotIn("\ue0b2", text)
+        self.assertNotIn("◖", text)
+        self.assertNotIn("◗", text)
 
     def test_empty_normal_widths_are_independent_nerd_bubbles(self):
         self.configure()
@@ -187,14 +251,57 @@ class NativeStatusLineTests(NativeFixture):
             terminal.capture(f"empty-{columns}")
         self.assertEqual(self.server.requests, [])
 
-    def test_unicode_and_ascii_presets_use_real_host_settings(self):
-        for preset in ("unicode", "ascii"):
+    def test_powerline_caps_are_independent_of_symbol_preset(self):
+        caps = {}
+        for preset in ("nerd", "unicode"):
             with self.subTest(preset=preset):
                 self.configure(preset=preset)
                 terminal = Terminal(self)
                 terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
-                self.assert_bubbles(terminal, preset)
-                terminal.capture(f"{preset}-empty-120")
+                self.assert_bubbles(terminal)
+                text = terminal.screen.display[terminal.status()]
+                self.assertIn("\ue0b6", text)
+                self.assertIn("\ue0b4", text)
+                row = terminal.screen.buffer[terminal.status()]
+                caps[preset] = [(x, row[x].data) for x in range(terminal.screen.columns)
+                                if row[x].data in ("\ue0b6", "\ue0b4")]
+                self.assertTrue(caps[preset], text)
+                terminal.capture(f"{preset}-powerline")
+                terminal.close()
+        self.assertEqual(caps["nerd"], caps["unicode"])
+
+    def test_plain_cap_style_removes_powerline_glyphs(self):
+        self.configure(preset="unicode", cap_style="plain")
+        terminal = Terminal(self)
+        terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+        self.assert_bubbles(terminal)
+        text = terminal.screen.display[terminal.status()]
+        self.assertNotIn("\ue0b6", text)
+        self.assertNotIn("\ue0b4", text)
+        terminal.capture("plain-powerline-off")
+        terminal.close()
+
+    def test_ascii_preset_defaults_to_ascii_caps(self):
+        self.configure(preset="ascii")
+        terminal = Terminal(self)
+        terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+        self.assert_bubbles(terminal)
+        text = terminal.screen.display[terminal.status()]
+        self.assertFalse([character for character in text if ord(character) > 127], text)
+        terminal.capture("ascii-plain")
+        terminal.close()
+
+    def test_color_modes_keep_powerline_caps(self):
+        for color_mode in ("256color", "truecolor"):
+            with self.subTest(color_mode=color_mode):
+                self.configure(preset="unicode", color_mode=color_mode)
+                terminal = Terminal(self)
+                terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+                self.assert_bubbles(terminal)
+                text = terminal.screen.display[terminal.status()]
+                self.assertIn("\ue0b6", text)
+                self.assertIn("\ue0b4", text)
+                terminal.capture(f"{color_mode}-powerline")
                 terminal.close()
 
     def test_countdown_and_runtime_unavailable_are_real_isolated_states(self):
@@ -277,6 +384,8 @@ class NativeStatusLineTests(NativeFixture):
         terminal.send("/new\r")
         terminal.until(lambda: self.record()["generation"] > before["generation"])
         terminal.until(lambda: terminal.status() is not None)
+        self.assert_bubbles(terminal)
+        self.assertIn("\ue0b6", terminal.screen.display[terminal.status()])
         terminal.capture("session-switch")
         self.assertEqual(self.server.requests, [])
         terminal.send("AFTER_STATUS_SWITCH\r")

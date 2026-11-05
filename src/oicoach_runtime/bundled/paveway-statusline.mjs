@@ -1,8 +1,13 @@
 // Independent Windline Bubble surfaces; motion belongs only to unused context capacity.
 const TOKENS = Object.freeze({
-    night: "#161d30", brand: "#8475cc", identity: "#35577f", workflow: "#29384e",
+    brand: "#8475cc", identity: "#35577f", workflow: "#29384e",
     ink: "#dae7f3", cyan: "#67cbd0", warning: "#d5ab68", error: "#f5dce0",
     context: "#203f49", cost: "#222c40", event: "#30505c", fault: "#633c4b",
+});
+// Independent visual decision: terminal font coverage is not a UI-symbol preset.
+const CAPS = Object.freeze({
+    powerline: Object.freeze(["\ue0b6", "\ue0b4"]),
+    plain: Object.freeze(["(", ")"]),
 });
 const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_][\s\S]*?(?:\x1b\\|$)|[@-_])/g;
 const UNSAFE = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -64,27 +69,88 @@ function colorMode(ui) {
     return "256color";
 }
 
+const XTERM_LEVELS = Object.freeze([0, 95, 135, 175, 215, 255]);
+// The ANSI-256 cube cannot represent Paveway's slate and cyan surfaces: nearest-by-RGB
+// would turn identity and Workflow into neutral grays. Pin the semantic tokens instead.
+const ANSI_TOKENS = Object.freeze(new Map([
+    [TOKENS.brand, 98], [TOKENS.identity, 60], [TOKENS.workflow, 17], [TOKENS.context, 23],
+    [TOKENS.cost, 235], [TOKENS.event, 24], [TOKENS.fault, 95], [TOKENS.ink, 189],
+    [TOKENS.cyan, 80], [TOKENS.warning, 179], [TOKENS.error, 224],
+]));
+// The wave blends context into cyan in fixed 256-color steps, never into gray.
+const CYAN_RAMP = Object.freeze([23, 24, 30, 31, 37, 38, 44, 45, 51, 80, 116, 152, 159, 195]);
+const CUBE = Object.freeze(Array.from({length: 216}, (_, index) => index + 16));
+const quantized = new Map();
+
+function xtermRgb(index) {
+    if (index >= 232) {
+        const level = 8 + (index - 232) * 10;
+        return [level, level, level];
+    }
+    const value = index - 16;
+    return [XTERM_LEVELS[Math.floor(value / 36)], XTERM_LEVELS[Math.floor(value % 36 / 6)], XTERM_LEVELS[value % 6]];
+}
+
+function nearestIndex(channels, indices) {
+    let best = indices[0], error = Infinity;
+    for (const index of indices) {
+        const level = xtermRgb(index);
+        const distance = channels.reduce((sum, value, position) => sum + (value - level[position]) ** 2, 0);
+        if (distance < error) { best = index; error = distance; }
+    }
+    return best;
+}
+
+function hue([red, green, blue]) {
+    const high = Math.max(red, green, blue), low = Math.min(red, green, blue), delta = high - low;
+    if (!delta) return 0;
+    const sector = high === red ? (green - blue) / delta
+        : high === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+    return (sector * 60 + 360) % 360;
+}
+
 function ansi256(hex) {
+    const cached = quantized.get(hex);
+    if (cached !== undefined) return cached;
     const channels = rgb(hex);
-    const cube = channels.map(value => Math.round(value / 255 * 5));
-    const levels = [0, 95, 135, 175, 215, 255];
-    const cubeError = channels.reduce((sum, value, index) => sum + (value - levels[cube[index]]) ** 2, 0);
-    const gray = Math.max(0, Math.min(23, Math.round((channels.reduce((a, b) => a + b, 0) / 3 - 8) / 10)));
-    const grayError = channels.reduce((sum, value) => sum + (value - (8 + gray * 10)) ** 2, 0);
-    return grayError < cubeError ? 232 + gray : 16 + cube[0] * 36 + cube[1] * 6 + cube[2];
+    const chroma = Math.max(...channels) - Math.min(...channels);
+    let index = ANSI_TOKENS.get(hex);
+    if (index === undefined) {
+        const angle = hue(channels);
+        if (chroma > 20 && angle >= 150 && angle <= 210) index = nearestIndex(channels, CYAN_RAMP);
+        // Only near-neutral colors may use the gray ramp; tinted colors keep their hue.
+        else if (chroma <= 16) index = 232 + Math.max(0, Math.min(23,
+            Math.round((channels.reduce((sum, value) => sum + value, 0) / 3 - 8) / 10)));
+        else index = nearestIndex(channels, CUBE);
+    }
+    quantized.set(hex, index);
+    return index;
 }
 
 function palette(mode) {
-    const code = (hex, background) => mode === "truecolor"
-        ? `\x1b[${background ? 48 : 38};2;${rgb(hex).join(";")}m`
-        : `\x1b[${background ? 48 : 38};5;${ansi256(hex)}m`;
-    return (text, background = TOKENS.night, foreground = TOKENS.ink, bold = false) => {
+    // null is the terminal's own foreground/background, not a guessed night color.
+    const code = (value, background) => value === null
+        ? `\x1b[${background ? 49 : 39}m`
+        : mode === "truecolor"
+            ? `\x1b[${background ? 48 : 38};2;${rgb(value).join(";")}m`
+            : `\x1b[${background ? 48 : 38};5;${ansi256(value)}m`;
+    return (text, background = null, foreground = TOKENS.ink, bold = false) => {
         if (!text || mode === "none") return text;
-        return `${code(background, true)}${code(foreground, false)}${bold ? "\x1b[1m" : "\x1b[22m"}${text}\x1b[0m`;
+        return `${code(background, true)}${code(foreground, false)}${bold ? "\x1b[1m" : "\x1b[22m"}${text}\x1b[22m\x1b[39;49m`;
     };
 }
 
-export function createStatusLine(getPavewayState, ui) {
+// Precedence: explicit environment override, explicit Paveway setting, then the
+// symbol-preset default. Only the ASCII preset chooses plain caps; TERM and
+// COLORTERM describe ANSI/color capability, not glyph coverage.
+function capStyle(ui, configured) {
+    for (const value of [process.env.PAVEWAY_STATUSLINE_CAPS, configured]) {
+        if (value === "powerline" || value === "plain") return value;
+    }
+    return ui.theme?.getSymbolPreset?.() === "ascii" ? "plain" : "powerline";
+}
+
+export function createStatusLine(getPavewayState, ui, options = {}) {
     const measure = ui.visibleWidth;
     const clip = (text, width) => width <= 0 ? "" : sanitizeStatusText(ui.truncateToWidth(text, width, ""));
     const shorten = (text, width, ascii) => measure(text) <= width ? text
@@ -101,13 +167,13 @@ export function createStatusLine(getPavewayState, ui) {
             const paint = palette(mode);
             const preset = ui.theme?.getSymbolPreset?.();
             const ascii = preset === "ascii" || process.env.TERM === "dumb";
-            const nerd = preset === "nerd";
-            // Never infer installed PUA fonts from TERM or use a directional connector.
-            const proposedCaps = ascii ? ["(", ")"] : nerd ? ["\ue0b6", "\ue0b4"] : ["◖", "◗"];
-            const [leftCap, rightCap] = proposedCaps.every(cap => measure(cap) === 1) ? proposedCaps : ["(", ")"];
+            // Ask for Powerline glyphs without claiming whether a font or terminal
+            // actually draws them; width is a layout budget, not font detection.
+            const caps = CAPS[capStyle(ui, options.capStyle)];
+            const [leftCap, rightCap] = caps.every(cap => measure(cap) === 1) ? caps : CAPS.plain;
             const padding = width >= 64 ? 1 : 0;
             const overhead = 2 + padding * 2;
-            const gap = paint(" ");
+            const gap = paint(" ", null, null);
             const model = sanitizeStatusText(snapshot.model?.name) || sanitizeStatusText(snapshot.model?.id) || "model ?";
             const coach = sanitizeStatusText(state.coach) || "coach ?";
             const thinking = sanitizeStatusText(snapshot.thinking);
@@ -133,11 +199,11 @@ export function createStatusLine(getPavewayState, ui) {
                 ? `$${snapshot.cost < 10 ? snapshot.cost.toFixed(2) : snapshot.cost < 1000 ? snapshot.cost.toFixed(1) : shortNumber(snapshot.cost)}` : "";
 
             // One primitive for both sides: caps are on the bar, never on another bubble.
-            const bubble = (item, content) => paint(leftCap, TOKENS.night, item.background)
+            const bubble = (item, content) => paint(leftCap, null, item.background)
                 + paint(" ".repeat(padding), item.background, item.foreground)
                 + (content ?? paint(item.text, item.background, item.foreground, item.bold))
                 + paint(" ".repeat(padding), item.background, item.foreground)
-                + paint(rightCap, TOKENS.night, item.background);
+                + paint(rightCap, null, item.background);
             const chosen = [];
             const size = item => measure(item.text) + overhead;
             const used = () => chosen.reduce((sum, item) => sum + size(item), 0) + Math.max(0, chosen.length - 1);
@@ -157,7 +223,7 @@ export function createStatusLine(getPavewayState, ui) {
 
             // Very small terminals still show a real fault, not a clipped cap.
             if (!chosen.length && (wakeFault || !inboxKnown) && width < measure(wakeFault || "Inbox ?") + overhead) {
-                return paint("!" + " ".repeat(width - 1), TOKENS.night, TOKENS.error, true);
+                return paint("!" + " ".repeat(width - 1), null, TOKENS.error, true);
             }
             const modelBudget = Math.max(1, Math.min(width >= 80 ? 20 : 14, width - used() - overhead - (chosen.length ? 1 : 0)));
             const identity = add("identity", shorten(model, modelBudget, ascii), TOKENS.identity, "left");
@@ -233,7 +299,7 @@ export function createStatusLine(getPavewayState, ui) {
                 .map(item => item === capacity ? renderCapacity() : bubble(item)).join(gap);
             const left = group("left"), right = group("right");
             const space = Math.max(0, width - measure(left) - measure(right));
-            return left + paint(" ".repeat(space)) + right;
+            return left + paint(" ".repeat(space), null, null) + right;
         },
     };
 }

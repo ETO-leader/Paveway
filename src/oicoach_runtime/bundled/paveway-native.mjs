@@ -56,7 +56,8 @@ export default async function paveway(pi) {
         let admitted = false;
         const statusState = {coach: config.coach_id, workflow: `${config.coach_id}/${config.task_id}`};
         let statusContext;
-        const statusLine = createStatusLine(() => statusState, await loadNativeTui());
+        const statusLine = createStatusLine(() => statusState, await loadNativeTui(),
+            {capStyle: config.statusline?.cap_style});
         const publishStatus = update => {
             if (JSON.stringify(update) === JSON.stringify({wakeup: statusState.wakeup, inbox: statusState.inbox})) return;
             Object.assign(statusState, update);

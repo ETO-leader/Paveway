@@ -15,7 +15,18 @@ tui:
 
 模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时显示完整 `auto… (spec…)` 边界说明；其余情况在未使用容量中用 `│`／`┊` 标记自动压缩／预压缩起点，已使用区域不会被覆盖。容量条按预算使用 4／8／16 格；更窄时保留比例与能容纳的窗口信息。
 
-预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。Nerd preset 使用成对的 ``／``，圆帽前景与自身胶囊背景一致，外部为状态栏背景；Unicode preset 使用 `◖`／`◗`，ASCII preset 或 `TERM=dumb` 使用括号。若圆帽不是单列则退回括号。支持 True Color、256 色、`NO_COLOR`／无色模式；无色容量条用实线／虚线区分已用和未用。
+预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。圆帽风格与 OMP `symbolPreset` 解耦，默认 `auto` 下 Nerd 与 Unicode preset 都使用标准 Powerline 圆帽 ``／``，ASCII preset 使用 ASCII 括号。圆帽前景与自身胶囊背景一致，外部使用终端默认背景而不是固定夜色。若圆帽显示宽度不是单列则退回括号；该检查只用于布局预算，不推断字体或终端是否真的安装字形。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色下品牌紫、身份蓝、Workflow 蓝灰和 Context 青色使用校准的语义色，不被灰阶吞没。无色容量条用实线／虚线区分已用和未用。
+
+显式覆盖圆帽风格可在 Paveway 配置中设置：
+
+```toml
+[statusline]
+# auto: Nerd/Unicode 用 Powerline，ASCII 用括号
+# powerline / plain: 强制对应风格
+cap_style = "auto"
+```
+
+`PAVEWAY_STATUSLINE_CAPS=powerline|plain` 提供一次性的显式环境覆盖，优先于配置文件；两者都只表达用户选择，不做终端品牌或字体探测。
 
 ### 可复现的宿主集成
 
