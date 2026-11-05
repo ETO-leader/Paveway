@@ -1,5 +1,7 @@
 # Windline 状态栏验收
 
+> 本页保留 `3483322` 集成基线的截图和测试结果，不代表独立 Bubble 改造后的复测结果。当前设计、真实新图及修正记录见 [Bubble 验收](windline-statusline/bubble-verification.md)。
+
 ## 实际运行范围
 
 - 原入口：`omp/18.16.0` 编译版。该版本交互扩展的 `setFooter()` 确实为空实现。
@@ -102,5 +104,5 @@ PAVEWAY_TEST_NATIVE=1 PAVEWAY_STATUSLINE_EVIDENCE=/tmp/paveway-statusline-eviden
 ## 参考实现
 
 - [Windline wind.lua](https://github.com/windwp/windline.nvim/blob/master/lua/wlsample/wind.lua)：各位置颜色相位差，而非移动文本。
-- [Windline bubble.lua](https://github.com/windwp/windline.nvim/blob/master/lua/wlsample/bubble.lua)：连接符前景取上一色块、背景取下一色块。
+- [Windline bubble.lua](https://github.com/windwp/windline.nvim/blob/master/lua/wlsample/bubble.lua)：`basic.right` 使用前景等于组件背景、外部背景等于状态栏的成对圆帽；此前将其概括为连续 Powerline 连接并不准确，本次 Bubble 改造已纠正。
 - [OMP 固定源码](https://github.com/can1357/oh-my-pi/tree/650f3a108229ee11bf68ba3377f4e8c3391cd424)：复用 StatusLine、Composer、真实会话统计和 TUI 重绘。没有引入 Neovim 插件依赖。

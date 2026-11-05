@@ -1,7 +1,8 @@
-// Windline: connected instrument panels; only unused context capacity carries motion.
+// Independent Windline Bubble surfaces; motion belongs only to unused context capacity.
 const TOKENS = Object.freeze({
     night: "#161d30", brand: "#8475cc", identity: "#35577f", workflow: "#29384e",
-    ink: "#dae7f3", cyan: "#67cbd0", warning: "#d5ab68", error: "#d67d87",
+    ink: "#dae7f3", cyan: "#67cbd0", warning: "#d5ab68", error: "#f5dce0",
+    context: "#203f49", cost: "#222c40", event: "#30505c", fault: "#633c4b",
 });
 const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_][\s\S]*?(?:\x1b\\|$)|[@-_])/g;
 const UNSAFE = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -35,8 +36,8 @@ export function contextMeterCells(percent, count, snapshot = {}) {
     return Array.from({length: count}, (_, index) => ({
         occupied: index < occupied,
         background: index < occupied ? TOKENS.cyan : moving
-            ? blend(TOKENS.night, TOKENS.cyan, 0.08 + 0.26 * (1 + Math.cos(2 * Math.PI * ((index - occupied) / Math.max(1, remaining) - phase / 32))) / 2)
-            : TOKENS.night,
+            ? blend(TOKENS.context, TOKENS.cyan, 0.08 + 0.26 * (1 + Math.cos(2 * Math.PI * ((index - occupied) / Math.max(1, remaining) - phase / 32))) / 2)
+            : TOKENS.context,
     }));
 }
 
@@ -85,8 +86,9 @@ function palette(mode) {
 
 export function createStatusLine(getPavewayState, ui) {
     const measure = ui.visibleWidth;
-    // OMP's empty third argument requests cell-aware clipping without an ellipsis.
     const clip = (text, width) => width <= 0 ? "" : sanitizeStatusText(ui.truncateToWidth(text, width, ""));
+    const shorten = (text, width, ascii) => measure(text) <= width ? text
+        : clip(text, Math.max(0, width - 1)) + (ascii ? "~" : "…");
     let disposed = false;
     return {
         dispose() { disposed = true; },
@@ -95,139 +97,143 @@ export function createStatusLine(getPavewayState, ui) {
             if (disposed || width === 0) return "";
             const state = getPavewayState() ?? {};
             const context = snapshot.context ?? {};
-            const paint = palette(colorMode(ui));
-            const model = sanitizeStatusText(snapshot.model?.id) || sanitizeStatusText(snapshot.model?.name) || "model ?";
-            const thinking = sanitizeStatusText(snapshot.thinking);
+            const mode = colorMode(ui);
+            const paint = palette(mode);
+            const preset = ui.theme?.getSymbolPreset?.();
+            const ascii = preset === "ascii" || process.env.TERM === "dumb";
+            const nerd = preset === "nerd";
+            // Never infer installed PUA fonts from TERM or use a directional connector.
+            const proposedCaps = ascii ? ["(", ")"] : nerd ? ["\ue0b6", "\ue0b4"] : ["◖", "◗"];
+            const [leftCap, rightCap] = proposedCaps.every(cap => measure(cap) === 1) ? proposedCaps : ["(", ")"];
+            const padding = width >= 64 ? 1 : 0;
+            const overhead = 2 + padding * 2;
+            const gap = paint(" ");
+            const model = sanitizeStatusText(snapshot.model?.name) || sanitizeStatusText(snapshot.model?.id) || "model ?";
             const coach = sanitizeStatusText(state.coach) || "coach ?";
+            const thinking = sanitizeStatusText(snapshot.thinking);
             const workflow = sanitizeStatusText(state.workflow) || "workflow ?";
             const percent = percentText(context.percent);
             const window = shortNumber(context.window);
-            const inboxKnown = Number.isFinite(state.inbox) && state.inbox >= 0;
-            const inbox = inboxKnown ? shortNumber(Math.floor(state.inbox)) : "?";
-            const wakeup = state.wakeup;
-            const wake = wakeup?.unavailable ? "!" : wakeup === undefined ? "?"
-                : wakeup.running ? "running" : sanitizeStatusText(wakeup.timing) || "none";
-            const cost = Number.isFinite(snapshot.cost) && snapshot.cost >= 0
-                ? `$${snapshot.cost < 10 ? snapshot.cost.toFixed(2) : snapshot.cost < 1000 ? snapshot.cost.toFixed(1) : shortNumber(snapshot.cost)}` : "";
-            const finish = line => {
-                const fitted = measure(line) > width ? ui.truncateToWidth(line, width, "") : line;
-                const remaining = Math.max(0, width - measure(fitted));
-                return fitted + paint(" ".repeat(remaining));
-            };
-            const inboxColor = inboxKnown && state.inbox > 0 ? TOKENS.cyan : TOKENS.ink;
-            if (width < 72) {
-                // Reserve abnormalities and unread counts before spending cells on identity.
-                const candidates = [
-                    ...(wakeup?.unavailable ? [{text: "wake!", color: TOKENS.error, tiny: "!"}] : []),
-                    ...(inboxKnown && state.inbox > 0 ? [{text: `in ${inbox}`, color: inboxColor, tiny: `i${inbox}`}] : []),
-                    {text: percent, color: TOKENS.ink, tiny: percent},
-                ];
-                const right = [];
-                let used = 0;
-                for (const item of candidates) {
-                    const budget = width - used - (right.length ? 1 : 0);
-                    const text = measure(item.text) <= budget ? item.text : measure(item.tiny) <= budget ? item.tiny : "";
-                    if (text) { right.push({...item, text}); used += measure(text) + (right.length > 1 ? 1 : 0); }
-                }
-                if (width >= 40) {
-                    const extra = `/${window}`;
-                    const item = right.find(item => item.text === percent);
-                    if (item && used + measure(extra) <= width - 12) { item.text += extra; used += measure(extra); }
-                }
-                for (const text of [width >= 48 && !wakeup?.unavailable ? `wake ${clip(wake, 10)}` : "", width >= 56 ? cost : ""]) {
-                    if (text && used + measure(text) + 1 <= width - 16) {
-                        right.unshift({text, color: TOKENS.ink}); used += measure(text) + 1;
-                    }
-                }
-                const available = Math.max(0, width - used - (used < width ? 1 : 0));
-                const identity = clip(`${width >= 56 ? "PAVEWAY " : ""}${model}${thinking ? ` · ${thinking}` : ""}`, available);
-                const gap = Math.max(0, width - measure(identity) - used);
-                return finish(paint(identity) + paint(" ".repeat(gap)) + right.map(item => paint(item.text, TOKENS.night, item.color)).join(paint(" ")));
-            }
-
-            const fields = [
-                {text: "PAVEWAY", background: TOKENS.brand, bold: true, min: 7},
-                {text: coach, background: TOKENS.identity, min: 3},
-                {text: `${model}${thinking ? ` · ${thinking}` : ""}`, background: TOKENS.identity, min: 8},
-                {text: workflow, background: TOKENS.workflow, min: 3},
-            ];
-            const minimumLeft = fields.reduce((sum, field) => sum + field.min + 2, 0);
-            const contextLabel = ` ${percent}/${window} `;
-            const metadata = [
-                {text: `wake ${clip(wake, 12)}`, color: wakeup?.unavailable ? TOKENS.error : TOKENS.ink},
-                {text: `${width >= 120 ? "Inbox" : "in"} ${inbox}`, color: inboxColor},
-                ...(cost ? [{text: cost, color: TOKENS.ink}] : []),
-            ];
-            const metadataSize = () => metadata.reduce((sum, field) => sum + measure(field.text) + 1, 0);
-            const metadataBudget = width - minimumLeft - measure(contextLabel);
-            if (metadataSize() > metadataBudget && cost) metadata.pop();
-            if (metadataSize() > metadataBudget) {
-                metadata[0].text = clip(metadata[0].text, Math.max(0, measure(metadata[0].text) - metadataSize() + metadataBudget));
-            }
-            const metadataWidth = metadataSize();
+            const separator = ascii ? " / " : " · ";
+            const contextLabel = `${percent}${separator}${window}`;
             const boundary = context.autoCompact === true && knownPercent(context.thresholdPercent) !== null
                 ? `auto${percentText(context.thresholdPercent)}${knownPercent(context.speculationPercent) !== null ? ` (spec${percentText(context.speculationPercent)})` : ""}`
                 : context.autoCompact === false ? "auto off" : "";
-            const boundaryLabel = width >= 160 && boundary ? ` ${boundary}` : "";
-            const meterWidth = Math.max(0, Math.min(16, width - minimumLeft - metadataWidth - measure(contextLabel) - measure(boundaryLabel)));
-            const rightWidth = metadataWidth + meterWidth + measure(contextLabel) + measure(boundaryLabel);
-            const leftBudget = Math.max(0, width - rightWidth);
-            const coachField = fields[1], modelField = fields[2], workflowField = fields[3];
-            coachField.min = Math.min(11, measure(coachField.text));
-            modelField.min = Math.min(width >= 100 ? 24 : 16, measure(modelField.text));
-            workflowField.min = Math.min(16, measure(workflowField.text));
-            const allocatedWidth = () => fields.reduce((sum, field) => sum + field.min + 2, 0);
-            // Hide secondary identity before it degenerates into unreadable fragments.
-            if (allocatedWidth() > leftBudget) fields.pop();
-            if (allocatedWidth() > leftBudget) fields.splice(1, 1);
-            modelField.min = Math.max(1, modelField.min - Math.max(0, allocatedWidth() - leftBudget));
-            const allocations = fields.map(field => field.min);
-            let spare = Math.max(0, leftBudget - allocatedWidth());
-            for (const field of [modelField, workflowField, coachField]) {
-                const index = fields.indexOf(field);
-                if (index < 0) continue;
-                const desired = Math.min(measure(field.text), field === modelField ? 32 : Infinity);
-                const extra = Math.max(0, Math.min(spare, desired - allocations[index]));
-                allocations[index] += extra; spare -= extra;
-            }
-            const nerd = ui.theme?.getSymbolPreset?.() === "nerd";
-            const cap = (candidate, fallback) => {
-                const text = sanitizeStatusText(candidate);
-                return measure(text) === 1 && (nerd || !/[\uE000-\uF8FF]/u.test(text)) ? text : fallback;
+            const threshold = knownPercent(context.thresholdPercent);
+            const abnormal = context.autoCompact === true && threshold !== null
+                && knownPercent(context.percent) !== null && context.percent >= threshold;
+            const wakeup = state.wakeup;
+            const timing = sanitizeStatusText(wakeup?.timing);
+            const wakeFault = wakeup?.unavailable ? "Wakeup !" : wakeup === undefined
+                || (wakeup !== null && !wakeup.running && !timing) ? "Wakeup ?" : "";
+            const inboxKnown = Number.isFinite(state.inbox) && state.inbox >= 0;
+            const unread = inboxKnown && state.inbox > 0;
+            const inbox = inboxKnown ? shortNumber(Math.floor(state.inbox)) : "?";
+            const cost = Number.isFinite(snapshot.cost) && snapshot.cost >= 0
+                ? `$${snapshot.cost < 10 ? snapshot.cost.toFixed(2) : snapshot.cost < 1000 ? snapshot.cost.toFixed(1) : shortNumber(snapshot.cost)}` : "";
+
+            // One primitive for both sides: caps are on the bar, never on another bubble.
+            const bubble = (item, content) => paint(leftCap, TOKENS.night, item.background)
+                + paint(" ".repeat(padding), item.background, item.foreground)
+                + (content ?? paint(item.text, item.background, item.foreground, item.bold))
+                + paint(" ".repeat(padding), item.background, item.foreground)
+                + paint(rightCap, TOKENS.night, item.background);
+            const chosen = [];
+            const size = item => measure(item.text) + overhead;
+            const used = () => chosen.reduce((sum, item) => sum + size(item), 0) + Math.max(0, chosen.length - 1);
+            const add = (id, text, background, side, foreground = TOKENS.ink, bold = false) => {
+                const item = {id, text, background, foreground, side, bold};
+                if (used() + size(item) + (chosen.length ? 1 : 0) > width) return;
+                chosen.push(item);
+                return item;
             };
-            const separators = ui.theme?.sep;
-            const opening = cap(separators?.powerlineCapLeft, nerd ? "\ue0b6" : "◖");
-            const connection = cap(nerd ? separators?.powerlineLeft : undefined, nerd ? "\ue0b0" : "◗");
-            const left = fields.map((field, index) => {
-                const text = measure(field.text) > allocations[index]
-                    ? clip(field.text, Math.max(0, allocations[index] - 1)) + "…"
-                    : field.text;
-                const leading = index === 0 ? paint(opening, TOKENS.night, field.background) : paint(" ", field.background);
-                const content = text + " ".repeat(Math.max(0, allocations[index] - measure(text)));
-                const nextBackground = fields[index + 1]?.background ?? TOKENS.night;
-                // The outgoing cap is painted onto the next surface: one connected band.
-                return leading + paint(content, field.background, TOKENS.ink, field.bold)
-                    + paint(connection, nextBackground, field.background);
-            }).join("");
-            const cells = contextMeterCells(context.percent, meterWidth, snapshot);
-            const markers = new Map();
-            if (!boundaryLabel && context.autoCompact === true) {
-                for (const [value, glyph] of [[context.speculationPercent, "┊"], [context.thresholdPercent, "│"]]) {
-                    const threshold = knownPercent(value);
-                    if (threshold !== null) markers.set(Math.min(meterWidth - 1, Math.floor(meterWidth * threshold / 100)), glyph);
+            const fault = text => add(text, text, TOKENS.fault, "right", TOKENS.error, true)
+                ?? add(text, text.startsWith("Wakeup") ? `Wake${text.endsWith("!") ? "!" : "?"}` : "In?",
+                    TOKENS.fault, "right", TOKENS.error, true)
+                ?? add(text, "!", TOKENS.fault, "right", TOKENS.error, true);
+            if (wakeFault) fault(wakeFault);
+            if (!inboxKnown) fault("Inbox ?");
+            if (unread) add("inbox", `${ascii ? "In" : "✉"} ${inbox}`, TOKENS.event, "right", TOKENS.cyan, true);
+
+            // Very small terminals still show a real fault, not a clipped cap.
+            if (!chosen.length && (wakeFault || !inboxKnown) && width < measure(wakeFault || "Inbox ?") + overhead) {
+                return paint("!" + " ".repeat(width - 1), TOKENS.night, TOKENS.error, true);
+            }
+            const modelBudget = Math.max(1, Math.min(width >= 80 ? 20 : 14, width - used() - overhead - (chosen.length ? 1 : 0)));
+            const identity = add("identity", shorten(model, modelBudget, ascii), TOKENS.identity, "left");
+            let meterWidth = width >= 64 ? 4 : 0;
+            let capacity = add("context", meterWidth ? " ".repeat(meterWidth + 1) + contextLabel : percent,
+                TOKENS.context, "right", abnormal ? TOKENS.warning : TOKENS.cyan);
+            if (!capacity) {
+                meterWidth = 0;
+                capacity = add("context", percent, TOKENS.context, "right", abnormal ? TOKENS.warning : TOKENS.cyan);
+            }
+            const clock = ascii ? "Wake" : "◷";
+            if (!wakeFault && wakeup && (wakeup.running || (timing && timing !== "none"))) {
+                add("wake", `${clock} ${wakeup.running ? "Running" : shorten(timing, 12, ascii)}`, TOKENS.event, "right");
+            }
+            add("brand", "PAVEWAY", TOKENS.brand, "left", TOKENS.ink, true);
+            // A narrow layout is composed afresh, not a clipped wide status bar.
+            const flow = width >= 100
+                ? add("workflow", shorten(workflow, Math.min(16, measure(workflow)), ascii), TOKENS.workflow, "left") : undefined;
+            if (cost) add("cost", cost, TOKENS.cost, "right");
+            const upgrade = (item, text) => {
+                if (item && measure(text) - measure(item.text) <= width - used()) item.text = text;
+            };
+            // Reserve the compact meter before spending spare cells on identity detail.
+            if (capacity) {
+                if (!meterWidth) upgrade(capacity, contextLabel);
+                for (const count of [4, 8, ...(width >= 160 ? [16] : [])]) {
+                    const label = " ".repeat(count + 1) + contextLabel;
+                    if (measure(label) - measure(capacity.text) <= width - used()) {
+                        capacity.text = label;
+                        meterWidth = count;
+                    }
                 }
             }
-            const mode = colorMode(ui);
-            const meter = cells.map((cell, index) => paint(
-                !cell.occupied && markers.has(index) ? markers.get(index) : mode === "none" ? cell.occupied ? "━" : "─" : " ",
-                cell.background, TOKENS.cyan,
-            )).join("");
-            const threshold = knownPercent(context.thresholdPercent);
-            const abnormal = context.autoCompact === true && threshold !== null && knownPercent(context.percent) !== null && context.percent >= threshold;
-            const right = metadata.map(field => paint(`${field.text} `, TOKENS.night, field.color)).join("")
-                + meter + paint(contextLabel, TOKENS.night, abnormal ? TOKENS.warning : TOKENS.ink)
-                + paint(boundaryLabel);
-            return finish(left + paint(" ".repeat(Math.max(0, spare))) + right);
+            if (identity) {
+                const available = measure(identity.text) + width - used();
+                upgrade(identity, shorten(model, Math.min(32, available), ascii));
+            }
+            if (identity) {
+                for (const text of [model, `${coach}${separator}${model}`, `${coach}${separator}${model}${thinking ? separator + thinking : ""}`]) {
+                    upgrade(identity, text);
+                }
+            }
+            upgrade(flow, workflow);
+            let boundaryLabel = "";
+            if (capacity && width >= 160 && boundary) {
+                const text = capacity.text + " " + boundary;
+                if (measure(text) - measure(capacity.text) <= width - used()) {
+                    capacity.text = text;
+                    boundaryLabel = " " + boundary;
+                }
+            }
+            const renderCapacity = () => {
+                const cells = contextMeterCells(context.percent, meterWidth, snapshot);
+                const markers = new Map();
+                if (!boundaryLabel && context.autoCompact === true) {
+                    for (const [value, glyph] of [[context.speculationPercent, ascii ? ":" : "┊"], [context.thresholdPercent, ascii ? "|" : "│"]]) {
+                        const limit = knownPercent(value);
+                        if (limit !== null) markers.set(Math.min(meterWidth - 1, Math.floor(meterWidth * limit / 100)), glyph);
+                    }
+                }
+                const meter = cells.map((cell, index) => paint(
+                    !cell.occupied && markers.has(index) ? markers.get(index)
+                        : mode === "none" ? cell.occupied ? ascii ? "=" : "━" : ascii ? "-" : "─" : " ",
+                    cell.background, TOKENS.cyan,
+                )).join("");
+                return bubble(capacity, meter
+                    + paint(meterWidth ? " " : "", capacity.background, capacity.foreground)
+                    + paint(capacity.text.trim(), capacity.background, capacity.foreground));
+            };
+            const order = ["brand", "identity", "workflow", "Wakeup !", "Wakeup ?", "Inbox ?", "wake", "inbox", "cost", "context"];
+            chosen.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+            const group = side => chosen.filter(item => item.side === side)
+                .map(item => item === capacity ? renderCapacity() : bubble(item)).join(gap);
+            const left = group("left"), right = group("right");
+            const space = Math.max(0, width - measure(left) - measure(right));
+            return left + paint(" ".repeat(space)) + right;
         },
     };
 }

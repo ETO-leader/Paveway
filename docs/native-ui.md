@@ -4,7 +4,7 @@ Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动
 
 ## Windline 统一状态栏
 
-输入框下方只有一条状态栏。左组显示 PAVEWAY、当前 Profile、OMP 模型／Thinking Level、Profile/task；右组显示 Wakeup、Inbox 未确认数量、会话费用、上下文实心条与百分比／窗口容量。工作目录、Git 分支和重复的 `OMP native` 不再常驻；原生路径／Git 功能没有删除。
+输入框下方只有一条状态栏。左右组件使用相同的独立 Bubble：每个胶囊都有自己的左右圆帽、实色背景和内边距，胶囊之间留一列状态栏背景，不再连接成 Powerline 色带。左组为 PAVEWAY、Profile／模型／Thinking 身份、Profile/task；右组为有信息的 Wakeup、非零 Inbox、低对比度会话费用及青色上下文胶囊。无事件与零未确认消息不常驻；工作目录、Git 分支和重复的 `OMP native` 也不常驻，原生路径／Git 功能没有删除。
 
 配色使用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量。模型工作时，仅上下文条未使用部分以 125ms 相位帧向右传播颜色波浪；已使用部分保持实色。空闲、取消、切换会话和退出会停表／复位；关闭 `tui.motion` 后不产生状态栏动画刷新。在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
 
@@ -13,7 +13,9 @@ tui:
   motion: false
 ```
 
-模型、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列显示完整 `auto… (spec…)` 边界说明；较窄终端在未使用容量中用 `│`／`┊` 标记自动压缩／预压缩起点，已使用区域不会被标记覆盖。长字段带省略号；窄屏优先保留模型、占用、异常和未读提醒。Nerd 模式使用宿主 Powerline 符号，否则使用普通 Unicode 圆帽；支持 True Color、256 色和 `NO_COLOR` 降级。
+模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时显示完整 `auto… (spec…)` 边界说明；其余情况在未使用容量中用 `│`／`┊` 标记自动压缩／预压缩起点，已使用区域不会被覆盖。容量条按预算使用 4／8／16 格；更窄时保留比例与能容纳的窗口信息。
+
+预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。Nerd preset 使用成对的 ``／``，圆帽前景与自身胶囊背景一致，外部为状态栏背景；Unicode preset 使用 `◖`／`◗`，ASCII preset 或 `TERM=dumb` 使用括号。若圆帽不是单列则退回括号。支持 True Color、256 色、`NO_COLOR`／无色模式；无色容量条用实线／虚线区分已用和未用。
 
 ### 可复现的宿主集成
 
@@ -30,7 +32,7 @@ tui:
 packaging/omp/omp --version
 ```
 
-其他 OMP 版本在取得会话所有权之前明确拒绝，不偷偷应用不兼容补丁。终端单元截图和验收记录见 [Windline 验收](verification/windline-statusline.md)。
+其他 OMP 版本在取得会话所有权之前明确拒绝，不偷偷应用不兼容补丁。旧集成记录见 [Windline 验收](verification/windline-statusline.md)，独立胶囊的真实 PTY 图片与复现见 [Bubble 验收](verification/windline-statusline/bubble-verification.md)。
 
 ## 启动与恢复
 
@@ -109,7 +111,7 @@ Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
 /inbox 2
 ```
 
-`in` 从 Runtime 收到并提交请求时起算；`at HH:mm` 使用系统时区的下一次该时刻，RFC3339 必须带时区。统一状态栏使用紧凑倒计时／`running` 和未确认消息数；完整触发时间仍由 `/wakeup list` 查看。到零不代表已执行；实际状态来自 Runtime。Runtime 不可用或 owner 不确定时显示异常及未知 Inbox，而不是伪装为零；不会自动重放或确认消息。
+`in` 从 Runtime 收到并提交请求时起算；`at HH:mm` 使用系统时区的下一次该时刻，RFC3339 必须带时区。状态栏无事件时隐藏 Wakeup，有待执行事件显示 `◷ 12m` 一类倒计时，执行中显示 `◷ Running`；完整触发时间仍由 `/wakeup list` 查看。Inbox 为零时隐藏，非零显示 `✉ 2` 一类未确认数。到零不代表已执行；实际状态来自 Runtime。Runtime 不可用或 owner 不确定时优先显示 `Wakeup !` 和 `Inbox ?` 异常胶囊，初始化尚未知的状态也不伪装为零。这里只改变展示，不修改排程、消息确认、通知、所有权或持久化语义。
 
 Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当前 owner/generation 和作用域，用户不能通过参数指向另一 Profile。默认维持 opt-in，不创建无限自主跟进。前台 `after_turn_settled` 明确不提供，旧后台 `schedule --after-turn --run-id` 继续原样使用，二者不会混淆。
 

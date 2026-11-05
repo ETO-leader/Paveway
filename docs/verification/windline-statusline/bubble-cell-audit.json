@@ -1,0 +1,40 @@
+{
+  "source": "isolated-native-pty",
+  "captures_audited": 55,
+  "working_frames": 32,
+  "working_text_variants": 1,
+  "meter_cells": 8,
+  "occupied_cells": 1,
+  "changing_unused_columns_zero_based": [
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107
+  ],
+  "changed_outside_unused_meter": false,
+  "widths": {
+    "100": {
+      "captured_cells": 100,
+      "bubble_pairs": 5,
+      "status": " PAVEWAY   native-test · probe   native-test/training          $0.00        ┊│  1% · 128K "
+    },
+    "120": {
+      "captured_cells": 120,
+      "bubble_pairs": 5,
+      "status": " PAVEWAY   native-test · probe   native-test/training                              $0.00        ┊│  1% · 128K "
+    },
+    "160": {
+      "captured_cells": 160,
+      "bubble_pairs": 5,
+      "status": " PAVEWAY   native-test · probe   native-test/training                                            $0.00                    1% · 128K auto85% (spec74%) "
+    },
+    "80": {
+      "captured_cells": 80,
+      "bubble_pairs": 4,
+      "status": " PAVEWAY   native-test · probe               $0.00        ┊│  1% · 128K "
+    }
+  }
+}

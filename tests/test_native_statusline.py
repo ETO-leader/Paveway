@@ -21,6 +21,7 @@ from terminal_screen import WideScreen
 from test_native_omp import NativeFixture
 from oicoach_runtime.ipc import request
 from oicoach_runtime.config import config_text
+from oicoach_runtime.workflow_setup import create
 
 
 class Terminal:
@@ -32,7 +33,7 @@ class Terminal:
         self.stream = pyte.ByteStream(self.screen)
         self.raw = bytearray()
         self.process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native",
-            "--config", str(case.path), "--workflow", "native-test"],
+            "--config", str(case.path), "--workflow", getattr(case, "workflow", "native-test")],
             env=case.env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         os.set_blocking(self.master, False)
@@ -88,10 +89,11 @@ class Terminal:
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
         data = {"columns": self.screen.columns, "rows": self.screen.lines,
+                "status_row": self.status(), "source": "isolated-native-pty",
                 "cells": [[self.screen.buffer[y][x]._asdict() for x in range(self.screen.columns)]
                           for y in range(self.screen.lines)]}
-        (target / (name + ".json")).write_text(json.dumps(data, ensure_ascii=False))
-        (target / (name + ".ansi")).write_bytes(self.raw)
+        (target / ("bubble-" + name + ".json")).write_text(json.dumps(data, ensure_ascii=False))
+        (target / ("bubble-" + name + ".ansi")).write_bytes(self.raw)
 
     def resize(self, columns):
         self.screen.resize(lines=32, columns=columns)
@@ -119,11 +121,11 @@ class Terminal:
 
 
 class NativeStatusLineTests(NativeFixture):
-    def configure(self, *, motion=True, long_names=False, context_window=128000):
+    def configure(self, *, motion=True, long_names=False, context_window=128000, preset="nerd"):
         self.env["COLORTERM"] = "truecolor"
         path = Path(self.env["PI_CODING_AGENT_DIR"]) / "config.yml"
         data = json.loads(path.read_text())
-        data.update({"tui": {"motion": motion}, "composer": {"shape": "box"}})
+        data.update({"tui": {"motion": motion}, "composer": {"shape": "box"}, "symbolPreset": preset})
         path.write_text(json.dumps(data))
         models = Path(self.env["PI_CODING_AGENT_DIR"]) / "models.yml"
         data = json.loads(models.read_text())
@@ -135,6 +137,117 @@ class NativeStatusLineTests(NativeFixture):
             self.config = replace(self.config, agent=replace(self.config.agent, model="paveway-m0/" + model["id"]))
             self.path.write_text(config_text(self.config))
         models.write_text(json.dumps(data))
+        if long_names:
+            self.workflow = "native-test-with-an-exceptionally-long-workflow-name"
+            create(self.config, self.workflow, self.root / "workspace", "example")
+
+    def assert_bubbles(self, terminal, preset="nerd"):
+        row = terminal.screen.buffer[terminal.status()]
+        text = terminal.screen.display[terminal.status()]
+        opening, closing = {"nerd": ("\ue0b6", "\ue0b4"), "unicode": ("◖", "◗"),
+                            "ascii": ("(", ")")}[preset]
+        starts = [x for x in range(terminal.screen.columns) if row[x].data == opening]
+        ends = [x for x in range(terminal.screen.columns) if row[x].data == closing]
+        self.assertTrue(starts, text)
+        self.assertEqual(len(starts), len(ends), text)
+        for index, (start, end) in enumerate(zip(starts, ends)):
+            self.assertGreater(end, start + 3, text)
+            self.assertEqual(row[start + 1].data, " ", text)
+            self.assertEqual(row[end - 1].data, " ", text)
+            if preset != "ascii":
+                self.assertEqual(row[start].fg, row[start + 1].bg, text)
+                self.assertEqual(row[end].fg, row[end - 1].bg, text)
+                self.assertEqual(row[start].bg, "161d30", text)
+                self.assertEqual(row[end].bg, "161d30", text)
+            if index + 1 < len(starts):
+                self.assertGreater(starts[index + 1], end + 1, text)
+                gap = row[end + 1]
+                self.assertEqual((gap.data, gap.bg), (" ", "161d30"), text)
+        self.assertNotIn("\ufffd", text)
+        self.assertNotIn("\ue0b0", text)
+        self.assertNotIn("\ue0b2", text)
+
+    def test_empty_normal_widths_are_independent_nerd_bubbles(self):
+        self.configure()
+        terminal = Terminal(self, columns=80)
+        terminal.until(lambda: "Wakeup ?" not in terminal.screen.display[terminal.status()]
+                       and "Inbox ?" not in terminal.screen.display[terminal.status()])
+        for columns in (80, 100, 120, 160):
+            if columns != terminal.screen.columns:
+                terminal.resize(columns)
+            terminal.pump(.3)
+            self.assert_bubbles(terminal)
+            text = terminal.screen.display[terminal.status()]
+            self.assertNotIn("Wakeup", text)
+            self.assertNotIn("◷", text)
+            self.assertNotIn("✉", text)
+            self.assertNotIn("Inbox", text)
+            self.assertIn("probe", text)
+            self.assertRegex(text, r"\d+% · 128K")
+            terminal.capture(f"empty-{columns}")
+        self.assertEqual(self.server.requests, [])
+
+    def test_unicode_and_ascii_presets_use_real_host_settings(self):
+        for preset in ("unicode", "ascii"):
+            with self.subTest(preset=preset):
+                self.configure(preset=preset)
+                terminal = Terminal(self)
+                terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+                self.assert_bubbles(terminal, preset)
+                terminal.capture(f"{preset}-empty-120")
+                terminal.close()
+
+    def test_countdown_and_runtime_unavailable_are_real_isolated_states(self):
+        self.configure()
+        terminal = Terminal(self, columns=160)
+        terminal.send("/wakeup in 80s STATUS_COUNTDOWN\r")
+        terminal.until(lambda: re.search(r"◷ 1m\d+s", terminal.screen.display[terminal.status()]))
+        terminal.capture("wakeup-countdown-160")
+        self.assert_bubbles(terminal)
+        socket = Path(self.config.server.socket_path)
+        self.assertTrue(socket.is_relative_to(self.root), "Never fault a user Runtime")
+        hidden = socket.with_name(socket.name + ".statusline-fault")
+        socket.rename(hidden)
+        try:
+            terminal.until(lambda: "Wakeup !" in terminal.screen.display[terminal.status()]
+                           and "Inbox ?" in terminal.screen.display[terminal.status()], timeout=15)
+            terminal.capture("runtime-unavailable-160")
+            self.assert_bubbles(terminal)
+            text = terminal.screen.display[terminal.status()]
+            self.assertNotIn("Inbox 0", text)
+            error_cells = [cell for cell in terminal.cells() if cell[2] == "633c4b"]
+            self.assertTrue(error_cells, text)
+            self.assertTrue(any(cell[1] == "f5dce0" for cell in error_cells), text)
+        finally:
+            hidden.rename(socket)
+        terminal.until(lambda: "Wakeup !" not in terminal.screen.display[terminal.status()]
+                       and "Inbox ?" not in terminal.screen.display[terminal.status()], timeout=15)
+        terminal.capture("runtime-recovered-160")
+
+    def test_background_running_wakeup_is_observed_from_runtime(self):
+        self.configure()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow_response(_body):
+            yield {"role": "assistant", "content": "BACKGROUND_STATUS_STREAM"}, None
+            release.wait(22)
+            yield {"content": "M0_REPLY"}, None
+            yield {}, "stop"
+
+        self.server.response_factory = slow_response
+        terminal = Terminal(self, columns=160)
+        event = request(self.config.server.socket_path, "schedule", {
+            "workflow_id": "native-test", "task_id": "training", "reason": "statusline running acceptance",
+            "dedupe_key": "statusline-running", "at": "now"})
+        terminal.until(lambda: request(self.config.server.socket_path, "events.show", {
+            "event_id": event["event_id"]})["status"] == "running")
+        terminal.until(lambda: "◷ Running" in terminal.screen.display[terminal.status()], timeout=15)
+        terminal.capture("wakeup-running-160")
+        self.assert_bubbles(terminal)
+        release.set()
+        terminal.until(lambda: request(self.config.server.socket_path, "events.show", {
+            "event_id": event["event_id"]})["status"] == "succeeded")
 
     def record(self):
         return request(self.config.server.socket_path, "frontend.list")[0]
@@ -215,7 +328,7 @@ class NativeStatusLineTests(NativeFixture):
         def inbox_matches_runtime():
             unread = request(self.config.server.socket_path, "inbox.list", {
                 "workflow_id": "native-test", "task_id": "training"})["unacknowledged"]
-            return unread > 0 and f"Inbox {unread}" in "\n".join(terminal.screen.display)
+            return unread > 0 and f"✉ {unread}" in terminal.screen.display[terminal.status()]
         terminal.until(inbox_matches_runtime, timeout=15)
         terminal.pump(.25)
         terminal.capture("inbox-unread")
@@ -255,7 +368,7 @@ class NativeStatusLineTests(NativeFixture):
         terminal.until(lambda: "M0_REPLY" in "\n".join(terminal.screen.display) and self.record()["status"] == "idle")
         terminal.pump(.3)
         status = terminal.screen.display[terminal.status()]
-        percent = re.search(r"(\d+)%/4K", status)
+        percent = re.search(r"(\d+)% · 4K", status)
         self.assertIsNotNone(percent, status)
         self.assertGreaterEqual(int(percent.group(1)), 80)
         self.assertTrue(any(self.is_prompt_request(body, prompt) for body in self.server.requests))
