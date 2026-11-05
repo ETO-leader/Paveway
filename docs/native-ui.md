@@ -2,6 +2,36 @@
 
 Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动、模型选择和 Session。后台仍由原有 Runtime 队列与 RPC 执行，退出 UI 不停止 daemon。前后台使用独立物理 Session，不同时写同一个文件；通过配置快照、记忆和持久收件箱衔接。
 
+## Windline 统一状态栏
+
+输入框下方只有一条状态栏。左组显示 PAVEWAY、当前 Profile、OMP 模型／Thinking Level、Profile/task；右组显示 Wakeup、Inbox 未确认数量、会话费用、上下文实心条与百分比／窗口容量。工作目录、Git 分支和重复的 `OMP native` 不再常驻；原生路径／Git 功能没有删除。
+
+配色使用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量。模型工作时，仅上下文条未使用部分以 125ms 相位帧向右传播颜色波浪；已使用部分保持实色。空闲、取消、切换会话和退出会停表／复位；关闭 `tui.motion` 后不产生状态栏动画刷新。在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
+
+```yaml
+tui:
+  motion: false
+```
+
+模型、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列显示完整 `auto… (spec…)` 边界说明；较窄终端在未使用容量中用 `│`／`┊` 标记自动压缩／预压缩起点，已使用区域不会被标记覆盖。长字段带省略号；窄屏优先保留模型、占用、异常和未读提醒。Nerd 模式使用宿主 Powerline 符号，否则使用普通 Unicode 圆帽；支持 True Color、256 色和 `NO_COLOR` 降级。
+
+### 可复现的宿主集成
+
+原生入口检查配置的 OMP 版本，然后在获取前台所有权之前准备隔离的 **18.16.0** 宿主（commit `650f3a108229ee11bf68ba3377f4e8c3391cd424`）。该版本原来的 `setFooter()` 是 no-op；随包补丁增加 `ui.setStatusLine(renderer)`，直接挂入现有 StatusLine，不换 Composer、不改 Transcript、Scrollback 或鼠标滚轮。OMP 自身在 Resize／全屏选择器中短暂借用 Alternate Screen 的行为保留，不强制常驻 Alternate Screen。
+
+安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,statusline.patch,omp}`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
+
+首次准备需要 Git、网络和 Linux x86-64 glibc；下载固定 Bun／原生插件并校验 SHA-512，JS 依赖使用上游冻结锁文件和独立依赖缓存。缓存默认在 `~/.cache/paveway/omp/18.16.0`，可用 `PAVEWAY_OMP_CACHE` 指定。后续启动离线复用已准备宿主。可以提前准备：
+
+```bash
+.venv/bin/python packaging/omp/install.py
+# 已有精确版本 checkout 时，导出固定 commit，而不是复制工作树修改：
+.venv/bin/python packaging/omp/install.py --source /path/to/oh-my-pi
+packaging/omp/omp --version
+```
+
+其他 OMP 版本在取得会话所有权之前明确拒绝，不偷偷应用不兼容补丁。终端单元截图和验收记录见 [Windline 验收](verification/windline-statusline.md)。
+
 ## 启动与恢复
 
 ```bash
@@ -79,7 +109,7 @@ Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
 /inbox 2
 ```
 
-`in` 从 Runtime 收到并提交请求时起算；`at HH:mm` 使用系统时区的下一次该时刻，RFC3339 必须带时区。状态栏显示系统时间格式的触发时间、秒级倒计时和未确认消息数。到零不代表已执行；实际状态来自 Runtime。
+`in` 从 Runtime 收到并提交请求时起算；`at HH:mm` 使用系统时区的下一次该时刻，RFC3339 必须带时区。统一状态栏使用紧凑倒计时／`running` 和未确认消息数；完整触发时间仍由 `/wakeup list` 查看。到零不代表已执行；实际状态来自 Runtime。Runtime 不可用或 owner 不确定时显示异常及未知 Inbox，而不是伪装为零；不会自动重放或确认消息。
 
 Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当前 owner/generation 和作用域，用户不能通过参数指向另一 Profile。默认维持 opt-in，不创建无限自主跟进。前台 `after_turn_settled` 明确不提供，旧后台 `schedule --after-turn --run-id` 继续原样使用，二者不会混淆。
 

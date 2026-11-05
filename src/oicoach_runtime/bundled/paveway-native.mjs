@@ -5,6 +5,8 @@ import {createConnection} from "node:net";
 import {registerWakeups} from "./paveway-wakeup.mjs";
 import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
+import {loadNativeTui} from "./paveway-settings.mjs";
+import {createStatusLine} from "./paveway-statusline.mjs";
 
 function stop() {
     try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
@@ -52,6 +54,14 @@ export default async function paveway(pi) {
         if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
+        const statusState = {coach: config.coach_id, workflow: `${config.coach_id}/${config.task_id}`};
+        let statusContext;
+        const statusLine = createStatusLine(() => statusState, await loadNativeTui());
+        const publishStatus = update => {
+            if (JSON.stringify(update) === JSON.stringify({wakeup: statusState.wakeup, inbox: statusState.inbox})) return;
+            Object.assign(statusState, update);
+            statusContext?.ui.setStatusLine(statusLine);
+        };
         const management = registerManagement(pi, config, (ctx, action) => {
             if (!ctx.isIdle()) return ctx.ui.notify("Wait for the current activity before switching/restarting", "warning");
             writeFileSync(config.switch_path, JSON.stringify({nonce, ...action}), {mode: 0o600, flag: "wx"});
@@ -63,7 +73,7 @@ export default async function paveway(pi) {
             if (ctx?.model) await runtimeRequest(config.socket_path, "frontend.inference", {...bound(),
                 model: ctx.model.provider + "/" + ctx.model.id, thinking: pi.getThinkingLevel() || ""});
         };
-        const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference);
+        const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference, publishStatus);
         registerMemory(pi, config, bound, runtimeRequest);
         const sessionReady = async (_event, ctx) => {
             try {
@@ -81,7 +91,10 @@ export default async function paveway(pi) {
                 const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
                 config.generation = owner.generation;
                 admitted = true;
-                ctx.ui.setStatus("paveway", `GPT · ${config.coach_id}/${config.task_id} · OMP native`);
+                if (typeof ctx.ui.setStatusLine !== "function")
+                    throw new Error("Paveway requires the pinned OMP status-line bridge; run packaging/omp/install.sh");
+                statusContext = ctx;
+                ctx.ui.setStatusLine(statusLine);
                 await wakeups.refresh(ctx);
             } catch { stop(); }
         };
@@ -99,6 +112,12 @@ export default async function paveway(pi) {
             if (admitted) wakeups.refresh().catch(() => {});
         }, 10000);
         heartbeat.unref();
+        pi.on("session_shutdown", (_event, ctx) => {
+            if (ctx.agent?.kind !== "main") return;
+            clearInterval(heartbeat);
+            admitted = false;
+            statusContext = undefined;
+        });
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
             if (!admitted) stop();
             try {

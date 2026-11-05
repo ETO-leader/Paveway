@@ -42,6 +42,9 @@ class NativeFixture(unittest.TestCase):
         self.env = Probe(self.root, shutil.which("omp"), self.server).env
         project = Path(__file__).resolve().parents[1]
         self.env["PYTHONPATH"] = str(project / "src")
+        # Reuse only the public host build, never the user's OMP configuration/auth.
+        self.env["PAVEWAY_OMP_CACHE"] = os.environ.get("PAVEWAY_OMP_CACHE",
+            str(Path.home() / ".cache/paveway/omp/18.16.0"))
         self.path = self.root / "config.toml"
         initialize(self.path, str(self.root / "state"), str(self.root / "workflows"))
         config = load_config(self.path)
@@ -137,7 +140,7 @@ class NativeFixture(unittest.TestCase):
                 "\nFixture tool evidence: " + json.dumps(tools, ensure_ascii=False)[-2000:])
 
         try:
-            until("OMP native")
+            until("PAVEWAY")
             if background:
                 with self.assertRaises(RuntimeContractError):
                     request(self.config.server.socket_path, "frontend.begin", {"workflow_id": "native-test", "task_id": "training"})
@@ -161,7 +164,7 @@ class NativeFixture(unittest.TestCase):
             if switch:
                 before = request(self.config.server.socket_path, "frontend.list")[0]
                 send(b"/new\r")
-                until("OMP native", predicate=lambda: request(self.config.server.socket_path, "frontend.list")[0]["generation"] > before["generation"])
+                until("PAVEWAY", predicate=lambda: request(self.config.server.socket_path, "frontend.list")[0]["generation"] > before["generation"])
                 baseline = len(self.server.requests)
                 send(b"AFTER_NATIVE_NEW\r")
                 until("M0_REPLY", requests=baseline + 1)

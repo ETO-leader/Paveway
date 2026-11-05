@@ -81,7 +81,9 @@ class NativeManagementTests(NativeFixture):
         if recover:
             until("Session recovery")
             send(b" \t\r")
-        until("OMP native")
+        until("", lambda: any(row["status"] == "idle" and row.get("session_id")
+            for row in request(self.config.server.socket_path, "frontend.list")))
+        pump(.15)
         return process, raw, send, until, pump, exit_ui
 
     def open_settings_ui(self, *, columns=120):
@@ -151,7 +153,7 @@ class NativeManagementTests(NativeFixture):
         self.assertIn("Tijian MCP", rendered)
         self.assertIn("Model preference", rendered)
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         self.assertFalse(self.tijian_config_path.exists())
         exit_ui()
         self.assert_no_settings_chat()
@@ -180,7 +182,7 @@ class NativeManagementTests(NativeFixture):
         until("Model preference")
         self.assertEqual(customization.show(self.config, "native-test")["settings"], before)
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -192,7 +194,7 @@ class NativeManagementTests(NativeFixture):
         self.assertIn("Tijian MCP", rendered)
         self.assertIn("Model preference", rendered)
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         self.assertFalse(self.tijian_config_path.exists())
 
         send("/paveway tijian\r")
@@ -217,7 +219,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -239,7 +241,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -291,7 +293,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -322,7 +324,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -372,7 +374,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -413,7 +415,7 @@ class NativeManagementTests(NativeFixture):
         send(b"\x1b")
         until("Thinking preference")
         send(b"\x1b")
-        until("OMP native", lambda: "Thinking preference" not in "\n".join(screen.display))
+        until("", lambda: "Thinking preference" not in "\n".join(screen.display))
         exit_ui()
         self.assert_no_settings_chat()
 
@@ -564,7 +566,7 @@ class NativeManagementTests(NativeFixture):
         record = request(self.config.server.socket_path, "frontend.show", {"conversation_id": before["conversation_id"]})
         self.assertEqual(record["status"], "released")
         send("/quit\r")
-        until("OMP native", lambda: request(self.config.server.socket_path, "frontend.show",
+        until("", lambda: request(self.config.server.socket_path, "frontend.show",
             {"conversation_id": before["conversation_id"]})["generation"] > before["generation"] and
             request(self.config.server.socket_path, "frontend.show", {"conversation_id": before["conversation_id"]})["status"] == "idle")
         exit_ui()

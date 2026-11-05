@@ -8,6 +8,7 @@ import secrets
 import stat
 import sys
 import uuid
+from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from .customization import snapshot
 from .errors import RuntimeContractError
 from .ipc import request
 from .models import validate_id
+from .native_host import prepare_native_host
 from .native_terminal import run_terminal
 from .processes import InstanceLock
 from .proxy import child_environment
@@ -59,6 +61,7 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     from .proxy import synchronize
     synchronize(config_path)
+    config = replace(config, agent=replace(config.agent, executable=prepare_native_host(config.agent.executable)))
     while True:
         conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
         if cancelled:
