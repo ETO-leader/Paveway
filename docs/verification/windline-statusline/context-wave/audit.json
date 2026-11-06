@@ -1,0 +1,1039 @@
+{
+  "source": "isolated-native-pty",
+  "host": "OMP 18.16.0",
+  "tick_ms": 125,
+  "period_frames": 16,
+  "cases": [
+    {
+      "scenario": "wave-8-truecolor",
+      "percent": 10,
+      "meter_cells": 8,
+      "occupied_cells": 1,
+      "unused_cells": 7,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49",
+        "224450",
+        "264c59",
+        "2b5664",
+        "316170",
+        "386e7e",
+        "3a7483",
+        "407b8d",
+        "49899c",
+        "5299ac",
+        "5aa9ba",
+        "5caabd",
+        "69bdce",
+        "73c9d7",
+        "74cad8",
+        "7fd8e2"
+      ],
+      "changed_columns": [
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-8-truecolor-0",
+          "json_sha256": "d7382cbc98c3cb2ddc025d3ae2faa243d2db12cb80a4d4f1cd1b1d26a05c8f40",
+          "ansi_sha256": "bbcbe1330e10e0bb98dc55c61e329a34f0b9c41a60a2abc910b39c231ad65d3e"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-1",
+          "json_sha256": "3ea1ffd20a045c4b1fc9502ddc42129bb901d234a597e499cd72c94e11044488",
+          "ansi_sha256": "13928f24d8d8ff753d10b5d119cb786e77862132066df7592a13ca7e0b84cfdc"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-2",
+          "json_sha256": "55263044f285f7f0d8f9b77d69958f2c1810bc984d81e4741c17d641af2f161a",
+          "ansi_sha256": "0b5a44bdffaf0cc637d3b98840f147b726eaa8f2d6cd6d4485e10ea920bb2542"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-3",
+          "json_sha256": "3f259ee9caa98d7289ce685d4d51ad5cae5fc9c082719ca267efef359d9c68ab",
+          "ansi_sha256": "04792b7ff8b21b3dff47e7f8b39c1a979d83ec346310b6df65c9e60fb04a2b12"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-4",
+          "json_sha256": "e9c7e3e184901ebb1420cd48eb9225995e3ac09f4c397a23bdc854428e7e3c1b",
+          "ansi_sha256": "ca639f24eeb56d08e16cb9b80fc5b7aee1dceebb9f7d019b735624325f822067"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-5",
+          "json_sha256": "6c2522cf99c1f727f570829f2313293503870d801d1bf28fb27d80cef9dcf6db",
+          "ansi_sha256": "0b275ef092a999bae6da02fe6c276c83a0bed67e9e7d065c8bb991869e4a5f63"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-6",
+          "json_sha256": "c5b569c469106ce47309bb3d3a78bb2c15b69d66b7d1d3b3e6751aadfceeab2b",
+          "ansi_sha256": "da8b55e0796da7a905e4230a14ffdff3de8dbbf4a54d35980055a919f4dd1db4"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-7",
+          "json_sha256": "a9410825d3792c327b4ace4aaaa83c871ba3bfd2ab5c262c17a38207b40399a0",
+          "ansi_sha256": "bac86dde500a8e063a7aaa5e19de8ccd9a18581dd508095e544197f259453bd0"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-8",
+          "json_sha256": "ce29c8a7de462d107a5f08762d9d207b74c1eeb290f1ee1c9155e13522c1ff08",
+          "ansi_sha256": "aa2da20f0353d4bb17741bea9028392bdcb329ce9d62ca0aaf54d91c3f3ccac3"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-9",
+          "json_sha256": "689dcdfe443736cc9bc36fcfb964fe69f9b6059d7277664845f859067a6b6616",
+          "ansi_sha256": "2520e2f16084c2a5a7c9c5ae3c87217bb019cd40c78d5c5bc9f1d0d8eb86b73f"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-10",
+          "json_sha256": "e632fb08b7c569ae51864ea2045a2dea7bbdd0ac1171314be1d0ce180ec64251",
+          "ansi_sha256": "daa742a772fbc4a2179315538a77f5e7d221680fe6c906000fde1291817163aa"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-11",
+          "json_sha256": "8f35ddbbdff072ca0be785af75b8bcda42f2fa1063cb0c2d781cb9ba617568fb",
+          "ansi_sha256": "7578b408ca15cd37c5f1b5cb2913c7f1c7c90d044b1011c2b69d1b9e5e43fc59"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-12",
+          "json_sha256": "9e922324db2ab9ac9dd3947b1a77ae3734452f51e6d98a70c37e14c279661bec",
+          "ansi_sha256": "d439c532954371c3aad5d2a12d56497a096cdac7a14476fa55b73cc76e58362d"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-13",
+          "json_sha256": "bea93db76656bc927870b14b4bf06707be747b85ede579a470e298ec1aac7bca",
+          "ansi_sha256": "ee675155924c85afb197fcfa380adecd787f919adef5152799e98f02e992ff28"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-14",
+          "json_sha256": "c5ecffd58dd45d70ca3c94600d834b086531797912ff577a1065625767754f1c",
+          "ansi_sha256": "8a6cbc1ad38a5d09c3260665b588750506808f9b0ce69dee4df25dc5e63d42b0"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-15",
+          "json_sha256": "fcc76ea70f53f5c2b50b38e8afa0d8a5ae05f02dc7620bdebff55d4f14da06b9",
+          "ansi_sha256": "a0027a051ab893c543e5043e8c94eac987580897617ca03fe2cd2c6f79f78297"
+        },
+        {
+          "name": "bubble-wave-8-truecolor-16",
+          "json_sha256": "1530c0bbf7fcdfea59aa2d94a00759c2c93f664fa0e5fcd2e7e47d3cce450f4a",
+          "ansi_sha256": "0a708f91ca34bf1231fac61dbd110de1a3665396613ada52b2251c60ba487319"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-8-256",
+      "percent": 10,
+      "meter_cells": 8,
+      "occupied_cells": 1,
+      "unused_cells": 7,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "005f5f",
+        "005f87",
+        "008787",
+        "0087af",
+        "00afaf",
+        "00afd7",
+        "00d7d7",
+        "00d7ff",
+        "5fd7d7",
+        "87d7d7",
+        "afd7d7"
+      ],
+      "changed_columns": [
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-8-256-0",
+          "json_sha256": "98406ed165f8eaf7d421c682fb15da3f6545ff2c8989853a00e93b9fbafe0b8a",
+          "ansi_sha256": "345ed183fba5c40da549b226f9e2ef4c0ca7e83e9471b14b5a3e6fd9b9db31cb"
+        },
+        {
+          "name": "bubble-wave-8-256-1",
+          "json_sha256": "aa90be69bc29fb366fbea8da926c7b94eebee15b057623f54d4c50c1bfe54436",
+          "ansi_sha256": "5c235127715fbf9cc620bef94ef8a651a80b42cc98e0ee403d675122f07bdd2d"
+        },
+        {
+          "name": "bubble-wave-8-256-2",
+          "json_sha256": "81e68a820509b320f3e112f0ed9d74fc04385baad00d0103923ba8dd14f63058",
+          "ansi_sha256": "38f2e8267f2dff8980e107ac0b27ed581e3f2e3c9af6adfd0adbcc034a251988"
+        },
+        {
+          "name": "bubble-wave-8-256-3",
+          "json_sha256": "7893f4cf58aa98521bd4db53165786ed7cf666155c5b4eb045ddc4e558945e0c",
+          "ansi_sha256": "04831449cbbe3041db6fba4dfeb823f74c47e58af143acfd3c3160fa398eac4e"
+        },
+        {
+          "name": "bubble-wave-8-256-4",
+          "json_sha256": "860283ef19477863407c7017134191774aa9f4619b3f2b61a28545333f2e5d01",
+          "ansi_sha256": "dc3b5197a51e75188b7245277334ff8f672ff72e6fc1687b30df04312dbfa61e"
+        },
+        {
+          "name": "bubble-wave-8-256-5",
+          "json_sha256": "07d81f027c83ce06ae652348393b5264a29b471b9a9da024be48570c5cfa8058",
+          "ansi_sha256": "b63d19d95b3da36e13865cc4c2680fdd336663eeffa964a0c820418065655784"
+        },
+        {
+          "name": "bubble-wave-8-256-6",
+          "json_sha256": "0c119c03355aafab3a5599768d3011955577909c4740c0949bae500cee43264d",
+          "ansi_sha256": "9041a37aa760fb25d4d94d830746b74755e4803cf5f98bb44fc108a86643a24f"
+        },
+        {
+          "name": "bubble-wave-8-256-7",
+          "json_sha256": "d885caecac8676ee06cc8e2788011d573ec5ec96c2481bec69fecee2f679bcbe",
+          "ansi_sha256": "10a70ef1d7a5320968f2297b089125a09b6a02deac21ce880646b676dde1a608"
+        },
+        {
+          "name": "bubble-wave-8-256-8",
+          "json_sha256": "5cadfc5fa30e279fa00b3385808702f112647ed657fe5ba0ec31cf17b70163f8",
+          "ansi_sha256": "d54938f6f9984154c6752aabface0a80f5304d053dd8f8fc1782c9e4732d780c"
+        },
+        {
+          "name": "bubble-wave-8-256-9",
+          "json_sha256": "115c1fa29c2645566e98122ded79a5fa5ea416f7acb266127404888a960b395c",
+          "ansi_sha256": "dc391b3671f4383df86319f32cc6a703115d664bf6d4acf599bcdccc92d17018"
+        },
+        {
+          "name": "bubble-wave-8-256-10",
+          "json_sha256": "d99a6066e6855bac63730c5265ce288ab507e838efcb4d3d8a664155d1087f3a",
+          "ansi_sha256": "34e9bc800caa7f568472414f3bd5298dc900a28609f488c36fab1822df404d42"
+        },
+        {
+          "name": "bubble-wave-8-256-11",
+          "json_sha256": "a6d099e6fec5c2067af4d93fb778d2276e19a432fa32e4e2215bc458fbe9bd1f",
+          "ansi_sha256": "176d2fdfab934a720aa0e6675f19a9d47885a1b1977e15a448bb143f406a95a7"
+        },
+        {
+          "name": "bubble-wave-8-256-12",
+          "json_sha256": "8fe91cc88b2932a09f55fe317e48137c5ee081ef7a19d5535fa1e3949c0b4c42",
+          "ansi_sha256": "2848e923cd090191c14f1c9e81f501c8dfaffc2089c11787e68986fcf87da60e"
+        },
+        {
+          "name": "bubble-wave-8-256-13",
+          "json_sha256": "1489c2bc2673060b060e788c30620e80cea7902fe1b8573205f5d58b50a296ad",
+          "ansi_sha256": "9b69793cd1a11dc42c0c13e253472a43eac4f6b8a0939f7fb184b4fb3ffd4f0a"
+        },
+        {
+          "name": "bubble-wave-8-256-14",
+          "json_sha256": "5b8ba3b01259ae21ea1db299f95bd62670e4b4f2730b57ea1e55a6725f0b90da",
+          "ansi_sha256": "e2d06b43c0fd34b3f20ac2ed1a1c04e70461ee40599cde5fb02c05b4ee07d303"
+        },
+        {
+          "name": "bubble-wave-8-256-15",
+          "json_sha256": "1af02c4e7eb9f7f835c96827a6bd23c1a2f3281ce46f630dfc1ed6b17176055f",
+          "ansi_sha256": "7809d04cac53b869e9a2b1cae4a9d1db0b60814683928c5e9b42b567fec26017"
+        },
+        {
+          "name": "bubble-wave-8-256-16",
+          "json_sha256": "786fc22370be1ef7f6bc93a85c5c4beece0c1db72adcda650dc039d2d5e7ed2e",
+          "ansi_sha256": "d99171191966314f84e570d08097f0419ebfaff6e5f3e4ddb032f5b70064e36a"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-16-truecolor",
+      "percent": 10,
+      "meter_cells": 16,
+      "occupied_cells": 1,
+      "unused_cells": 15,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49",
+        "224450",
+        "264c59",
+        "2b5664",
+        "316170",
+        "386e7e",
+        "3a7483",
+        "407b8d",
+        "49899c",
+        "5299ac",
+        "5aa9ba",
+        "5caabd",
+        "69bdce",
+        "73c9d7",
+        "74cad8",
+        "7fd8e2"
+      ],
+      "changed_columns": [
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-16-truecolor-0",
+          "json_sha256": "83b42509c05c218ec7c10c52fef641d98b50880fbfc19efb6b788429d5ca2688",
+          "ansi_sha256": "c0a33e6b6b3278bb676228361519753b3ca66cb06c8cb597050be480855fbc69"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-1",
+          "json_sha256": "d7c00dc85c6a6ea787809fc0dd45ffbd11f4a85584226790ff1308dc7a8c92f0",
+          "ansi_sha256": "73e5df57a927ea19b4676d8c05f2dd0fa15f10080ac2699bdf7d4647d314f049"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-2",
+          "json_sha256": "ae9fdc9844123ec43654884a1c3a2c8d3aa91146f85388779fdd33cd12dd44fb",
+          "ansi_sha256": "6d0e9b6b7cadf427c9fc61edce1046c31ec331eadfc36b9d94decfad5d5f8b08"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-3",
+          "json_sha256": "b24f61964bd3f3d1c4589142a388a21ef768d23bcc428c5df60495ddc989502a",
+          "ansi_sha256": "3a488e8b2b7b62220a147b70af7bc68eeaba6d58f3c2a2b9ce21ea7836a43836"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-4",
+          "json_sha256": "fe222f8f75f0393870228147cf6459ebf173acafe9584eee8f40c58132ae949b",
+          "ansi_sha256": "a1aaab548f661841270f34487535626bcfe4d882e7fabf47b14e83180150e502"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-5",
+          "json_sha256": "f53fd8531067d9a7ecfffca8d76de30f6e0d60cc95449a90277c75ef5be43edf",
+          "ansi_sha256": "0f34bcc7f7c7ebae897d86afe94aab719c916c416c98916a4f46450830270d21"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-6",
+          "json_sha256": "486a772efe54ea16ef9776fa9ebb84874ed057cdd09e078a42de8175877130b1",
+          "ansi_sha256": "0da83cc33576bdaf3a99655f26448b58547856f84d7b37a784c253b4eb8b3f8e"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-7",
+          "json_sha256": "a94098bac223fe71d73dd6418581f19da7c41511702da7c100b6dde0e1f93317",
+          "ansi_sha256": "8a068d4fa7f9640f240a6ebbc83102b6c21da870d19877f0e70f1bfcbc09d6e9"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-8",
+          "json_sha256": "ade1b0d7bc3a79d88afad9741a2c15228ad3e3f454426771d53e07ee83ac77d5",
+          "ansi_sha256": "04ad8d59b40fb1c0c2a40eb92dafe864cfd76e7f783fc6a7db68ca8a62fda95f"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-9",
+          "json_sha256": "94e0281dfb9d1a8a5a348fed68d7c2c7f4e4519837e0859eeacd7dbd22640fc5",
+          "ansi_sha256": "c7c39c1b0f215b8e70706596346703d039f49d85eac548517efdfebe55349219"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-10",
+          "json_sha256": "ed979983abdbac18ff0932ff2c6d05ba96da68aace6fa19f1db660f9ad1b4972",
+          "ansi_sha256": "995bd0475bb818f57bc0487982e5da72fad0f62ca3ffa3883d8328c9261f971a"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-11",
+          "json_sha256": "11b847e276301e246bdfd9afef97d29ef7ffd5d5ab6259388b2d6dd68a68f29c",
+          "ansi_sha256": "3ac32c40fea35f6041c4ea287ff3c1fb258215761b8edb828fb586fe6f82082a"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-12",
+          "json_sha256": "40a6cc76925f82293632ef10d1f37bcd88aaaca23c884e32b4e7421324365e33",
+          "ansi_sha256": "c099fe7bb4d54adc0f19ffc8516a2d98b8f7f0a3db36b02f0d2baa215108f1e5"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-13",
+          "json_sha256": "cf65cc6b528182c1dcd5000a7790eea04b376995823cf3cc469daa7626e82899",
+          "ansi_sha256": "c7cee4b0e0c78351af3a525c68030a233a3bbcb1e7a0c4dbd4359637fccef980"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-14",
+          "json_sha256": "01d36e15ed2a413fd84748f1a96fedaaa7fd05da3b84eeaa5fb0bf86f59c3174",
+          "ansi_sha256": "aa1e51da00d6f35b23edc4571545ebd15342d1b7c06639dceeb269aa3b77274f"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-15",
+          "json_sha256": "71c48ac7cf1338f78dfb8f65c866428cf2bc84d14b55a11b8da97a69d92bc2e7",
+          "ansi_sha256": "0b77c0438d22db6f60506d8e220b5e7c200aebc2f844ffd6d9f2a5d4834bf22f"
+        },
+        {
+          "name": "bubble-wave-16-truecolor-16",
+          "json_sha256": "cf6a6982eb589dd310e1c886d399e3ea8e041d099179a1f6ac278cf5d2bd2ae6",
+          "ansi_sha256": "93f2156a400d41653027bf0530059b72d1088c9ba34d578dbebd700e31ceeb9e"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-16-256",
+      "percent": 10,
+      "meter_cells": 16,
+      "occupied_cells": 1,
+      "unused_cells": 15,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "005f5f",
+        "005f87",
+        "008787",
+        "0087af",
+        "00afaf",
+        "00afd7",
+        "00d7d7",
+        "00d7ff",
+        "5fd7d7",
+        "87d7d7",
+        "afd7d7"
+      ],
+      "changed_columns": [
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126,
+        127,
+        128,
+        129
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-16-256-0",
+          "json_sha256": "2ad84601943a1274d181be6f544b78b73e8acefe07f20ef8dccad10674c2ad59",
+          "ansi_sha256": "a293382d8e1e8100aa791ce3ba087bc5702a5e04d461d7f653d243a5be4a5cc4"
+        },
+        {
+          "name": "bubble-wave-16-256-1",
+          "json_sha256": "cf0e0f60e30ac7a448f9e24f0cd53ae51e2592910d9f936d1491a55dac5fcbb3",
+          "ansi_sha256": "518fb4c65d1396546e54b30f925729561af433ccc4970736a2d3d5f552c9c4ac"
+        },
+        {
+          "name": "bubble-wave-16-256-2",
+          "json_sha256": "450d373fd2a021126a83fe02b6ebc5e6bafafdce3ba92dc2d6874878c0d0d5b7",
+          "ansi_sha256": "37407af3c33edc0466836a90546474f1010e3ca19106d1f91970c2e9aa86ae24"
+        },
+        {
+          "name": "bubble-wave-16-256-3",
+          "json_sha256": "dfa739f2ea1caa86c83a6973c10940b43bd74b01ec8c861813c7765f3a2deec4",
+          "ansi_sha256": "92a177a8f373b8abeae6355e4661a508b7b778f7389e0881d580ddb9b03bf310"
+        },
+        {
+          "name": "bubble-wave-16-256-4",
+          "json_sha256": "d5455cde72a5762f3cf82656d6f574df3dcaa9928a53249322bfeb53eef6389b",
+          "ansi_sha256": "6ed678f41c87de30b644b11a906ce8393bb8c3b888eec800549bc9ab10e66553"
+        },
+        {
+          "name": "bubble-wave-16-256-5",
+          "json_sha256": "d51e0eeea5bfe326a6a00f664e2582d956b3473614486700bec18f2f6627e419",
+          "ansi_sha256": "0b5794bcba2b66b857e0ad7236159d09479474eed535818f29b4fa64342b7d17"
+        },
+        {
+          "name": "bubble-wave-16-256-6",
+          "json_sha256": "9f93ac0acd251cb5b0733eb0eb6741921ecef0e1d5ba70be034376fd3ccb213b",
+          "ansi_sha256": "1b1064f6c863191b07181b67a0f792e87c84f48e898f4de0c37609b5d5da33d4"
+        },
+        {
+          "name": "bubble-wave-16-256-7",
+          "json_sha256": "c873f6a1f1b8d1efba90e04fdd01d2a2d3754e2ae81f6cde88b53d96d2cf558e",
+          "ansi_sha256": "91391071343152eaf834726aad506e51bd3a17d1ceeb37fbea8946340ad201e5"
+        },
+        {
+          "name": "bubble-wave-16-256-8",
+          "json_sha256": "e1bff178716051d9dc38ec8086f7cf134ae2fff24fcae5ccf95b11cc85d905b6",
+          "ansi_sha256": "5c17958ed44c6bbc9170ffd61adc8fff8443fd77bcb4764a348c6f84f8a0a992"
+        },
+        {
+          "name": "bubble-wave-16-256-9",
+          "json_sha256": "5b22097ec972a48ae3e9a1f447d48198be22a7af9d8bad5006e181b7b13b398e",
+          "ansi_sha256": "f5f7ebb299960f5f44f0ce201bee05fa2bbaf42263e375319ff0f963a7be8bf1"
+        },
+        {
+          "name": "bubble-wave-16-256-10",
+          "json_sha256": "e0169f57ff2ebb546615f172a67c7b65000a4de06e5cac2d3be507a36523180b",
+          "ansi_sha256": "cf25118f5a2e3aaab82f5719b7af75eb2eae7e70463cce19351091c6c0181fcf"
+        },
+        {
+          "name": "bubble-wave-16-256-11",
+          "json_sha256": "aceeefd9d8597efdac87dee2811afef4957db6fb04379c9dbd4f77e465e43a5e",
+          "ansi_sha256": "b916bd7979685d41142701ea851d72e4fb8723b6d9a95bdc2fdb4796987d4ede"
+        },
+        {
+          "name": "bubble-wave-16-256-12",
+          "json_sha256": "91c18236497faeb1eb838f4c5890e93b05b082711095333c6a4f9d49f8022282",
+          "ansi_sha256": "42d70210b8104283f3e9766d2a8f3664d733552321b0d0d0f7bf46abb3b07cf9"
+        },
+        {
+          "name": "bubble-wave-16-256-13",
+          "json_sha256": "ab713413c5f3244d9010c32b8b1a8471075c419484631a30b0ba45de50783be0",
+          "ansi_sha256": "cb783a8bb6a2781eb3a510f98f52e8e508c2def4d52ec5b73cfdf265ed29193b"
+        },
+        {
+          "name": "bubble-wave-16-256-14",
+          "json_sha256": "7ee4a8c7697e8637f01ce75a1737cac42e2d47e192123fdf960392daae96aecb",
+          "ansi_sha256": "68ce23e62f8ff38dfc789ecf873778cb58ec63fa93e1e0f948d152a67f4fcaa8"
+        },
+        {
+          "name": "bubble-wave-16-256-15",
+          "json_sha256": "6eea6589246a40051bafccf01e84e3cbf94283273d6d97eab94dcf633208ebc2",
+          "ansi_sha256": "61a584dc0bde5d02afa7f3d006286cefd44e77f0562cdeb7efc5bf3811630d76"
+        },
+        {
+          "name": "bubble-wave-16-256-16",
+          "json_sha256": "432da64fe7af06aee4d56130061baf2e0a0b8de5db7c440f072db9b4e8175263",
+          "ansi_sha256": "33093776ff55a1afe51595a1766071507fce295faa9b8bc9eda3650de31d605d"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-4-truecolor",
+      "percent": 10,
+      "meter_cells": 4,
+      "occupied_cells": 1,
+      "unused_cells": 3,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49",
+        "224450",
+        "264c59",
+        "2b5664",
+        "316170",
+        "386e7e",
+        "3a7483",
+        "407b8d",
+        "49899c",
+        "5299ac",
+        "5aa9ba",
+        "5caabd",
+        "69bdce",
+        "73c9d7",
+        "74cad8",
+        "7fd8e2"
+      ],
+      "changed_columns": [
+        49,
+        50,
+        51
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-4-truecolor-0",
+          "json_sha256": "3228e6130b624511f9c9265d8177239512340f650d7377f5614f685d6e5ca3d1",
+          "ansi_sha256": "74e2ff8bd4eaa92c0986281b2d4aedc0a318655905dc3e483c18678cf0f6e122"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-1",
+          "json_sha256": "6d70fa90cf24814d7e8b94287acb50bdda11beec6d283385e9625db746a2ace1",
+          "ansi_sha256": "3af0de11837f8dc7717a808381e2ea8a60a56948e3c4446e496cd587fbf7837e"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-2",
+          "json_sha256": "f2df9353d0f961b54b967b469123eb91a461566301bfafee6c40da0ff6a69cd5",
+          "ansi_sha256": "5adb0071dc9153950e51ff6027cf376f7bc61854ae4ed61aaa072b9c37c0ce7c"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-3",
+          "json_sha256": "e565eba9ab1e7cbf491cff88bfa2c74212bf020cfafd94e45a0414f1681049df",
+          "ansi_sha256": "529993b25c41ac9000809f18c06b223f9c7cfc50c0e7b07a14a5695a76fb69a7"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-4",
+          "json_sha256": "b97410fd7f1de7e0b1601144b7c9e6d5bb89e1ca0ce3158907d003be7f4b2970",
+          "ansi_sha256": "9cb02243e0f048eda1e525d89a458e488b23b5b049f0683fc0950589c31d8bcd"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-5",
+          "json_sha256": "6a3e74f1815a327f1d1b1a264c77595ada6b821d14e437bfeeedb64538d09d9e",
+          "ansi_sha256": "836594223aa97e37d0d44b7a32fa25c3c3c05825cf793e8562b14193ba2836a7"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-6",
+          "json_sha256": "1933256b8b551297252ec160b2da831ce20772f422f35abcb4b4d87a9eb1264d",
+          "ansi_sha256": "16c6469e304517c1b1a9aeef23ddb3db30ec443fa605dda8a8c83cdf19e28e6e"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-7",
+          "json_sha256": "eb4949e9afe47e1ae7d1599fc1eef8139e370a308c99f162826f50d40dccfe5e",
+          "ansi_sha256": "20775b2a6e0bd25f9b1e559bcf72605091f41def66967f4ecb05b2306d56233a"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-8",
+          "json_sha256": "34686b05a2f5c55e7dbb2fb1bf65dcb102a36fd5177c342a3fce5a04c966996b",
+          "ansi_sha256": "210a2f2de8187f6d220f9a956dabd107cb516c589521538ea967001e9097684a"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-9",
+          "json_sha256": "95f9010ab778fa9b9bc452866c91852e6c4ee397981b6ac8221a1b9538fe678f",
+          "ansi_sha256": "4b81f0eb95273dab417336a0f9a1b4e69615036a436c6bf76c7d26285c86ddb4"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-10",
+          "json_sha256": "ebc6ad6c9f59b5e72bd2d1f5ee005f31cc71396b773d8289ebd39c6f712c89ef",
+          "ansi_sha256": "50953ab8c7e57642ea77e847b3964b5c6c1fd4b9239d834b8e70ada4c3719191"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-11",
+          "json_sha256": "c396b27b4edb69519f062e401a281470ab83d4d090b71744fbcdca0c918eb36e",
+          "ansi_sha256": "9fa7651e996005df1629e0e05e2117dea49820681f97dcfdba26950e55baeae2"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-12",
+          "json_sha256": "2852b8ad7570e7df7509552999e13dfc3e6762999a34e392d93a6c5cc19e053e",
+          "ansi_sha256": "0462262a4eb92fc50beb180aa73b58af03d9fe580a463533aa8f4fd18fc7207d"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-13",
+          "json_sha256": "57643b7581305381bd47fb0387bff0f9853fee3f7fa306740a1e18c4b1d10f86",
+          "ansi_sha256": "02ea598a81bd5b246e46d8eac2055145747e54716bbe2d26b66a68d40a58b1ba"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-14",
+          "json_sha256": "2f22a5e62013bb0f3070eed09a668090059e417515d065f081a8ba109be21455",
+          "ansi_sha256": "1e4e8bc05733a255a13d5f4f3f1c794023403b336f69f2c0851bd63aed7338ee"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-15",
+          "json_sha256": "5075241f75e53b47904036b10ab663f2fee84c775569e6aaaff57377c93d53d7",
+          "ansi_sha256": "f372fdf3a2015ddb31596d592ad6567a5d8546286db6a2972e708a9ae95ca74e"
+        },
+        {
+          "name": "bubble-wave-4-truecolor-16",
+          "json_sha256": "d6d83133f90b7b43b62099b568e29e9252dc236a031efb08f8cfb3844f9f9d5e",
+          "ansi_sha256": "024fc29c3c2893d948a4362806cd4aedb659f64b25f992c23cb50e98e332a609"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-50-truecolor",
+      "percent": 56,
+      "meter_cells": 16,
+      "occupied_cells": 8,
+      "unused_cells": 8,
+      "distinct_frames": 16,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49",
+        "224450",
+        "264c59",
+        "2b5664",
+        "316170",
+        "386e7e",
+        "3a7483",
+        "407b8d",
+        "49899c",
+        "5299ac",
+        "5aa9ba",
+        "5caabd",
+        "69bdce",
+        "73c9d7",
+        "74cad8",
+        "7fd8e2"
+      ],
+      "changed_columns": [
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131
+      ],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-50-truecolor-0",
+          "json_sha256": "4ef0e3ed2e059d3f70b923bee22005d4af1468d676d4241457da9bd017c97d04",
+          "ansi_sha256": "ff0c6287b73bb3c4dbeda231d743b8203f5188513213210ecba45c874af68375"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-1",
+          "json_sha256": "aeacd682ed2b57bb7ea74eecaabd4154e13b25d51caa5149d7e7d8b3e86a21eb",
+          "ansi_sha256": "b477aa64011d3a2738e31752ed36cfad7ef12aa7684e444e977da4b83ad3a562"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-2",
+          "json_sha256": "b0715aa7b7e5a6ed5ad19fbfa0d948d5dfff92a066e16d4551608439db30fcde",
+          "ansi_sha256": "44c9c1f48ca1d85de2af75663256574e1f4014dc6a934391a5f947a998341243"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-3",
+          "json_sha256": "c225a11b8e7fb1f358769847cc009b9c7181324403769a2800d74838021eb57e",
+          "ansi_sha256": "40bf00127250fc1d8468d056c2a84d5d87a2a2c0fe10b9c01463fcd464d3e3f6"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-4",
+          "json_sha256": "1c775e666a35b3160ecb27603dc9449d2df232c4543917942c884d2c217650f0",
+          "ansi_sha256": "aee7bf94ac4df0eeaf63fd006f009129db83b2a45cddac84018e25e9a707ff3e"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-5",
+          "json_sha256": "a08e7452c56121c361a6db707947fd5c26a900df54d0eec0190ffc2739aef4c2",
+          "ansi_sha256": "2a43249c1fcf15cf687e29b8841329782a2d426374eefbf5d6ce6ad407d79b2c"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-6",
+          "json_sha256": "a577fae32747eaa2b1677a1fa0830564fbf9674767a53957198ad0a29018f81f",
+          "ansi_sha256": "95093ba96e6c1be25442ba19d7adfc079e55e66f2cdc56a915e61a1cb6621e40"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-7",
+          "json_sha256": "0486c5406da0a2d14d5f0400d2811093ffbb9244d36035be1b1eed691d79aaf2",
+          "ansi_sha256": "1767977022756009bd5e49a905903d4377d3f97567ad0a0b3c3f81fa1589bfb6"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-8",
+          "json_sha256": "8531722ce370e88343a6806a991fcf4894a7f94801464b4da83bec89c430b331",
+          "ansi_sha256": "61b95a7d33964d3da1c5ec9060cedfa20facf4abb532ba7c7c830669908a89ac"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-9",
+          "json_sha256": "f5e818c833150f5d4db179159c90be777c50b2f92744e1df15531e2a29412a41",
+          "ansi_sha256": "cf0e93cde10cd12dfd268497e9d1cc9073efb2f58d8b09a4898eae81dd6aeca4"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-10",
+          "json_sha256": "5d8918cd8f4d2657b2fb17ff6ea1d30a708e42e0ac336433fd61bf95cf080d08",
+          "ansi_sha256": "e81f1213c396056c297f824957a2c9766f41b72001098a23cd695920df5c5d2e"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-11",
+          "json_sha256": "0558102056a3f1b1c2e5f41e391d5164859988818eb8d2d24ce81bc27f298094",
+          "ansi_sha256": "fb0e79ba05cd23d4616e9b6b63f201406e37f755d14d7b0c0169494a9d9e31ee"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-12",
+          "json_sha256": "f136ae96fe4c452cbe29de320a6d0513a736f7bdb0b4603b1f336901f2eeaac0",
+          "ansi_sha256": "75da4a0cf4d05d7d53d5c4ae9bc831ed1e5abb9ba377bdfebe8acd5604ea37d7"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-13",
+          "json_sha256": "9eabe46d010f942fad0554c2d0b82e994e4dfa93aa0d749a3c70d07272258d07",
+          "ansi_sha256": "bbf61d04285861ce91500c53ca81923f1a4077b45a23f8d228b7438a609e937e"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-14",
+          "json_sha256": "06e61b77c3206db6eeffcbaebaa1f5004e6bf7d9b172b97bb9cdfbe8ce039010",
+          "ansi_sha256": "118427cdb9920590ca6922e1451c33f6ddf5f73fc00400e9ef393afa30e9c891"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-15",
+          "json_sha256": "8952c37116c9ece03fa803060cbf54a01a8d3824844ed3f430c496ab3a64871f",
+          "ansi_sha256": "ccdb768d1d81b21faa9a18bc8d81816a5f6720106adb394399c2504a6aa9dc3a"
+        },
+        {
+          "name": "bubble-wave-50-truecolor-16",
+          "json_sha256": "e9582f021d6e4189f65b4363319f0d901b44e2b8b34f7968f54ee7f3232a6eec",
+          "ansi_sha256": "c744f3ebe5b81a2d0763820f40e3062db1e77432f153f705f50f061110160fcf"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-high-truecolor",
+      "percent": 91,
+      "meter_cells": 16,
+      "occupied_cells": 14,
+      "unused_cells": 2,
+      "distinct_frames": 1,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49"
+      ],
+      "changed_columns": [],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-high-truecolor-0",
+          "json_sha256": "73cadfdcf0588a28fa91174a4fe8bb10d32bcfb1ac484dcc44a12d90758b6a84",
+          "ansi_sha256": "d4a42381fd8e5171d4f995dbf2393e96392ed450bf6eaab8b9897ddcd57d3aaa"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-1",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "6b3505179ce3f680e6f31691bca42cee5686a207eecd82f0ef94b2f774c32a4f"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-2",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "8e66c3359ff289e1b37b863af95ca43800c05a7bb4356e25dc1167f279d9e685"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-3",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "5d5c54f01d4bd2e73d6953af7af21a755b084371b0fdcdaa307b2f19d42b3905"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-4",
+          "json_sha256": "4664f14d9ec6b27b7be38960a8e03ba742cc83f81d185745c175697de736321e",
+          "ansi_sha256": "43bf9e2cd8dc0571eca2626f2bb6175e8b4a0222b66ba0b522bbb7302c49a885"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-5",
+          "json_sha256": "cf49daccd701fb142c477ab05426464e4a268d06169565589abf616ae5f55aec",
+          "ansi_sha256": "96a917ac2bc6d86e9acecf8e6c975924b4f475ba9c530cdde063bc31f6d2dddc"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-6",
+          "json_sha256": "90bfb9657a3943513757e05a5026f18ab7d349e13368517dc0b5f344d487b3dd",
+          "ansi_sha256": "635397fe28fd4860592457d9650be11ac374184f0acd061fa8781f9484b0ecc7"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-7",
+          "json_sha256": "73cadfdcf0588a28fa91174a4fe8bb10d32bcfb1ac484dcc44a12d90758b6a84",
+          "ansi_sha256": "1c6ca94c198fb284eca44f80d82f4dc5a36f7f2454468d850de41e8053cc5c7b"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-8",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "83b6a2f34b43d8217c90a6f7caf720adb987f6060aac019e3c34e422c1275d7a"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-9",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "aa1ea9b4a19cb98983d93c232a2a6a7f0e8659746df18d479672b1074c245e04"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-10",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "86066e7b68a7311a3b50fa64370ae0d2f664a4de6e20ddde028f5340ba5b065d"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-11",
+          "json_sha256": "e01c27e23b93b87211eab2eda2e069d3694b24124872fe3156b6a0abd71bb3a0",
+          "ansi_sha256": "37c9747cf2766a53336a1c605203e937ffaa077b4554f924d425d697105a1cd8"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-12",
+          "json_sha256": "fa647a972d9b0e5288b660974f207fdcfddcea79a6f2b18bf3c99c6243dedd1c",
+          "ansi_sha256": "5dc0411492ae2239c42c053b277f14e4a64cf23a34d6e6108e9647f771bb2aa8"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-13",
+          "json_sha256": "e7e949b39eaf8679898d8f91c68c36869636a23071886513ac95f32114c43ea1",
+          "ansi_sha256": "435f9add0381f1ef556f0bc95291feaa224686a6efdc307a934b2f29522b26da"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-14",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "962854c08a1cfc7f86911c97eb9963b55c9f47e370ee722f02fa81988c97cd2f"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-15",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "c458ea0437f2fc27864462158f9d1c733575b18cde0eb331c18e696fb16aef6a"
+        },
+        {
+          "name": "bubble-wave-high-truecolor-16",
+          "json_sha256": "1b8dab10a5de176c5b8d8f36c5a40f782075f9a25b1005663818295495961f68",
+          "ansi_sha256": "5ab5b79c7793c0856bba84b0a5858007cc2583a832c9b8e984ddee767d3d0c68"
+        }
+      ]
+    },
+    {
+      "scenario": "wave-motion-off",
+      "percent": 23,
+      "meter_cells": 8,
+      "occupied_cells": 1,
+      "unused_cells": 7,
+      "distinct_frames": 1,
+      "cycle_closed": true,
+      "unused_backgrounds": [
+        "203f49"
+      ],
+      "changed_columns": [],
+      "changes_only_unused": true,
+      "captures": [
+        {
+          "name": "bubble-wave-motion-off-0",
+          "json_sha256": "ab8d168152af25ea548f389993aa60aa5669689538e9b75149f0025d11256ca0",
+          "ansi_sha256": "15167e81aa9832dc1996164ac64c0733cc8ac2cf141b0150d150edd98e7b0761"
+        },
+        {
+          "name": "bubble-wave-motion-off-1",
+          "json_sha256": "4d49d3266a88388accb29389b0cf22cde3b7f2df13729ca95fe0245191c65ba5",
+          "ansi_sha256": "51c729d963590f91700ab0982b4b46b7a0605cd69cce907f730bde304577d941"
+        },
+        {
+          "name": "bubble-wave-motion-off-2",
+          "json_sha256": "2cec6b554b512cdf67adbadc98e885511f0283cd0a7dad39bf1e4295bc7bb497",
+          "ansi_sha256": "34a3e2a73cd26695bbaed7d0a56f6b8629b0b4e82ffb6d046030ca8445f85b8f"
+        },
+        {
+          "name": "bubble-wave-motion-off-3",
+          "json_sha256": "ed1758a93baa75d9f13da1ebbc0597559755df95f84e73d77658e1c199c0ba7a",
+          "ansi_sha256": "d6a53b800ae5c5276ded6814d8e6578fcbe4585a0fef43de76296503851be914"
+        },
+        {
+          "name": "bubble-wave-motion-off-4",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "81b2c431aad9b4ad2695378e80ce5e588f5bf6c7ba964666fd2bfd16eee2773e"
+        },
+        {
+          "name": "bubble-wave-motion-off-5",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "940c64f5849ec9f70257344a7f82501218239873dad9580ee28da91920bb7418"
+        },
+        {
+          "name": "bubble-wave-motion-off-6",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "03fa13bf1a2bc96334b1aeac2dcaed543bf6f42faecb18fca33f940de3206207"
+        },
+        {
+          "name": "bubble-wave-motion-off-7",
+          "json_sha256": "0833ff7366d81fc77862a255654366d8b4dbbc57db418b2e70b4958d6c4fb5f6",
+          "ansi_sha256": "0ce29faf9957de9dae99e7d90b8f0c6b3ee1e0d0f5706070cdf5614480aa2051"
+        },
+        {
+          "name": "bubble-wave-motion-off-8",
+          "json_sha256": "65d6b6579d24140f07389a7eb8059ea7c87ae95c577ae0028e3433a6a748abff",
+          "ansi_sha256": "daa18f965284f3e0b8031184158a3102b780b6e16311f11988c4d7702028e3bc"
+        },
+        {
+          "name": "bubble-wave-motion-off-9",
+          "json_sha256": "2cec6b554b512cdf67adbadc98e885511f0283cd0a7dad39bf1e4295bc7bb497",
+          "ansi_sha256": "9d1ecd814180671579b82e8c5b13b648841258c02bb13a1f9e3cec9b172ca3e8"
+        },
+        {
+          "name": "bubble-wave-motion-off-10",
+          "json_sha256": "03668d29b3a5328bc819704976f620a0f7795591166bc4f13a418cbde50d82bc",
+          "ansi_sha256": "b19d8d2d88fe7c1af2bd732ab88c6e79576eb5c85dc0044e8b3b23ba3ee87919"
+        },
+        {
+          "name": "bubble-wave-motion-off-11",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "1e1918f2896dc24a8719418ebaade732a2fd8bdacc2ef6c8e7baf88001dc58d3"
+        },
+        {
+          "name": "bubble-wave-motion-off-12",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "0e27defd5a79a273641bdb342712249cbd38a8c0d6108920cd118d52dc8b9ed9"
+        },
+        {
+          "name": "bubble-wave-motion-off-13",
+          "json_sha256": "a86df9ec263b33929d48c0450b3147df2cc4faaed5956615008a72355204b741",
+          "ansi_sha256": "02f7b6c89c40e90533c706275ccc8cf2573ac80a956b382396f5886ae9f43207"
+        },
+        {
+          "name": "bubble-wave-motion-off-14",
+          "json_sha256": "0833ff7366d81fc77862a255654366d8b4dbbc57db418b2e70b4958d6c4fb5f6",
+          "ansi_sha256": "3433f08722b7ac9bdc17794fccfe09215c0324e81199ee2ce84d29f05242042b"
+        },
+        {
+          "name": "bubble-wave-motion-off-15",
+          "json_sha256": "65d6b6579d24140f07389a7eb8059ea7c87ae95c577ae0028e3433a6a748abff",
+          "ansi_sha256": "cbf0be1f6b6d4c4cf13015a400096a7170950bab13a8a2223ace2a39b320674b"
+        },
+        {
+          "name": "bubble-wave-motion-off-16",
+          "json_sha256": "70ed02469636f70dc27c76e75d5de98d0c3e9a0dec363f83cfe65ddab4a43217",
+          "ansi_sha256": "71a80ddfb3f625a5c9d58f7bde6616966836c52e383929284cc7e8d87d478923"
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "name": "bubble-wave-16-256-frames.png",
+      "sha256": "f0034acf3dd69470974692e3dddf0c1217ff3f22e17d5d22b94df753b89d8313"
+    },
+    {
+      "name": "bubble-wave-16-256.gif",
+      "sha256": "89c4d18664f6a566d6cf11d9697ac5f716f30b3c1e4ffa6e2927402a8b16dd0b"
+    },
+    {
+      "name": "bubble-wave-16-truecolor-frames.png",
+      "sha256": "ae15845e368ab72342f0a3919447f5815c39c609791e25bc2428bc49c3b3fa78"
+    },
+    {
+      "name": "bubble-wave-16-truecolor.gif",
+      "sha256": "f57630246bd1df4b28b85f93ea08951963be09703e53b5584a1548d82359d882"
+    },
+    {
+      "name": "bubble-wave-4-truecolor-frames.png",
+      "sha256": "4271593cded9898d70d63e507c398eaef25ff21be72fd767326c84153499e2f6"
+    },
+    {
+      "name": "bubble-wave-4-truecolor.gif",
+      "sha256": "901d178c8327843595f60f0c265a5fd4ea5f6c60ebad264cb31a1ed6883ebab9"
+    },
+    {
+      "name": "bubble-wave-50-truecolor-frames.png",
+      "sha256": "40912becdb31fc160cf50153fc018080b0401a61ea42be436e0f44fe981eff72"
+    },
+    {
+      "name": "bubble-wave-50-truecolor.gif",
+      "sha256": "cef83f48d561512b33991a57f44541d626c78ae93bcc5105871fe463fabf73cd"
+    },
+    {
+      "name": "bubble-wave-8-256-frames.png",
+      "sha256": "873d344da1ef14e4309e2a0eca9dc5df4b2ec03eac16373cd09dfa221039ae87"
+    },
+    {
+      "name": "bubble-wave-8-256.gif",
+      "sha256": "ee374250dbb053c8cba61eff17ea6827991ee0c87cdf70c3daa70291df685a2e"
+    },
+    {
+      "name": "bubble-wave-8-truecolor-frames.png",
+      "sha256": "e18468a70a452b132e4cd9a049d4e8a9409d16a3214c2a096beede0d3315140e"
+    },
+    {
+      "name": "bubble-wave-8-truecolor.gif",
+      "sha256": "b90e9eed7665a2e2c422970519340e0a3ccab3311f8684b0fb12cb849a539dfa"
+    },
+    {
+      "name": "bubble-wave-high-truecolor-frames.png",
+      "sha256": "78b203e24abecfed3e7dfd597d07f890576e132ab6ed62756368cf637d7ec419"
+    },
+    {
+      "name": "bubble-wave-high-truecolor.gif",
+      "sha256": "670f515671ce391f9621ab5fa8d4cf1d306a4609eac46bbfead9e20c0ffcae7a"
+    },
+    {
+      "name": "bubble-wave-motion-off-frames.png",
+      "sha256": "9b84a44e579719d0f340c9939087ab963a3d5edb0695e1e6c9d9384bd3272b75"
+    },
+    {
+      "name": "bubble-wave-motion-off.gif",
+      "sha256": "f78b9774c34b2a44ae3ee0a58dce5fd98cb8a7374ad878da9c36f57593390236"
+    },
+    {
+      "name": "candidate-a-8-256-frames.png",
+      "sha256": "3b361fdeb536d29e81405848610ad87c054449e73a13725dd5c4105e3a439adf"
+    },
+    {
+      "name": "candidate-a-8-256.gif",
+      "sha256": "bb7ac4e4bd67365d10c978957d67fe059ba33df77cc53a5e41a08a33a769386e"
+    },
+    {
+      "name": "idle.png",
+      "sha256": "e56432a6c30a4f019a4836c1fe5cc68a0ea121b1bb7c2621f65bf99f59bcf1d9"
+    },
+    {
+      "name": "layout.png",
+      "sha256": "bebce993821123b6057fc1db57a3040dd11890fe826b993e41bcdaad3da12d1f"
+    }
+  ]
+}

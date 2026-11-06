@@ -25,7 +25,7 @@
 - 常规胶囊两侧各一列内边距，胶囊间一列底色；左右组之间的余量用于对齐。预算先包含完整边框再分配内容，最终不对成品 ANSI 行进行截断。
 - 异常、未知 Inbox、非零未确认数先分配，再是模型和 Context；品牌、Workflow、费用使用余量。80 列以上长模型至少先争取 20 列内容，再恢复身份细节；不是把宽屏结果直接切短。极端 1–2 列只能保留裸 `!`，3 列起异常可使用完整短胶囊，不输出半个圆帽。
 - Wakeup `none`／明确无事件与 Inbox 0 不生成胶囊；待执行为 `◷ 1m20s`，执行中为 `◷ Running`；不可用为 `Wakeup !`，尚未知为 `Wakeup ?`，未知收件箱为 `Inbox ?`，从不伪造零。
-- `contextMeterCells` 的占用量化、相位、余量波浪公式、数据来源和 `motion: false` 未重写。只把未用底色及波浪混色起点改为 Context 表面，以闭合胶囊视觉；已用青色不变。条按预算使用 4／8／16 格；保留比例、容量与 Compaction 信息。真实宿主这次给出的是 `auto85% (spec74%)`，没有为了贴近示例改成 75%。
+- 本页早期截图保留了原余弦波版本；占用量化、数据来源、`motion: false` 和 4／8／16 格预算继续保留。当前未用区域已改为 16 阶错相青蓝调色板、2 秒周期，详见 [Context 波浪验收](context-wave/verification.md)。已用青色、比例、容量与 Compaction 信息不参与动画。
 
 ## 真实画面
 
@@ -74,6 +74,8 @@
 长字段来自真实模型目录和新建的长 ID fixture workflow。80 列隐藏 Workflow，模型按显示宽度省略；160 列能显示完整长模型，Workflow 保留可读前缀。Resize 期间 `UNSENT_DRAFT` 保留；`/new` 后同一进程仍只有一条状态栏，并实际完成聊天。
 
 ### 连续工作帧、空闲与 reduced motion
+
+以下工作 GIF 是历史余弦波证据；当前版本的连续帧、True Color／ANSI-256 对照及视觉迭代见 [Context 波浪验收](context-wave/verification.md)。
 
 ![六张实际工作帧](bubble-working-frames.png)
 

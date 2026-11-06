@@ -3,6 +3,11 @@ import {contextMeterCells, createStatusLine, sanitizeStatusText} from "../src/oi
 
 const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
 const plain = value => Bun.stripANSI(value);
+// Independent perceptual brightness, never the renderer's palette order.
+function luminance(hex) {
+    const [red, green, blue] = [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
+    return 0.299 * red + 0.587 * green + 0.114 * blue;
+}
 const visibleWidth = value => Bun.stringWidth(plain(value));
 // A small host adapter, not a second layout implementation. Production receives OMP's functions.
 function truncateToWidth(value, width) {
@@ -195,37 +200,45 @@ describe("motion belongs only to unused capacity", () => {
         expect(after.slice(start + 8, end)).not.toEqual(before.slice(start + 8, end));
         expect(line.render(160, snapshot({phase: 0}))).toBe(first);
     });
-    test("256-color motion changes cyan steps without touching caps or text", () => {
+    test("256-color wave keeps multiple designed levels and the same direction", () => {
         const line = createStatusLine(() => paveway(), host("256color", "unicode"));
-        const idle = snapshot({percent: 0, phase: 0});
-        const first = line.render(160, idle);
-        const later = line.render(160, snapshot({percent: 0, phase: 8}));
-        expect(plain(later)).toBe(plain(first));
-        expect(visibleWidth(later)).toBe(160);
-        expect(later).not.toBe(first);
-        const caps = value => terminalCells(value).filter(cell => ["\ue0b6", "\ue0b4"].includes(cell.text))
-            .map(cell => [cell.text, cell.background]);
-        expect(caps(later)).toEqual(caps(first));
-        const surfaces = meterFromLine(first, "0% · 500K").map(cell => cell.background);
-        expect(surfaces.every(surface => /^256:(23|24|30|31|37|38|44|45|51|80|116|152|159|195)$/u.test(surface))).toBe(true);
-        expect(new Set(surfaces).size).toBeGreaterThan(1);
-    });
-    test("a smooth traveling crest moves left to right and wraps continuously", () => {
-        const crest = phase => {
-            const cells = contextMeterCells(0, 16, snapshot({phase}));
-            const brightness = cell => Number.parseInt(cell.background.slice(1, 3), 16);
-            return cells.findIndex(cell => brightness(cell) === Math.max(...cells.map(brightness)));
+        const empty = phase => snapshot({phase, context: {...snapshot().context, percent: 0}});
+        const meter = phase => meterFromLine(line.render(160, empty(phase)), "0% · 500K");
+        const first = meter(0), later = meter(8);
+        expect(plain(line.render(160, empty(8)))).toBe(plain(line.render(160, empty(0))));
+        const levels = new Set(first.map(cell => cell.background));
+        expect(levels.size).toBeGreaterThanOrEqual(8);
+        expect(first).toHaveLength(16);
+        expect(later.map(cell => cell.background)).not.toEqual(first.map(cell => cell.background));
+        for (const surface of levels) {
+            expect(surface).toMatch(/^256:(23|24|30|31|37|38|44|45|80|116|152|159)$/u);
+        }
+        const crest = cells => {
+            const values = cells.map(cell => Number(cell.background.slice(4)));
+            return values.indexOf(Math.max(...values));
         };
-        expect(crest(0)).toBe(0);
-        expect(crest(4)).toBe(2);
-        expect(crest(8)).toBe(4);
-        expect(contextMeterCells(0, 16, snapshot({phase: 32}))).toEqual(contextMeterCells(0, 16, snapshot({phase: 0})));
-        const a = contextMeterCells(0, 16, snapshot({phase: 1}));
-        const b = contextMeterCells(0, 16, snapshot({phase: 2}));
-        expect(a).not.toEqual(b);
-        expect(a.every((cell, index) => Math.abs(Number.parseInt(cell.background.slice(1, 3), 16) - Number.parseInt(b[index].background.slice(1, 3), 16)) < 8)).toBe(true);
+        for (let phase = 0; phase < 16; phase++) {
+            expect(crest(meter(phase + 1))).toBe((crest(meter(phase)) + 1) % 16);
+        }
+        expect(meter(16)).toEqual(meter(0));
     });
-    test("the traveling wave starts at the unused left edge at every occupancy", () => {
+    test("a traveling crest moves left to right and wraps exactly", () => {
+        const cells = phase => contextMeterCells(0, 16, snapshot({phase}));
+        const crest = phase => {
+            const values = cells(phase).map(cell => luminance(cell.background));
+            return values.indexOf(Math.max(...values));
+        };
+        for (let phase = 0; phase < 16; phase++) {
+            expect(crest(phase + 1)).toBe((crest(phase) + 1) % 16);
+            // The color arriving at a cell is the color that was one cell to its left.
+            for (let x = 0; x < 16; x++) {
+                expect(cells(phase + 1)[x].background).toBe(cells(phase)[(x + 15) % 16].background);
+            }
+        }
+        expect(cells(16)).toEqual(cells(0));
+        expect(new Set(cells(0).map(cell => cell.background)).size).toBeGreaterThanOrEqual(8);
+    });
+    test("wave is anchored to the unused region and short tails stay static", () => {
         for (const percent of [1, 9, 50, 75, 99]) {
             for (const phase of [0, 4, 8, 17, 31]) {
                 const unused = contextMeterCells(percent, 16, snapshot({phase})).filter(cell => !cell.occupied);
@@ -233,11 +246,37 @@ describe("motion belongs only to unused capacity", () => {
                 expect(unused.map(cell => cell.background)).toEqual(origin.map(cell => cell.background));
             }
         }
-        const unused = contextMeterCells(50, 16, snapshot({phase: 0})).filter(cell => !cell.occupied);
-        const brightness = cell => Number.parseInt(cell.background.slice(1, 3), 16);
-        expect(brightness(unused[0])).toBe(Math.max(...unused.map(brightness)));
-        const later = contextMeterCells(50, 16, snapshot({phase: 4})).filter(cell => !cell.occupied);
-        expect(brightness(later[1])).toBe(Math.max(...later.map(brightness)));
+        for (const percent of [90, 99]) {
+            const moving = contextMeterCells(percent, 16, snapshot({working: true, phase: 1})).filter(cell => !cell.occupied);
+            expect(moving.length).toBeLessThanOrEqual(2);
+            expect(moving.every(cell => cell.background === "#203f49")).toBe(true);
+            expect(contextMeterCells(percent, 16, snapshot({working: true, phase: 9}))).toEqual(
+                contextMeterCells(percent, 16, snapshot({working: true, phase: 1})));
+        }
+        expect(contextMeterCells(100, 16, snapshot({working: true, phase: 7}))
+            .every(cell => cell.occupied && cell.background === "#67cbd0")).toBe(true);
+    });
+    test("four-cell capacity keeps a crest and moves it in whole cells", () => {
+        const cells = phase => contextMeterCells(0, 4, snapshot({phase}));
+        const crest = phase => {
+            const values = cells(phase).map(cell => luminance(cell.background));
+            return values.indexOf(Math.max(...values));
+        };
+        for (let phase = 0; phase < 16; phase += 4) {
+            expect(crest(phase + 4)).toBe((crest(phase) + 1) % 4);
+        }
+        for (let phase = 0; phase < 16; phase++) {
+            expect(luminance(cells(phase)[crest(phase)].background)).toBeGreaterThan(150);
+        }
+        expect(cells(16)).toEqual(cells(0));
+    });
+    test("compaction labels and markers stay fixed while unused colors move", () => {
+        const line = renderer();
+        const first = line.render(160, snapshot({phase: 0}));
+        const later = line.render(160, snapshot({phase: 7}));
+        expect(plain(later)).toBe(plain(first));
+        expect(meterFromLine(later).map(cell => cell.text)).toEqual(meterFromLine(first).map(cell => cell.text));
+        expect(meterFromLine(later)).not.toEqual(meterFromLine(first));
     });
     for (const lifecycle of [{working: false}, {motion: false}, {working: false, motion: false}]) {
         test(`idle/reduced-motion is static: ${JSON.stringify(lifecycle)}`, () => {

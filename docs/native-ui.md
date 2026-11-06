@@ -6,7 +6,7 @@ Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动
 
 输入框下方只有一条状态栏。左右组件使用相同的独立 Bubble：每个胶囊都有自己的左右圆帽、实色背景和内边距，胶囊之间留一列状态栏背景，不再连接成 Powerline 色带。左组为 PAVEWAY、Profile／模型／Thinking 身份、Profile/task；右组为有信息的 Wakeup、非零 Inbox、低对比度会话费用及青色上下文胶囊。无事件与零未确认消息不常驻；工作目录、Git 分支和重复的 `OMP native` 也不常驻，原生路径／Git 功能没有删除。
 
-配色使用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量。模型工作时，仅上下文条未使用部分以 125ms 相位帧向右传播颜色波浪；已使用部分保持实色。空闲、取消、切换会话和退出会停表／复位；关闭 `tui.motion` 后不产生状态栏动画刷新。在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
+配色使用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量。模型工作时，仅上下文条未使用部分以既有 OMP 125ms 相位帧向右传播颜色波浪：16 阶青蓝调色板、位置错相、2 秒一个周期；True Color 与显式校准的 ANSI-256 色号共用相同运动模型。只剩 1–2 格未用容量时保持深青色静态，避免短条闪烁；已用部分始终保持实心青色，标签、圆帽和 Compaction 标记位置不参与动画。空闲、取消、切换会话和退出会停表／复位；关闭 `tui.motion` 后不产生状态栏动画刷新。真实 PTY GIF 与候选对照见 [Context 波浪验收](verification/windline-statusline/context-wave/verification.md)。在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
 
 ```yaml
 tui:

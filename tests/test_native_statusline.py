@@ -48,6 +48,7 @@ class Terminal:
         self.stream.feed(b"\x1b[48;2;255;0;255m")
         case.assertEqual(self.screen.cursor.attrs.bg, HOSTILE_BACKGROUND)
         self.raw = bytearray()
+        self.host_metadata = None
         self.process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "native",
             "--config", str(case.path), "--workflow", getattr(case, "workflow", "native-test")],
             env=case.env, stdin=slave, stdout=slave, stderr=slave)
@@ -104,17 +105,21 @@ class Terminal:
             return
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
-        record = request(self.case.config.server.socket_path, "frontend.list")[0]
-        host_environment = dict(item.split("=", 1) for item in
-                                Path(f"/proc/{record['omp_pid']}/environ").read_text().split("\0") if "=" in item)
+        if self.host_metadata is None:
+            record = request(self.case.config.server.socket_path, "frontend.list")[0]
+            host_environment = dict(item.split("=", 1) for item in
+                                    Path(f"/proc/{record['omp_pid']}/environ").read_text().split("\0") if "=" in item)
+            self.host_metadata = {
+                "observed_host_color_environment": color_environment(host_environment),
+                "observed_host_executable": Path(os.readlink(f"/proc/{record['omp_pid']}/exe")).name,
+            }
         sgr = re.findall(rb"\x1b\[([0-9;]*)m", self.raw)
         data = {"columns": self.screen.columns, "rows": self.screen.lines,
                 "status_row": self.status(), "source": "isolated-native-pty",
                 "color_mode_case": getattr(self.case, "color_mode", "truecolor"),
                 "decoder_initial_background": HOSTILE_BACKGROUND,
                 "launch_color_environment": color_environment(self.case.env),
-                "observed_host_color_environment": color_environment(host_environment),
-                "observed_host_executable": Path(os.readlink(f"/proc/{record['omp_pid']}/exe")).name,
+                **self.host_metadata,
                 "observed_sgr": sorted({value.decode("ascii") for value in sgr}),
                 "cells": [[self.screen.buffer[y][x]._asdict() for x in range(self.screen.columns)]
                           for y in range(self.screen.lines)]}
@@ -387,6 +392,9 @@ class NativeStatusLineTests(NativeFixture):
         self.assert_bubbles(terminal)
         self.assertIn("\ue0b6", terminal.screen.display[terminal.status()])
         terminal.capture("session-switch")
+        switched = terminal.cells()
+        terminal.pump(.4)
+        self.assertEqual(terminal.cells(), switched, "New idle session must not animate")
         self.assertEqual(self.server.requests, [])
         terminal.send("AFTER_STATUS_SWITCH\r")
         terminal.until(lambda: "M0_REPLY" in "\n".join(terminal.screen.display) and self.record()["status"] == "idle")
@@ -414,7 +422,7 @@ class NativeStatusLineTests(NativeFixture):
             frames.append(terminal.cells())
             terminal.capture(f"working-{index}")
         self.assertEqual(len({tuple(cell[0] for cell in frame) for frame in frames}), 1)
-        self.assertGreater(len(set(frames)), 20, "Working context colors must propagate across consecutive frames")
+        self.assertGreaterEqual(len(set(frames)), 12, "Working context must expose most of its cycle")
         occupied = [x for x, cell in enumerate(frames[0]) if cell[2] == "67cbd0"]
         self.assertTrue(occupied, "The real prompt must occupy at least one context cell")
         for x in occupied:
@@ -442,6 +450,127 @@ class NativeStatusLineTests(NativeFixture):
         terminal.pump(.25)
         terminal.capture("inbox-unread")
         self.assertTrue(inbox_matches_runtime())
+
+    @staticmethod
+    def context_meter(cells, text):
+        label = re.search(r"\d+% · \d+K", text)
+        if label is None:
+            raise AssertionError(text)
+        caps = ("\ue0b6", "\ue0b4", "(", ")")
+        opening = max(x for x, cell in enumerate(cells)
+                      if cell[0] in caps and x < label.start())
+        closing = next(x for x, cell in enumerate(cells)
+                       if x > opening and cell[0] in caps)
+        return cells[opening + 2:label.start() - 1], opening, closing
+
+    def capture_wave_frames(self, release, prefix, columns, window, color_mode, motion, prompt):
+        self.configure(context_window=window, color_mode=color_mode, motion=motion)
+        release.clear()
+        terminal = Terminal(self, columns=columns)
+        try:
+            terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+            if prefix == "wave-4-truecolor":
+                # A distant wakeup keeps a static second bubble and squeezes the
+                # Context meter to four cells without changing during capture.
+                terminal.send("/wakeup in 23h WAVE4_SETUP\r")
+                terminal.until(lambda: "\u25f7" in terminal.screen.display[terminal.status()])
+                # The hour/minute label settles after the first second, then stays
+                # fixed for the capture window.
+                terminal.pump(1.3)
+            if len(prompt) > 500:
+                terminal.send("\x1b[200~" + prompt + "\x1b[201~\r")
+            else:
+                terminal.send(prompt + "\r")
+            terminal.until(lambda: self.record()["status"] == "active")
+            terminal.pump(.35)
+            first_text = terminal.screen.display[terminal.status()]
+            percent = int(re.search(r"(\d+)%", first_text).group(1))
+            # A rounded display percent suffices to distinguish these fixture cases;
+            # occupied-cell invariants below use the independently observed idle bar.
+            animated = motion and percent < 85
+            frames = []
+            for index in range(17):
+                if index and animated:
+                    previous = frames[-1]
+                    deadline = time.monotonic() + 1
+                    while terminal.cells() == previous and time.monotonic() < deadline:
+                        terminal.pump(.01)
+                    self.assertNotEqual(terminal.cells(), previous, "Animation stalled")
+                elif index:
+                    terminal.pump(.125)
+                frames.append(terminal.cells())
+                terminal.capture(f"{prefix}-{index}")
+            text = terminal.screen.display[terminal.status()]
+            release.set()
+            terminal.until(lambda: self.record()["status"] == "idle")
+            terminal.pump(.35)
+            idle = terminal.cells()
+            terminal.pump(.35)
+            self.assertEqual(terminal.cells(), idle)
+            terminal.capture(f"{prefix}-idle")
+            return frames, text, idle
+        finally:
+            release.set()
+            if terminal.process.poll() is None:
+                terminal.close()
+
+    def test_real_wave_evidence_matrix(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow_response(_body):
+            yield {"role": "assistant", "content": "WAVE_STREAM"}, None
+            release.wait(45)
+            yield {"content": "M0_REPLY"}, None
+            yield {}, "stop"
+
+        self.server.response_factory = slow_response
+        scenarios = [
+            ("wave-8-truecolor", 120, 16000, "truecolor", True, "WAVE8 "),
+            ("wave-8-256", 120, 16000, "256color", True, "WAVE8 "),
+            ("wave-16-truecolor", 160, 16000, "truecolor", True, "WAVE16 "),
+            ("wave-16-256", 160, 16000, "256color", True, "WAVE16 "),
+            ("wave-4-truecolor", 64, 16000, "truecolor", True, "WAVE4 "),
+            ("wave-50-truecolor", 160, 4000, "truecolor", True, "word " * 600),
+            ("wave-high-truecolor", 160, 4000, "truecolor", True, "word " * 1400),
+            ("wave-motion-off", 120, 16000, "truecolor", False, "WAVE_STATIC "),
+        ]
+        for prefix, columns, window, color_mode, motion, prompt in scenarios:
+            with self.subTest(prefix=prefix):
+                frames, text, idle = self.capture_wave_frames(
+                    release, prefix, columns, window, color_mode, motion, prompt)
+                self.assertEqual(len({tuple(cell[0] for cell in frame) for frame in frames}), 1, text)
+                meter, opening, closing = self.context_meter(frames[0], text)
+                expected_size = 4 if prefix == "wave-4-truecolor" else (
+                    16 if prefix.startswith(("wave-16", "wave-50", "wave-high")) else 8)
+                self.assertEqual(len(meter), expected_size, text)
+                idle_text = "".join(cell[0] for cell in idle)
+                idle_meter = self.context_meter(idle, idle_text)[0]
+                occupied_in_meter = 0
+                for cell in idle_meter:
+                    if cell[1] != cell[2]:
+                        break
+                    occupied_in_meter += 1
+                remaining = len(meter) - occupied_in_meter
+                if prefix == "wave-50-truecolor":
+                    self.assertEqual(occupied_in_meter, 8, "Half the 16-cell meter must be occupied")
+                if prefix == "wave-high-truecolor":
+                    self.assertIn(remaining, (1, 2), "High occupancy must leave a very short tail")
+                unused = set(range(opening + 2 + occupied_in_meter, opening + 2 + len(meter)))
+                for frame in frames:
+                    for index, cell in enumerate(frame):
+                        if index not in unused:
+                            self.assertEqual(cell, frames[0][index],
+                                             f"{prefix}: non-unused cell {index} changed")
+                if not motion or remaining <= 2:
+                    self.assertEqual(len(set(frames)), 1,
+                                     "motion=false and very short tails must be static")
+                else:
+                    self.assertEqual(frames[16], frames[0], "Full cycle must close without a jump")
+                    self.assertGreaterEqual(len(set(frames)), 12, f"{prefix} has too few visible frames")
+                    surfaces = {frame[index][2] for frame in frames for index in unused}
+                    self.assertGreaterEqual(len(surfaces), 4 if len(meter) == 4 else 6,
+                                            f"{prefix} collapsed to {surfaces}")
 
     def test_motion_disabled_does_not_change_context_colors_while_working(self):
         self.configure(motion=False)

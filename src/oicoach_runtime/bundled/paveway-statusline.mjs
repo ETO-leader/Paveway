@@ -9,6 +9,19 @@ const CAPS = Object.freeze({
     powerline: Object.freeze(["\ue0b6", "\ue0b4"]),
     plain: Object.freeze(["(", ")"]),
 });
+// One traveling crest over a 16-step cycle: a long cyan rise behind the peak,
+// a narrow fall after it, then the dark seam back to the Context surface.
+// Fixed colors, not a per-render blend, so the 256-color mapping is designed too.
+const CONTEXT_WAVE = Object.freeze([
+    "#203f49", "#224450", "#264c59", "#2b5664",
+    "#316170", "#386e7e", "#407b8d", "#49899c",
+    "#5299ac", "#5caabd", "#69bdce", "#73c9d7",
+    "#7fd8e2", "#74cad8", "#5aa9ba", "#3a7483",
+]);
+const WAVE_ANSI = Object.freeze([
+    23, 23, 24, 30, 31, 37, 38, 44,
+    45, 80, 116, 116, 152, 116, 45, 23,
+]);
 const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_][\s\S]*?(?:\x1b\\|$)|[@-_])/g;
 const UNSAFE = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
@@ -24,9 +37,14 @@ function rgb(hex) {
     return [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
 }
 
-function blend(from, to, amount) {
-    const a = rgb(from), b = rgb(to);
-    return "#" + a.map((value, index) => Math.round(value + (b[index] - value) * amount).toString(16).padStart(2, "0")).join("");
+// The palette shifts by one entry per OMP 125ms tick, so a full cycle is 2s.
+// Spacing unused cells evenly over the 16 steps keeps one crest visible at 4,
+// 8 and 16 cells; one or two unused cells stay static to avoid flicker.
+function waveColor(position, count, phase) {
+    if (count <= 2) return TOKENS.context;
+    const offset = Math.round(position * CONTEXT_WAVE.length / count);
+    const index = ((offset - Math.trunc(phase)) % CONTEXT_WAVE.length + CONTEXT_WAVE.length) % CONTEXT_WAVE.length;
+    return CONTEXT_WAVE[index];
 }
 
 // Endpoint-preserving quantization: a nonempty window is visible, but 99% is not full.
@@ -40,9 +58,8 @@ export function contextMeterCells(percent, count, snapshot = {}) {
     const phase = Number.isFinite(snapshot.phase) ? snapshot.phase : 0;
     return Array.from({length: count}, (_, index) => ({
         occupied: index < occupied,
-        background: index < occupied ? TOKENS.cyan : moving
-            ? blend(TOKENS.context, TOKENS.cyan, 0.08 + 0.26 * (1 + Math.cos(2 * Math.PI * ((index - occupied) / Math.max(1, remaining) - phase / 32))) / 2)
-            : TOKENS.context,
+        background: index < occupied ? TOKENS.cyan
+            : moving ? waveColor(index - occupied, remaining, phase) : TOKENS.context,
     }));
 }
 
@@ -72,13 +89,13 @@ function colorMode(ui) {
 const XTERM_LEVELS = Object.freeze([0, 95, 135, 175, 215, 255]);
 // The ANSI-256 cube cannot represent Paveway's slate and cyan surfaces: nearest-by-RGB
 // would turn identity and Workflow into neutral grays. Pin the semantic tokens instead.
-const ANSI_TOKENS = Object.freeze(new Map([
+const ANSI_TOKENS = new Map([
     [TOKENS.brand, 98], [TOKENS.identity, 60], [TOKENS.workflow, 17], [TOKENS.context, 23],
     [TOKENS.cost, 235], [TOKENS.event, 24], [TOKENS.fault, 95], [TOKENS.ink, 189],
     [TOKENS.cyan, 80], [TOKENS.warning, 179], [TOKENS.error, 224],
-]));
-// The wave blends context into cyan in fixed 256-color steps, never into gray.
-const CYAN_RAMP = Object.freeze([23, 24, 30, 31, 37, 38, 44, 45, 51, 80, 116, 152, 159, 195]);
+]);
+// Every wave step has a designed 256-color index; no RGB-then-snap guessing.
+CONTEXT_WAVE.forEach((hex, index) => ANSI_TOKENS.set(hex, WAVE_ANSI[index]));
 const CUBE = Object.freeze(Array.from({length: 216}, (_, index) => index + 16));
 const quantized = new Map();
 
@@ -101,14 +118,6 @@ function nearestIndex(channels, indices) {
     return best;
 }
 
-function hue([red, green, blue]) {
-    const high = Math.max(red, green, blue), low = Math.min(red, green, blue), delta = high - low;
-    if (!delta) return 0;
-    const sector = high === red ? (green - blue) / delta
-        : high === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
-    return (sector * 60 + 360) % 360;
-}
-
 function ansi256(hex) {
     const cached = quantized.get(hex);
     if (cached !== undefined) return cached;
@@ -116,10 +125,8 @@ function ansi256(hex) {
     const chroma = Math.max(...channels) - Math.min(...channels);
     let index = ANSI_TOKENS.get(hex);
     if (index === undefined) {
-        const angle = hue(channels);
-        if (chroma > 20 && angle >= 150 && angle <= 210) index = nearestIndex(channels, CYAN_RAMP);
         // Only near-neutral colors may use the gray ramp; tinted colors keep their hue.
-        else if (chroma <= 16) index = 232 + Math.max(0, Math.min(23,
+        if (chroma <= 16) index = 232 + Math.max(0, Math.min(23,
             Math.round((channels.reduce((sum, value) => sum + value, 0) / 3 - 8) / 10)));
         else index = nearestIndex(channels, CUBE);
     }

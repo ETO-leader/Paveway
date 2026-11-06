@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import unicodedata
 
 from PIL import Image, ImageDraw, ImageFont
@@ -79,6 +80,13 @@ def render_capture(path, font, wide_font, size):
             if cell.get("underscore"):
                 draw.line((x * cell_width, (y + 1) * cell_height - 2,
                            (x + 1) * cell_width - 1, (y + 1) * cell_height - 2), fill=foreground)
+    image.info["status_row"] = status - start
+    status_cells = data["cells"][status]
+    caps = [x for x, cell in enumerate(status_cells) if cell["data"] == "\ue0b6"]
+    if caps:
+        left = caps[-1]
+        right = next(x for x in range(left + 1, columns) if status_cells[x]["data"] == "\ue0b4")
+        image.info["context_bounds"] = (left * cell_width, (right + 1) * cell_width)
     return image
 
 
@@ -89,6 +97,8 @@ def main():
     parser.add_argument("--wide-font", type=Path)
     parser.add_argument("--output", type=Path, default=Path("docs/verification/windline-statusline"))
     parser.add_argument("--size", type=int, default=20)
+    parser.add_argument("--context-only", action="store_true",
+                        help="Crop animation GIFs/sheets to the captured rightmost Powerline bubble")
     args = parser.parse_args()
     font = ImageFont.truetype(str(args.font), args.size)
     wide_font = ImageFont.truetype(str(args.wide_font), args.size) if args.wide_font else None
@@ -130,6 +140,38 @@ def main():
             sheet.paste(strip, (0, top))
             top += strip.height
         sheet.save(args.output / "bubble-working-frames.png")
+    groups = {}
+    for stem, image in images.items():
+        match = re.fullmatch(r"(.+)-(\d+)", stem)
+        if match and match.group(1) != "bubble-working":
+            groups.setdefault(match.group(1), {})[int(match.group(2))] = image
+    row_height = font.getmetrics()[0] + font.getmetrics()[1]
+    for prefix, frames in sorted(groups.items()):
+        if sorted(frames) != list(range(len(frames))) or len(frames) < 8:
+            continue
+        sequence = [frames[index] for index in range(min(16, len(frames)))]
+        strips = []
+        for image in sequence:
+            offset = image.info.get("status_row")
+            if offset is None:
+                continue
+            left, right = image.info.get("context_bounds", (0, image.width)) if args.context_only else (0, image.width)
+            strips.append(image.crop((left, offset * row_height,
+                                      right, (offset + 1) * row_height)))
+        if not strips:
+            continue
+        # GIF delays are centiseconds: alternate 120/130ms to preserve the
+        # host's average 125ms cadence and an exact two-second 16-frame cycle.
+        delays = [120 if index % 2 == 0 else 130 for index in range(len(strips))]
+        strips[0].save(args.output / (prefix + ".gif"), save_all=True,
+                       append_images=strips[1:], duration=delays, loop=0, optimize=False)
+        selected = [strips[index] for index in (0, 3, 6, 9, 12, 15) if index < len(strips)]
+        sheet = Image.new("RGB", (selected[0].width, sum(image.height for image in selected)), DEFAULT_BACKGROUND)
+        top = 0
+        for strip in selected:
+            sheet.paste(strip, (0, top))
+            top += strip.height
+        sheet.save(args.output / (prefix + "-frames.png"))
     # Raw captures remain in /tmp; the durable manifest contains hashes, not session content.
     provenance = json.dumps(manifest, indent=2) + "\n"
     (args.captures / "bubble-rendering-manifest.json").write_text(provenance)
