@@ -7,6 +7,8 @@ import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
 import {loadNativeTui} from "./paveway-settings.mjs";
 import {createStatusLine} from "./paveway-statusline.mjs";
+import {installComposer} from "./paveway-composer.mjs";
+import {presentationColor} from "./paveway-presentation.mjs";
 
 function stop() {
     try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
@@ -56,8 +58,14 @@ export default async function paveway(pi) {
         let admitted = false;
         const statusState = {coach: config.coach_id, workflow: `${config.coach_id}/${config.task_id}`};
         let statusContext;
-        const statusLine = createStatusLine(() => statusState, await loadNativeTui(),
+        const nativeTui = await loadNativeTui();
+        const statusLine = createStatusLine(() => statusState, nativeTui,
             {capStyle: config.statusline?.cap_style});
+        const roleColor = text => presentationColor(nativeTui, "brand", text);
+        const conversationPresentation = {
+            user: {compact: true, accent: roleColor},
+            assistant: {label: "GPT", labelColor: roleColor},
+        };
         const publishStatus = update => {
             if (JSON.stringify(update) === JSON.stringify({wakeup: statusState.wakeup, inbox: statusState.inbox})) return;
             Object.assign(statusState, update);
@@ -93,7 +101,11 @@ export default async function paveway(pi) {
                 config.generation = owner.generation;
                 admitted = true;
                 if (typeof ctx.ui.setStatusLine !== "function")
-                    throw new Error("Paveway requires the pinned OMP status-line bridge; run packaging/omp/install.sh");
+                    throw new Error("Paveway requires the pinned OMP status-line bridge; run packaging/omp/install.py");
+                if (typeof ctx.ui.setConversationPresentation !== "function")
+                    throw new Error("Paveway requires the pinned OMP conversation bridge");
+                ctx.ui.setConversationPresentation(conversationPresentation);
+                await installComposer(ctx, nativeTui);
                 statusContext = ctx;
                 ctx.ui.setStatusLine(statusLine);
                 await wakeups.refresh(ctx);

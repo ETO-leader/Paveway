@@ -1,4 +1,4 @@
-// Independent Windline Bubble surfaces; motion belongs only to unused context capacity.
+// Independent Windline Bubble surfaces; only unused Chevron foregrounds animate.
 const TOKENS = Object.freeze({
     brand: "#8475cc", identity: "#35577f", workflow: "#29384e",
     ink: "#dae7f3", cyan: "#67cbd0", warning: "#d5ab68", error: "#f5dce0",
@@ -9,19 +9,19 @@ const CAPS = Object.freeze({
     powerline: Object.freeze(["\ue0b6", "\ue0b4"]),
     plain: Object.freeze(["(", ")"]),
 });
-// One traveling crest over a 16-step cycle: a long cyan rise behind the peak,
-// a narrow fall after it, then the dark seam back to the Context surface.
-// Fixed colors, not a per-render blend, so the 256-color mapping is designed too.
-const CONTEXT_WAVE = Object.freeze([
-    "#203f49", "#224450", "#264c59", "#2b5664",
-    "#316170", "#386e7e", "#407b8d", "#49899c",
-    "#5299ac", "#5caabd", "#69bdce", "#73c9d7",
-    "#7fd8e2", "#74cad8", "#5aa9ba", "#3a7483",
+// A periodic, soft-edged light packet. The seam is beside the crest, so wrapping
+// never resets a bright cell to a dark one. OMP supplies the existing 125ms tick.
+const CHEVRON_LIGHT = Object.freeze([
+    "#8cdae0", "#83d2da", "#75c5cf", "#65b3c0",
+    "#579eae", "#4c8c9e", "#447f92", "#40788b",
+    "#3f7588", "#40788b", "#447f92", "#4c8c9e",
+    "#579eae", "#65b3c0", "#75c5cf", "#83d2da",
 ]);
-const WAVE_ANSI = Object.freeze([
-    23, 23, 24, 30, 31, 37, 38, 44,
-    45, 80, 116, 116, 152, 116, 45, 23,
+const CHEVRON_ANSI = Object.freeze([
+    159, 152, 116, 80, 44, 38, 37, 31,
+    30, 31, 37, 38, 44, 80, 116, 152,
 ]);
+const CHEVRON_STATIC = CHEVRON_LIGHT[4];
 const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_][\s\S]*?(?:\x1b\\|$)|[@-_])/g;
 const UNSAFE = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
@@ -37,14 +37,13 @@ function rgb(hex) {
     return [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
 }
 
-// The palette shifts by one entry per OMP 125ms tick, so a full cycle is 2s.
-// Spacing unused cells evenly over the 16 steps keeps one crest visible at 4,
-// 8 and 16 cells; one or two unused cells stay static to avoid flicker.
-function waveColor(position, count, phase) {
-    if (count <= 2) return TOKENS.context;
-    const offset = Math.round(position * CONTEXT_WAVE.length / count);
-    const index = ((offset - Math.trunc(phase)) % CONTEXT_WAVE.length + CONTEXT_WAVE.length) % CONTEXT_WAVE.length;
-    return CONTEXT_WAVE[index];
+// Cell positions and spacing never move. Very short tails remain legible and
+// static instead of blinking; larger tails distribute one packet over their length.
+function chevronColor(position, count, phase) {
+    if (count <= 2) return CHEVRON_STATIC;
+    const offset = Math.round(position * CHEVRON_LIGHT.length / count);
+    const index = ((offset - Math.trunc(phase)) % CHEVRON_LIGHT.length + CHEVRON_LIGHT.length) % CHEVRON_LIGHT.length;
+    return CHEVRON_LIGHT[index];
 }
 
 // Endpoint-preserving quantization: a nonempty window is visible, but 99% is not full.
@@ -58,8 +57,9 @@ export function contextMeterCells(percent, count, snapshot = {}) {
     const phase = Number.isFinite(snapshot.phase) ? snapshot.phase : 0;
     return Array.from({length: count}, (_, index) => ({
         occupied: index < occupied,
-        background: index < occupied ? TOKENS.cyan
-            : moving ? waveColor(index - occupied, remaining, phase) : TOKENS.context,
+        background: index < occupied ? TOKENS.cyan : TOKENS.context,
+        foreground: index < occupied ? TOKENS.cyan
+            : moving ? chevronColor(index - occupied, remaining, phase) : CHEVRON_STATIC,
     }));
 }
 
@@ -94,8 +94,8 @@ const ANSI_TOKENS = new Map([
     [TOKENS.cost, 235], [TOKENS.event, 24], [TOKENS.fault, 95], [TOKENS.ink, 189],
     [TOKENS.cyan, 80], [TOKENS.warning, 179], [TOKENS.error, 224],
 ]);
-// Every wave step has a designed 256-color index; no RGB-then-snap guessing.
-CONTEXT_WAVE.forEach((hex, index) => ANSI_TOKENS.set(hex, WAVE_ANSI[index]));
+// Keep foreground light levels distinct in ANSI-256 as well as TrueColor.
+CHEVRON_LIGHT.forEach((hex, index) => ANSI_TOKENS.set(hex, CHEVRON_ANSI[index]));
 const CUBE = Object.freeze(Array.from({length: 216}, (_, index) => index + 16));
 const quantized = new Map();
 
@@ -148,13 +148,18 @@ function palette(mode) {
 }
 
 // Precedence: explicit environment override, explicit Paveway setting, then the
-// symbol-preset default. Only the ASCII preset chooses plain caps; TERM and
-// COLORTERM describe ANSI/color capability, not glyph coverage.
+// symbol preset. Unicode does not promise Powerline font coverage.
 function capStyle(ui, configured) {
     for (const value of [process.env.PAVEWAY_STATUSLINE_CAPS, configured]) {
         if (value === "powerline" || value === "plain") return value;
     }
-    return ui.theme?.getSymbolPreset?.() === "ascii" ? "plain" : "powerline";
+    return ui.theme?.getSymbolPreset?.() === "nerd" ? "powerline" : "plain";
+}
+
+function chevronGlyph(ui, style) {
+    const preset = ui.theme?.getSymbolPreset?.();
+    return style === "powerline" && preset !== "ascii" && process.env.TERM !== "dumb"
+        && ui.visibleWidth("\ue0b1") === 1 ? "\ue0b1" : ">";
 }
 
 export function createStatusLine(getPavewayState, ui, options = {}) {
@@ -163,21 +168,34 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
     const shorten = (text, width, ascii) => measure(text) <= width ? text
         : clip(text, Math.max(0, width - 1)) + (ascii ? "~" : "…");
     let disposed = false;
+    let layoutInputs = [], renderFrame;
     return {
-        dispose() { disposed = true; },
+        dispose() { disposed = true; renderFrame = undefined; layoutInputs = []; },
         render(requestedWidth, snapshot = {}) {
             const width = Number.isFinite(requestedWidth) ? Math.max(0, Math.floor(requestedWidth)) : 0;
             if (disposed || width === 0) return "";
             const state = getPavewayState() ?? {};
             const context = snapshot.context ?? {};
             const mode = colorMode(ui);
+            const style = capStyle(ui, options.capStyle);
+            // Cache the complete layout and static bubbles across animation ticks.
+            // Values, not object identities: OMP supplies fresh snapshots each frame.
+            const inputs = [width, mode, style, ui.theme?.getSymbolPreset?.(), process.env.TERM === "dumb",
+                state.coach, state.workflow, state.inbox, state.wakeup == null ? state.wakeup : true, state.wakeup?.unavailable,
+                state.wakeup?.running, state.wakeup?.timing, snapshot.model?.name,
+                snapshot.model?.id, snapshot.thinking, snapshot.cost, context.percent,
+                context.window, context.autoCompact, context.thresholdPercent, context.speculationPercent];
+            if (renderFrame && inputs.every((value, index) => Object.is(value, layoutInputs[index]))) return renderFrame(snapshot);
+            layoutInputs = inputs;
+            renderFrame = undefined;
             const paint = palette(mode);
             const preset = ui.theme?.getSymbolPreset?.();
             const ascii = preset === "ascii" || process.env.TERM === "dumb";
             // Ask for Powerline glyphs without claiming whether a font or terminal
             // actually draws them; width is a layout budget, not font detection.
-            const caps = CAPS[capStyle(ui, options.capStyle)];
+            const caps = CAPS[style];
             const [leftCap, rightCap] = caps.every(cap => measure(cap) === 1) ? caps : CAPS.plain;
+            const chevron = chevronGlyph(ui, style);
             const padding = width >= 64 ? 1 : 0;
             const overhead = 2 + padding * 2;
             const gap = paint(" ", null, null);
@@ -232,8 +250,12 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
             if (!chosen.length && (wakeFault || !inboxKnown) && width < measure(wakeFault || "Inbox ?") + overhead) {
                 return paint("!" + " ".repeat(width - 1), null, TOKENS.error, true);
             }
-            const modelBudget = Math.max(1, Math.min(width >= 80 ? 20 : 14, width - used() - overhead - (chosen.length ? 1 : 0)));
-            const identity = add("identity", shorten(model, modelBudget, ascii), TOKENS.identity, "left");
+            // Reserve the numeric context label before narrowing the model name.
+            const contextReserve = measure(percent) + overhead + 1;
+            const modelBudget = Math.min(width >= 80 ? 20 : 14,
+                width - used() - overhead - (chosen.length ? 1 : 0) - contextReserve);
+            const identity = modelBudget >= 1
+                ? add("identity", shorten(model, modelBudget, ascii), TOKENS.identity, "left") : undefined;
             let meterWidth = width >= 64 ? 4 : 0;
             let capacity = add("context", meterWidth ? " ".repeat(meterWidth + 1) + contextLabel : percent,
                 TOKENS.context, "right", abnormal ? TOKENS.warning : TOKENS.cyan);
@@ -282,31 +304,42 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
                     boundaryLabel = " " + boundary;
                 }
             }
-            const renderCapacity = () => {
-                const cells = contextMeterCells(context.percent, meterWidth, snapshot);
-                const markers = new Map();
-                if (!boundaryLabel && context.autoCompact === true) {
-                    for (const [value, glyph] of [[context.speculationPercent, ascii ? ":" : "┊"], [context.thresholdPercent, ascii ? "|" : "│"]]) {
-                        const limit = knownPercent(value);
-                        if (limit !== null) markers.set(Math.min(meterWidth - 1, Math.floor(meterWidth * limit / 100)), glyph);
-                    }
+            const cells = contextMeterCells(context.percent, meterWidth);
+            const occupied = cells.filter(cell => cell.occupied).length;
+            const markers = new Map();
+            if (!boundaryLabel && context.autoCompact === true) {
+                for (const [value, styleCode] of [[context.speculationPercent, "4"], [context.thresholdPercent, "4;1"]]) {
+                    const limit = knownPercent(value);
+                    if (limit !== null) markers.set(Math.min(meterWidth - 1, Math.floor(meterWidth * limit / 100)), styleCode);
                 }
-                const meter = cells.map((cell, index) => paint(
-                    !cell.occupied && markers.has(index) ? markers.get(index)
-                        : mode === "none" ? cell.occupied ? ascii ? "=" : "━" : ascii ? "-" : "─" : " ",
-                    cell.background, TOKENS.cyan,
-                )).join("");
+            }
+            const renderCapacity = frame => {
+                const moving = mode !== "none" && knownPercent(context.percent) !== null
+                    && frame.working === true && frame.motion !== false;
+                const phase = Number.isFinite(frame.phase) ? frame.phase : 0;
+                const meter = cells.map((cell, index) => {
+                    const text = cell.occupied ? mode === "none" ? ascii ? "=" : "━" : " " : chevron;
+                    const foreground = !cell.occupied && moving
+                        ? chevronColor(index - occupied, cells.length - occupied, phase) : cell.foreground;
+                    // Boundary styling preserves the continuous Chevron glyphs.
+                    const marker = !cell.occupied && markers.get(index);
+                    return paint(marker && mode !== "none" ? `\x1b[${marker}m${text}\x1b[24m` : text,
+                        cell.background, foreground);
+                }).join("");
                 return bubble(capacity, meter
                     + paint(meterWidth ? " " : "", capacity.background, capacity.foreground)
                     + paint(capacity.text.trim(), capacity.background, capacity.foreground));
             };
             const order = ["brand", "identity", "workflow", "Wakeup !", "Wakeup ?", "Inbox ?", "wake", "inbox", "cost", "context"];
             chosen.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-            const group = side => chosen.filter(item => item.side === side)
-                .map(item => item === capacity ? renderCapacity() : bubble(item)).join(gap);
+            const group = side => chosen.filter(item => item.side === side && item !== capacity)
+                .map(item => bubble(item)).join(gap);
             const left = group("left"), right = group("right");
-            const space = Math.max(0, width - measure(left) - measure(right));
-            return left + paint(" ".repeat(space), null, null) + right;
+            const rightWidth = measure(right) + (capacity ? size(capacity) + (right ? 1 : 0) : 0);
+            const space = Math.max(0, width - measure(left) - rightWidth);
+            const prefix = left + paint(" ".repeat(space), null, null) + right + (right && capacity ? gap : "");
+            renderFrame = frame => prefix + (capacity ? renderCapacity(frame) : "");
+            return renderFrame(snapshot);
         },
     };
 }

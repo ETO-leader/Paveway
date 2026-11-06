@@ -1,0 +1,559 @@
+diff --git a/packages/coding-agent/src/extensibility/extensions/types.ts b/packages/coding-agent/src/extensibility/extensions/types.ts
+index 6c0f901012..ad1145080d 100644
+--- a/packages/coding-agent/src/extensibility/extensions/types.ts
++++ b/packages/coding-agent/src/extensibility/extensions/types.ts
+@@ -41,6 +41,8 @@ import type {
+ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+ import type { ContextUsage, StatusLineRenderer } from "@oh-my-pi/pi-tui/status-line/types";
+ export type { StatusLineRenderer, StatusLineSnapshot } from "@oh-my-pi/pi-tui/status-line/types";
++import type { ConversationPresentation } from "@oh-my-pi/pi-tui/chat/conversation-presentation";
++export type { ConversationPresentation } from "@oh-my-pi/pi-tui/chat/conversation-presentation";
+ import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
+ import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
+ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+@@ -392,6 +394,14 @@ export interface ExtensionUIContext {
+ 	/** Set a custom header component, or undefined to restore the built-in header. */
+ 	setHeader(factory: ExtensionUiComponentFactory | undefined): void;
+ 
++	/**
++	 * Opt into native message chrome without replacing Markdown. Undefined restores defaults.
++	 * Interactive mode replays settled history; in-flight renderers retain their policy until
++	 * completion so already-published streaming prefixes remain byte-stable. Equal policies
++	 * are a no-op. Absent outside interactive mode.
++	 */
++	setConversationPresentation?(presentation: ConversationPresentation | undefined): void;
++
+ 	/** Set the terminal window/tab title. */
+ 	setTitle(title: string): void;
+ 
+diff --git a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+index 036887d94f..2630c6f077 100644
+--- a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
++++ b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+@@ -29,6 +29,7 @@ import type {
+ import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+ import { cfgExtensionAssistantTextRenderers } from "../../extensibility/settings";
+ import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
++import { setConversationPresentation } from "@oh-my-pi/pi-tui/chat/conversation-presentation";
+ import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
+ import { ApprovalDialogComponent } from "@oh-my-pi/pi-tui/overlays/approval-dialog";
+ import {
+@@ -224,6 +225,13 @@ export class ExtensionUiController {
+ 			setFooter: () => {},
+ 			setStatusLine: renderer => this.ctx.statusLine.setStatusLine(renderer),
+ 			setHeader: () => {},
++			setConversationPresentation: presentation => {
++				if (!setConversationPresentation(presentation)) return;
++				if (this.ctx.initialChatRendered) {
++					this.ctx.rebuildChatFromMessages({ reuseSettledComponents: false });
++					this.ctx.ui.resetDisplay();
++				}
++			},
+ 			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
+ 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
+ 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
+diff --git a/packages/tui/src/chat/assistant-message.ts b/packages/tui/src/chat/assistant-message.ts
+index e7f7c17b70..8b19b0ecfc 100644
+--- a/packages/tui/src/chat/assistant-message.ts
++++ b/packages/tui/src/chat/assistant-message.ts
+@@ -42,6 +42,8 @@ import { FigureMarkdown } from "./figure-markdown";
+ import { svgFigureRendering } from "./svg-figure";
+ import { hasSvgFence } from "./svg-source";
+ import { chartFence, hasChartTable, lookupTableChart, splitTableCharts } from "./table-chart";
++import { getConversationPresentation } from "./conversation-presentation";
++import { styledSpans } from "../native/spans";
+ 
+ /**
+  * Max wrapped rows of a turn-ending provider error rendered inline in the
+@@ -74,7 +76,7 @@ interface FastPathItem {
+ }
+ type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
+ type StablePartKind = "thinking" | "text";
+-type StablePart = { kind: StablePartKind; text: string } | { kind: "spacer" };
++type StablePart = { kind: StablePartKind | "label"; text: string } | { kind: "spacer" };
+ 
+ /**
+  * One published prefix of the block's finished content. Later snapshots extend
+@@ -273,6 +275,8 @@ function trimFabricatedCloser(rows: readonly string[], source: string): readonly
+ export class AssistantMessageComponent extends Container {
+ 	readonly transcriptBlockMode = "appendOnly" as const;
+ 	#contentContainer: Container;
++	readonly #presentation = getConversationPresentation()?.assistant;
++	#roleLabel: Text | undefined;
+ 	#markerSlot: Container;
+ 	#cacheMarker?: CacheInvalidationMarkerComponent;
+ 	#servedModelMarker?: ServedModelMarkerComponent;
+@@ -962,6 +966,7 @@ export class AssistantMessageComponent extends Container {
+ 		};
+ 		const children: NativeChild[] = [];
+ 		let answered = false;
++		let labeled = false;
+ 		if (message) {
+ 			const live = !this.#transcriptBlockFinalized && this.#lastUpdateTransient;
+ 			// Which block streams, and whether there is an answer to copy, follow the reply as written:
+@@ -980,6 +985,15 @@ export class AssistantMessageComponent extends Container {
+ 				const content = message.content[index]!;
+ 				const streaming = live && index === tailIndex;
+ 				if (content.type === "text" && canonicalizeMessage(content.text)) {
++					if (!labeled && this.#presentation?.label) {
++						const label = this.#presentation.label;
++						const color = this.#presentation.labelColor ?? (value => theme.fg("muted", value));
++						children.push(node("text", {
++							spans: styledSpans(color(label)),
++							role: "omp.assistant.label",
++						}, undefined, "answer-label"));
++						labeled = true;
++					}
+ 					// A native terminal sizes table columns by every row it gets: send a growing row once
+ 					// its line ends. Hold before trimming, which would drop the newline ending a finished row.
+ 					const source = (streaming ? holdPartialTableRow(content.text) : content.text).trim();
+@@ -1298,7 +1312,7 @@ export class AssistantMessageComponent extends Container {
+ 		const parts = this.#currentStableSnapshot();
+ 		if (!parts) return;
+ 		const last = parts.at(-1);
+-		if (!last || last.kind === "spacer") return;
++		if (!last || last.kind === "spacer" || last.kind === "label") return;
+ 		const snapshot = { partCount: parts.length, lastTextLength: last.text.length };
+ 		const previous = this.#stableSnapshots.at(-1);
+ 		// An unmoved boundary publishes nothing whether or not it still extends
+@@ -1337,6 +1351,10 @@ export class AssistantMessageComponent extends Container {
+ 		let itemIndex = 0;
+ 		for (const child of this.#contentContainer.children) {
+ 			const item = items[itemIndex];
++			if (child === this.#roleLabel && this.#presentation?.label) {
++				parts.push({ kind: "label", text: this.#presentation.label });
++				continue;
++			}
+ 			if (item?.md === child) {
+ 				const md = item.md;
+ 				if (md instanceof FigureMarkdown) {
+@@ -1403,6 +1421,10 @@ export class AssistantMessageComponent extends Container {
+ 				rows.push("");
+ 				continue;
+ 			}
++			if (part.kind === "label") {
++				if (this.#roleLabel) rows.push(...this.#roleLabel.render(width));
++				continue;
++			}
+ 			const closed = index < lastIndex;
+ 			const text = closed || lastLength === part.text.length ? part.text : part.text.slice(0, lastLength);
+ 			const cached = ledger.parts[index];
+@@ -1451,7 +1473,8 @@ export class AssistantMessageComponent extends Container {
+ 	#createMarkdown(kind: StablePartKind, text: string): Markdown {
++		const paddingX = this.#presentation?.label ? 2 : 1;
+ 		return kind === "text"
+-			? new Markdown(text, 1, 0, this.#getProseTheme(), this.#getProseTextStyle(), 0)
+-			: new Markdown(text, 1, 0, getMarkdownTheme(), {
++			? new Markdown(text, paddingX, 0, this.#getProseTheme(), this.#getProseTextStyle(), 0)
++			: new Markdown(text, paddingX, 0, getMarkdownTheme(), {
+ 					color: (value: string) => theme.fg("thinkingText", value),
+ 					italic: true,
+ 				});
+@@ -1970,6 +1992,7 @@ export class AssistantMessageComponent extends Container {
+ 
+ 		// Clear content container
+ 		this.#contentContainer.clear();
++		this.#roleLabel = undefined;
+ 		this.#kittyPreviouslyDisplayed = this.#kittyDisplayed;
+ 		this.#kittyDisplayed = new Map();
+ 		this.#thinkingExtensions.clear();
+@@ -1998,6 +2021,11 @@ export class AssistantMessageComponent extends Container {
+ 		for (let i = 0; i < message.content.length; i++) {
+ 			const content = message.content[i];
+ 			if (content.type === "text" && canonicalizeMessage(content.text)) {
++				if (!this.#roleLabel && this.#presentation?.label) {
++					this.#roleLabel = new Text(this.#presentation.label, 2, 0)
++						.setStyleFn(this.#presentation.labelColor ?? (value => theme.fg("muted", value)));
++					this.#contentContainer.addChild(this.#roleLabel);
++				}
+ 				// Set paddingY=0 to avoid extra spacing before tool executions
+ 				const trimmed = content.text.trim();
+ 				const md = this.#proseBlock(i, trimmed, previousFigures);
+diff --git a/packages/tui/src/chat/conversation-presentation.ts b/packages/tui/src/chat/conversation-presentation.ts
+new file mode 100644
+index 0000000000..5cf4a5d5b4
+--- /dev/null
++++ b/packages/tui/src/chat/conversation-presentation.ts
+@@ -0,0 +1,44 @@
++/** Presentation only: native Markdown, message identity and streaming ownership stay with the host. */
++export interface ConversationPresentation {
++	readonly user?: {
++		/** Transparent prompt: a terminal rail/inset without vertical padding; a bare YOU head on native surfaces. */
++		readonly compact?: boolean;
++		/** Foreground styling for the rail only; defaults to the theme's accent. */
++		readonly accent?: (text: string) => string;
++	};
++	readonly assistant?: {
++		/** A quiet label before the first answer text, never on thinking-only or tool-only messages. */
++		readonly label?: string;
++		/** Foreground styling for the label only; defaults to the theme's muted color. */
++		readonly labelColor?: (text: string) => string;
++	};
++}
++
++let presentation: Readonly<ConversationPresentation> | undefined;
++
++/**
++ * Set the policy for newly constructed messages; undefined restores host defaults.
++ * Existing renderers retain their snapshot so published scrollback bytes never change.
++ * Interactive callers use ui.setConversationPresentation, which also replays settled history.
++ * Color callbacks must be deterministic for the active theme; do not close over mutable
++ * per-frame state, since labels can be published into immutable terminal scrollback.
++ * Returns false for an unchanged policy (including equivalent option objects).
++ */
++export function setConversationPresentation(next: ConversationPresentation | undefined): boolean {
++	if (
++		presentation?.user?.compact === next?.user?.compact &&
++		presentation?.user?.accent === next?.user?.accent &&
++		presentation?.assistant?.label === next?.assistant?.label &&
++		presentation?.assistant?.labelColor === next?.assistant?.labelColor
++	) return false;
++	presentation = next === undefined ? undefined : Object.freeze({
++		user: next.user ? Object.freeze({ ...next.user }) : undefined,
++		assistant: next.assistant ? Object.freeze({ ...next.assistant }) : undefined,
++	});
++	return true;
++}
++
++/** Immutable constructor snapshot; do not switch policies on an in-flight renderer. */
++export function getConversationPresentation(): Readonly<ConversationPresentation> | undefined {
++	return presentation;
++}
+diff --git a/packages/tui/src/chat/user-message.ts b/packages/tui/src/chat/user-message.ts
+index 29657df974..c8a4d30ae0 100644
+--- a/packages/tui/src/chat/user-message.ts
++++ b/packages/tui/src/chat/user-message.ts
+@@ -33,6 +33,8 @@ import {
+ 	rootToggleExpanded,
+ } from "../native/node";
+ import { Memo } from "../native/memo";
++import { getConversationPresentation } from "./conversation-presentation";
++import { styledSpans } from "../native/spans";
+ 
+ // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
+ //
+@@ -82,17 +84,22 @@ export interface UserBubbleOptions {
+ export function userBubbleColor(
+ 	options: UserBubbleOptions = {},
+ 	tokenRegex: RegExp = COMPOSER_TOKEN_REGEX,
++	transparent = false,
+ ): (value: string) => string {
+ 	const { imageLinks, synthetic = false, skillPath } = options;
+ 	// The Markdown component routes code spans and fenced blocks through its own code styling
+ 	// (never `color`), so those are already excluded; `highlightMagicKeywords` additionally
+ 	// restores the bubble's own foreground after each painted keyword so the gradient never
+ 	// bleeds into the rest of the line.
+-	const keywordReset = theme.getFgOnBgAnsi("userMessageText", "userMessageBg");
+-	const bubbleReset = `${keywordReset}${theme.getBgAnsi("userMessageBg")}`;
++	const keywordReset = transparent
++		? theme.getFgAnsi("userMessageText")
++		: theme.getFgOnBgAnsi("userMessageText", "userMessageBg");
++	const bubbleReset = transparent ? keywordReset : `${keywordReset}${theme.getBgAnsi("userMessageBg")}`;
+ 	const renderText = synthetic
+ 		? (text: string) => theme.fg("dim", text)
+-		: (text: string) => theme.fgOnBg("userMessageText", "userMessageBg", highlightMagicKeywords(text, keywordReset));
++		: transparent
++			? (text: string) => theme.fg("userMessageText", highlightMagicKeywords(text, keywordReset))
++			: (text: string) => theme.fgOnBg("userMessageText", "userMessageBg", highlightMagicKeywords(text, keywordReset));
+ 	return (value: string) =>
+ 		renderPlaceholders(
+ 			value,
+@@ -133,7 +140,10 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 	// never mutates the container's cached array.
+ 	#zoneSource: readonly string[] | undefined;
+ 	#zoneLines: string[] | undefined;
++	#zoneWidth: number | undefined;
+ 	readonly #bgColor: (value: string) => string;
++	readonly #compact: boolean;
++	readonly #accent: (text: string) => string;
+ 	readonly #liveSteered: boolean;
+ 	readonly #synthetic: boolean;
+ 	readonly #timestamp: number | undefined;
+@@ -163,7 +173,11 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 			mentionLabels.push(label);
+ 			return label;
+ 		});
+-		const bgColor = (value: string) => theme.bg("userMessageBg", value);
++		const presentation = getConversationPresentation()?.user;
++		// Synthetic input keeps its own identity and original layout.
++		this.#compact = presentation?.compact === true && options.synthetic !== true;
++		this.#accent = presentation?.accent ?? (value => theme.fg("accent", value));
++		const bgColor = this.#compact ? (value: string) => value : (value: string) => theme.bg("userMessageBg", value);
+ 		this.#bgColor = bgColor;
+ 		this.#liveSteered = options.liveSteered === true;
+ 		this.#synthetic = options.synthetic === true;
+@@ -172,9 +186,9 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 		this.#imageLinks = options.imageLinks;
+ 		this.#text = text;
+ 		this.#tokens = composerTokenRegex(mentionLabels);
+-		const markdown = new Markdown(text, 1, 1, getMarkdownTheme(), {
+-			bgColor,
+-			color: userBubbleColor(options, this.#tokens),
++		const markdown = new Markdown(text, 1, this.#compact ? 0 : 1, getMarkdownTheme(), {
++			bgColor: this.#compact ? undefined : bgColor,
++			color: userBubbleColor(options, this.#tokens, this.#compact),
+ 		});
+ 		markdown.setIgnoreTight(true);
+ 		this.addChild(markdown);
+@@ -280,7 +294,9 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 		if (badges.length > 0)
+ 			children.push(node("row", { gap: "xs", justify: "end", role: "omp.user.badges" }, badges, "badges"));
+ 		this.#native = card(
+-			{ role: this.#synthetic ? "omp.user.synthetic" : "omp.user", tone: this.#synthetic ? "muted" : "user" },
++			this.#compact
++				? { role: "omp.user", variant: "bare", head: styledSpans(this.#accent("YOU")) }
++				: { role: this.#synthetic ? "omp.user.synthetic" : "omp.user", tone: this.#synthetic ? "muted" : "user" },
+ 			children,
+ 		);
+ 		return this.#native;
+@@ -320,11 +336,15 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 	 * viewport does not leave stale prompt marks on lines it no longer occupies.
+ 	 */
+ 	renderTranscriptBlockEmergencyRow(width: number): string | undefined {
+-		return this.#selectEmergencyRow(super.render(width));
++		const rail = this.#compact && width > 2 ? this.#accent("▏") : "";
++		const lines = super.render(rail ? width - 1 : width);
++		const row = this.#selectEmergencyRow(lines);
++		return row === undefined ? undefined : rail + row;
+ 	}
+ 
+ 	#selectEmergencyRow(lines: readonly string[]): string | undefined {
+ 		if (lines.length === 0) return undefined;
++		if (this.#compact) return lines.find(line => stripTerminalSequences(line).trim().length > 0) ?? lines[0];
+ 		if (lines.length >= 3) {
+ 			for (let i = 1; i < lines.length - 1; i++) {
+ 				if (stripTerminalSequences(lines[i]!).trim().length > 0) {
+@@ -337,22 +357,27 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
+ 	}
+ 
+ 	override render(width: number): readonly string[] {
+-		const lines = super.render(width);
++		const rail = this.#compact && width > 2 ? this.#accent("▏") : "";
++		const lines = super.render(rail ? width - 1 : width);
+ 		if (lines.length === 0) {
+ 			return lines;
+ 		}
+ 		if (this.#allocation === 1) {
+ 			const emergency = this.#selectEmergencyRow(lines);
+-			if (emergency !== undefined) return [emergency];
++			if (emergency !== undefined) return [rail + emergency];
+ 		}
+-		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {
++		if (this.#zoneSource === lines && this.#zoneWidth === width && this.#zoneLines !== undefined) {
+ 			return this.#zoneLines;
+ 		}
+-		const wrapped = lines.slice();
+-		if (this.#reaction !== undefined || this.#liveSteered) wrapped[0] = this.#badgeRow(width);
++		const wrapped = rail ? lines.map(line => rail + line) : lines.slice();
++		if (this.#reaction !== undefined || this.#liveSteered) {
++			if (this.#compact) wrapped.push(this.#badgeRow(width));
++			else wrapped[0] = this.#badgeRow(width);
++		}
+ 		wrapped[0] = OSC133_ZONE_START + wrapped[0];
+ 		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
+ 		this.#zoneSource = lines;
++		this.#zoneWidth = width;
+ 		this.#zoneLines = wrapped;
+ 		return wrapped;
+ 	}
+diff --git a/packages/tui/src/index.ts b/packages/tui/src/index.ts
+index d7a9fc5884..7e476d96e5 100644
+--- a/packages/tui/src/index.ts
++++ b/packages/tui/src/index.ts
+@@ -4,6 +4,7 @@
+ export * from "./autocomplete";
+ // Components
+ export * from "./chat/transcript-browser";
++export * from "./chat/conversation-presentation";
+ export * from "./components/box";
+ export * from "./components/cancellable-loader";
+ export * from "./components/composer";
+diff --git a/packages/tui/test/conversation-presentation.test.ts b/packages/tui/test/conversation-presentation.test.ts
+new file mode 100644
+index 0000000000..b1f72296a0
+--- /dev/null
++++ b/packages/tui/test/conversation-presentation.test.ts
+@@ -0,0 +1,183 @@
++import { afterEach, beforeAll, describe, expect, it } from "bun:test";
++import type { AssistantMessage } from "@oh-my-pi/pi-ai";
++import { AssistantMessageComponent } from "../src/chat/assistant-message";
++import { UserMessageComponent } from "../src/chat/user-message";
++import { getConversationPresentation, setConversationPresentation } from "../src/chat/conversation-presentation";
++import { trimBlankEdges } from "../src/chrome/transcript-container";
++import { initTheme, theme } from "../src/theme";
++import { stripTerminalSequences, visibleWidth } from "../src/utils";
++
++beforeAll(async () => { await initTheme(false); });
++afterEach(() => { setConversationPresentation(undefined); });
++
++const brand = (value: string) => theme.fg("accent", value);
++const policy = { user: { compact: true, accent: brand }, assistant: { label: "GPT", labelColor: brand } };
++const plain = (rows: readonly string[]) => rows.map(stripTerminalSequences);
++
++function message(content: AssistantMessage["content"]): AssistantMessage {
++	return {
++		role: "assistant", content, api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5",
++		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
++			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
++		stopReason: "stop", timestamp: 1,
++	};
++}
++
++function textMessage(text: string): AssistantMessage {
++	return message([{ type: "text", text }]);
++}
++
++describe("opt-in native conversation presentation", () => {
++	it("keeps the stock presentation by default and restores it on undefined", () => {
++		const stockUser = new UserMessageComponent("hello").render(40);
++		const stockAssistant = new AssistantMessageComponent(textMessage("hello")).render(40);
++		setConversationPresentation(policy);
++		expect(plain(new UserMessageComponent("hello").render(40))[0]).toStartWith("▏ hello");
++		expect(plain(new AssistantMessageComponent(textMessage("hello")).render(40))[0]).toStartWith("  GPT");
++		expect(plain(new AssistantMessageComponent(textMessage("hello")).render(40))[1]).toStartWith("  hello");
++		expect(setConversationPresentation(undefined)).toBe(true);
++		expect(new UserMessageComponent("hello").render(40)).toEqual(stockUser);
++		expect(new AssistantMessageComponent(textMessage("hello")).render(40)).toEqual(stockAssistant);
++	});
++
++	it("snapshots policy and treats equivalent policies as a no-op", () => {
++		expect(setConversationPresentation(policy)).toBe(true);
++		expect(setConversationPresentation(policy)).toBe(false);
++		expect(setConversationPresentation({ user: { ...policy.user }, assistant: { ...policy.assistant } })).toBe(false);
++		const snapshot = getConversationPresentation();
++		expect(Object.isFrozen(snapshot)).toBe(true);
++		expect(Object.isFrozen(snapshot?.user)).toBe(true);
++		const user = new UserMessageComponent("hello");
++		const assistant = new AssistantMessageComponent();
++		setConversationPresentation(undefined);
++		assistant.updateContent(textMessage("answer"));
++		expect(plain(user.render(40))[0]).toStartWith("▏ hello");
++		expect(plain(assistant.render(40))[0]?.trim()).toBe("GPT");
++		assistant.dispose();
++	});
++
++	it("renders short prompts on one line, without painting the user bubble background", () => {
++		setConversationPresentation(policy);
++		const user = new UserMessageComponent("hello");
++		const rows = user.render(40);
++		expect(rows).toHaveLength(1);
++		expect(plain(rows)[0]?.trimEnd()).toBe("▏ hello");
++		expect(rows.join("")).not.toContain(theme.getBgAnsi("userMessageBg"));
++		expect(user.render(40)).toBe(rows);
++		expect(rows[0]).toContain("\x1b]133;A\x07");
++		expect(rows[0]).toContain("\x1b]133;D;0\x07");
++	});
++
++	it("does not overwrite the first prompt row with steering or reaction badges", () => {
++		setConversationPresentation(policy);
++		const user = new UserMessageComponent("keep this text", { liveSteered: true });
++		user.setReaction("👍");
++		const rows = plain(user.render(40));
++		expect(rows[0]).toContain("keep this text");
++		expect(rows.at(-1)).toContain("*");
++		expect(rows.at(-1)).toContain("👍");
++		user.setTranscriptAllocation(1);
++		expect(plain(user.render(40))).toHaveLength(1);
++		expect(plain(user.render(40))[0]).toContain("keep this text");
++		expect(user.renderTranscriptBlockEmergencyRow(40)).not.toContain("\x1b]133;");
++	});
++
++	it("preserves synthetic/system-attributed input rather than restyling it as YOU", () => {
++		const original = new UserMessageComponent("# Session recap\n\nRetained context", { synthetic: true }).render(40);
++		setConversationPresentation(policy);
++		expect(new UserMessageComponent("# Session recap\n\nRetained context", { synthetic: true }).render(40)).toEqual(original);
++	});
++
++	it("keeps Unicode, fenced code and links in the native Markdown renderer across widths", () => {
++		setConversationPresentation(policy);
++		const source = "你好 café e\u0301 👩‍💻\n\n[link](https://example.com) and `code`\n\n```ts\nconst n = 42;\n```";
++		for (const width of [8, 20, 40, 80]) {
++			const user = new UserMessageComponent(source);
++			const assistant = new AssistantMessageComponent(textMessage(source));
++			for (const rows of [user.render(width), assistant.render(width)]) {
++				for (const row of rows) expect(visibleWidth(row)).toBeLessThanOrEqual(width);
++				expect(plain(rows).join("\n")).toContain("42");
++			}
++			const native = assistant.describe();
++			expect(JSON.stringify(native)).toContain('"role":"omp.assistant.label"');
++			expect(JSON.stringify(native)).toContain('"k":"md"');
++			expect(JSON.stringify(native)).toContain("const n = 42;");
++		}
++	});
++
++	it("does not leak a cached rail when adjacent narrow widths share one Markdown width", () => {
++		setConversationPresentation(policy);
++		const user = new UserMessageComponent("abc");
++		user.render(3);
++		expect(plain(user.render(2)).join("\n")).not.toContain("▏");
++		user.render(2);
++		expect(plain(user.render(3)).join("\n")).toContain("▏");
++	});
++
++	it("labels answer text once, but never relabels thinking-only or tool-only messages", () => {
++		setConversationPresentation(policy);
++		const thinking = { type: "thinking" as const, thinking: "Reasoning remains reasoning." };
++		const tool = { type: "toolCall" as const, id: "call1", name: "read", arguments: { path: "a.ts" } };
++		for (const content of [[thinking], [tool]]) {
++			const assistant = new AssistantMessageComponent(message(content));
++			expect(plain(assistant.render(60)).join("\n")).not.toContain("GPT");
++			expect(JSON.stringify(assistant.describe())).not.toContain("omp.assistant.label");
++		}
++		const assistant = new AssistantMessageComponent(message([
++			thinking, { type: "text", text: "The answer." }, tool, { type: "text", text: "More answer." },
++		]));
++		const rows = plain(assistant.render(60));
++		expect(rows.filter(row => row.trim() === "GPT")).toHaveLength(1);
++		expect(rows.join("\n")).toContain("Reasoning remains reasoning.");
++		expect(rows.join("\n")).toContain("The answer.");
++		expect(rows.join("\n")).toContain("More answer.");
++	});
++
++	for (const width of [20, 40, 80]) {
++		it(`publishes byte-stable labeled streaming prefixes at width ${width}`, () => {
++			setConversationPresentation(policy);
++			const assistant = new AssistantMessageComponent();
++			const first = "First paragraph with Unicode 你好 café and enough prose to wrap. ".repeat(4);
++			const second = "\n\n```ts\nconst answer = 42;\n```\n\n";
++			let published: readonly string[] = [];
++			for (const source of [first + "\n\nSec", first + second + "Third", first + second + "Third paragraph grows."]) {
++				assistant.updateContent(textMessage(source), { transient: true });
++				const live = trimBlankEdges(assistant.render(width));
++				const count = assistant.getTranscriptStableRows().length;
++				if (count === 0) continue;
++				const stable = assistant.renderTranscriptStableRows(count, width);
++				expect(live.slice(0, stable.length)).toEqual([...stable]);
++				expect(stable.slice(0, published.length)).toEqual([...published]);
++				expect(assistant.renderTranscriptStableRows(count, width)).toBe(stable);
++				published = stable;
++			}
++			expect(published.length).toBeGreaterThan(1);
++			expect(plain(published)[0]?.trim()).toBe("GPT");
++			assistant.markTranscriptBlockFinalized();
++			expect(trimBlankEdges(assistant.render(width)).slice(0, published.length)).toEqual([...published]);
++			assistant.dispose();
++		});
++	}
++
++	it("retains the thinking prefix when answer text and its label arrive later", () => {
++		setConversationPresentation(policy);
++		const assistant = new AssistantMessageComponent();
++		const thinking = "A complete reasoning paragraph. ".repeat(8);
++		assistant.updateContent(message([{ type: "thinking", thinking: thinking + "\n\nStill reasoning" }]), { transient: true });
++		assistant.render(40);
++		const growingThinking = thinking + "\n\nStill reasoning continues.\n\nNext";
++		assistant.updateContent(message([{ type: "thinking", thinking: growingThinking }]), { transient: true });
++		assistant.render(40);
++		const count = assistant.getTranscriptStableRows().length;
++		expect(count).toBeGreaterThan(0);
++		const published = assistant.renderTranscriptStableRows(count, 40);
++		assistant.updateContent(message([
++			{ type: "thinking", thinking: growingThinking },
++			{ type: "text", text: "The answer begins.\n\nThe next paragraph continues." },
++		]), { transient: true });
++		const rows = trimBlankEdges(assistant.render(40));
++		expect(rows.slice(0, published.length)).toEqual([...published]);
++		expect(plain(rows).filter(row => row.trim() === "GPT")).toHaveLength(1);
++		assistant.dispose();
++	});
++});

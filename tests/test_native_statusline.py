@@ -94,8 +94,15 @@ class Terminal:
         return next((y for y, row in enumerate(self.screen.display) if "PAVEWAY" in row), None)
 
     def cells(self):
+        # A PTY read may split OMP's erase/repaint. Sample only after its
+        # autowrap-restoring paint end, including on hosts without DEC 2026.
+        self.until(lambda: self.raw.rfind(b"\x1b[?7l") <= self.raw.rfind(b"\x1b[?7h"),
+                   timeout=1)
         y = self.status()
-        self.case.assertIsNotNone(y)
+        if y is None:
+            self.capture("missing-status")
+        self.case.assertIsNotNone(y, "\n".join(self.screen.display) +
+                                  "\n" + self.raw.decode(errors="replace")[-1600:])
         return tuple((self.screen.buffer[y][x].data, self.screen.buffer[y][x].fg,
                       self.screen.buffer[y][x].bg) for x in range(self.screen.columns))
 
@@ -205,7 +212,7 @@ class NativeStatusLineTests(NativeFixture):
             create(self.config, self.workflow, self.root / "workspace", "example")
 
     def cap_glyphs(self, preset, cap_style):
-        style = cap_style if cap_style != "auto" else ("plain" if preset == "ascii" else "powerline")
+        style = cap_style if cap_style != "auto" else ("powerline" if preset == "nerd" else "plain")
         return ("(", ")") if style == "plain" else ("\ue0b6", "\ue0b4")
 
     def assert_bubbles(self, terminal, preset=None, cap_style=None):
@@ -260,7 +267,7 @@ class NativeStatusLineTests(NativeFixture):
         caps = {}
         for preset in ("nerd", "unicode"):
             with self.subTest(preset=preset):
-                self.configure(preset=preset)
+                self.configure(preset=preset, cap_style="powerline")
                 terminal = Terminal(self)
                 terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
                 self.assert_bubbles(terminal)
@@ -275,16 +282,20 @@ class NativeStatusLineTests(NativeFixture):
                 terminal.close()
         self.assertEqual(caps["nerd"], caps["unicode"])
 
-    def test_plain_cap_style_removes_powerline_glyphs(self):
-        self.configure(preset="unicode", cap_style="plain")
-        terminal = Terminal(self)
-        terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
-        self.assert_bubbles(terminal)
-        text = terminal.screen.display[terminal.status()]
-        self.assertNotIn("\ue0b6", text)
-        self.assertNotIn("\ue0b4", text)
-        terminal.capture("plain-powerline-off")
-        terminal.close()
+    def test_unicode_default_and_explicit_plain_caps(self):
+        for cap_style in ("auto", "plain"):
+            with self.subTest(cap_style=cap_style):
+                self.configure(preset="unicode", cap_style=cap_style)
+                terminal = Terminal(self)
+                terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+                self.assert_bubbles(terminal)
+                text = terminal.screen.display[terminal.status()]
+                self.assertIn("(", text)
+                self.assertIn(")", text)
+                self.assertNotIn("\ue0b6", text)
+                self.assertNotIn("\ue0b4", text)
+                terminal.capture(f"unicode-{cap_style}-plain")
+                terminal.close()
 
     def test_ascii_preset_defaults_to_ascii_caps(self):
         self.configure(preset="ascii")
@@ -299,7 +310,7 @@ class NativeStatusLineTests(NativeFixture):
     def test_color_modes_keep_powerline_caps(self):
         for color_mode in ("256color", "truecolor"):
             with self.subTest(color_mode=color_mode):
-                self.configure(preset="unicode", color_mode=color_mode)
+                self.configure(preset="unicode", color_mode=color_mode, cap_style="powerline")
                 terminal = Terminal(self)
                 terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
                 self.assert_bubbles(terminal)
@@ -376,7 +387,6 @@ class NativeStatusLineTests(NativeFixture):
         self.assertLess(next(y for y, line in enumerate(terminal.screen.display) if "UNSENT_DRAFT" in line), row)
         self.assertNotIn("OMP native", text)
         self.assertNotIn(str(self.root / "workspace"), text)
-        self.assertTrue(any("╯" in line for line in terminal.screen.display[:row]), text)
         self.assertNotIn(b"\x1b[?1049h", terminal.raw)
         for columns in (80, 100, 160, 120):
             terminal.resize(columns)
@@ -413,7 +423,7 @@ class NativeStatusLineTests(NativeFixture):
             yield {}, "stop"
         self.server.response_factory = slow_response
         terminal = Terminal(self)
-        terminal.send("wave " * 600 + "\r")
+        terminal.send("chevron " * 600 + "\r")
         terminal.until(lambda: self.record()["status"] == "active")
         terminal.pump(.4)
         frames = []
@@ -427,6 +437,14 @@ class NativeStatusLineTests(NativeFixture):
         self.assertTrue(occupied, "The real prompt must occupy at least one context cell")
         for x in occupied:
             self.assertEqual(len({frame[x] for frame in frames}), 1, "Occupied context cells must not animate")
+        meter, opening, _closing = self.context_meter(frames[0], "".join(cell[0] for cell in frames[0]))
+        unused = [opening + 2 + index for index, cell in enumerate(meter) if cell[0] == "\ue0b1"]
+        self.assertTrue(unused, "Working context must retain unused chevrons")
+        for x in unused:
+            self.assertEqual({frame[x][0] for frame in frames}, {"\ue0b1"})
+            self.assertEqual({frame[x][2] for frame in frames}, {"203f49"})
+        self.assertTrue(any(len({frame[x][1] for frame in frames}) > 1 for x in unused),
+                        "Working chevron foregrounds must animate")
         terminal.send(b"\x1b")
         terminal.until(lambda: self.record()["status"] == "idle")
         release.set()
@@ -463,16 +481,16 @@ class NativeStatusLineTests(NativeFixture):
                        if x > opening and cell[0] in caps)
         return cells[opening + 2:label.start() - 1], opening, closing
 
-    def capture_wave_frames(self, release, prefix, columns, window, color_mode, motion, prompt):
+    def capture_chevron_frames(self, release, prefix, columns, window, color_mode, motion, prompt):
         self.configure(context_window=window, color_mode=color_mode, motion=motion)
         release.clear()
         terminal = Terminal(self, columns=columns)
         try:
             terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
-            if prefix == "wave-4-truecolor":
+            if prefix == "chevron-4-truecolor":
                 # A distant wakeup keeps a static second bubble and squeezes the
                 # Context meter to four cells without changing during capture.
-                terminal.send("/wakeup in 23h WAVE4_SETUP\r")
+                terminal.send("/wakeup in 23h CHEVRON4_SETUP\r")
                 terminal.until(lambda: "\u25f7" in terminal.screen.display[terminal.status()])
                 # The hour/minute label settles after the first second, then stays
                 # fixed for the capture window.
@@ -483,11 +501,10 @@ class NativeStatusLineTests(NativeFixture):
                 terminal.send(prompt + "\r")
             terminal.until(lambda: self.record()["status"] == "active")
             terminal.pump(.35)
-            first_text = terminal.screen.display[terminal.status()]
-            percent = int(re.search(r"(\d+)%", first_text).group(1))
-            # A rounded display percent suffices to distinguish these fixture cases;
-            # occupied-cell invariants below use the independently observed idle bar.
-            animated = motion and percent < 85
+            first_cells = terminal.cells()
+            first_text = "".join(cell[0] for cell in first_cells)
+            first_meter = self.context_meter(first_cells, first_text)[0]
+            animated = motion and sum(cell[0] == "\ue0b1" for cell in first_meter) > 2
             frames = []
             for index in range(17):
                 if index and animated:
@@ -514,51 +531,72 @@ class NativeStatusLineTests(NativeFixture):
             if terminal.process.poll() is None:
                 terminal.close()
 
-    def test_real_wave_evidence_matrix(self):
+    def test_real_chevron_evidence_matrix(self):
         release = threading.Event()
         self.addCleanup(release.set)
 
         def slow_response(_body):
-            yield {"role": "assistant", "content": "WAVE_STREAM"}, None
+            yield {"role": "assistant", "content": "CHEVRON_STREAM"}, None
             release.wait(45)
             yield {"content": "M0_REPLY"}, None
             yield {}, "stop"
 
         self.server.response_factory = slow_response
         scenarios = [
-            ("wave-8-truecolor", 120, 16000, "truecolor", True, "WAVE8 "),
-            ("wave-8-256", 120, 16000, "256color", True, "WAVE8 "),
-            ("wave-16-truecolor", 160, 16000, "truecolor", True, "WAVE16 "),
-            ("wave-16-256", 160, 16000, "256color", True, "WAVE16 "),
-            ("wave-4-truecolor", 64, 16000, "truecolor", True, "WAVE4 "),
-            ("wave-50-truecolor", 160, 4000, "truecolor", True, "word " * 600),
-            ("wave-high-truecolor", 160, 4000, "truecolor", True, "word " * 1400),
-            ("wave-motion-off", 120, 16000, "truecolor", False, "WAVE_STATIC "),
+            ("chevron-8-truecolor", 120, 16000, "truecolor", True, "CHEVRON8 "),
+            ("chevron-8-256", 120, 16000, "256color", True, "CHEVRON8 "),
+            ("chevron-16-truecolor", 160, 16000, "truecolor", True, "CHEVRON16 "),
+            ("chevron-16-256", 160, 16000, "256color", True, "CHEVRON16 "),
+            ("chevron-4-truecolor", 64, 16000, "truecolor", True, "CHEVRON4 "),
+            ("chevron-mid-truecolor", 160, 4000, "truecolor", True, "word " * 600),
+            ("chevron-high-truecolor", 160, 4000, "truecolor", True, "word " * 1400),
+            ("chevron-motion-off", 120, 16000, "truecolor", False, "CHEVRON_STATIC "),
         ]
         for prefix, columns, window, color_mode, motion, prompt in scenarios:
             with self.subTest(prefix=prefix):
-                frames, text, idle = self.capture_wave_frames(
+                frames, text, idle = self.capture_chevron_frames(
                     release, prefix, columns, window, color_mode, motion, prompt)
                 self.assertEqual(len({tuple(cell[0] for cell in frame) for frame in frames}), 1, text)
                 meter, opening, closing = self.context_meter(frames[0], text)
-                expected_size = 4 if prefix == "wave-4-truecolor" else (
-                    16 if prefix.startswith(("wave-16", "wave-50", "wave-high")) else 8)
+                expected_size = 4 if prefix == "chevron-4-truecolor" else (
+                    16 if prefix.startswith(("chevron-16", "chevron-mid", "chevron-high")) else 8)
                 self.assertEqual(len(meter), expected_size, text)
                 idle_text = "".join(cell[0] for cell in idle)
                 idle_meter = self.context_meter(idle, idle_text)[0]
                 occupied_in_meter = 0
-                for cell in idle_meter:
-                    if cell[1] != cell[2]:
+                for cell in meter:
+                    if cell[0] != " " or cell[1] != cell[2]:
                         break
                     occupied_in_meter += 1
                 remaining = len(meter) - occupied_in_meter
-                if prefix == "wave-50-truecolor":
-                    self.assertEqual(occupied_in_meter, 8, "Half the 16-cell meter must be occupied")
-                if prefix == "wave-high-truecolor":
-                    self.assertIn(remaining, (1, 2), "High occupancy must leave a very short tail")
+                # Prompt scaffolding and the reply both consume real tokens.
+                # Check each observed state against its own rounded percentage,
+                # rather than assuming a fixture string is exactly half-full.
+                for observed, label in [(meter, text), (idle_meter, idle_text)]:
+                    filled = sum(cell[0] == " " and cell[1] == cell[2] for cell in observed)
+                    reported = int(re.search(r"(\d+)%", label).group(1))
+                    self.assertLessEqual(abs(filled * 100 / len(observed) - reported),
+                                         100 / len(observed) + .5, label)
+                    self.assertTrue(all(cell[0] == "\ue0b1" and cell[1] != cell[2]
+                                        for cell in observed[filled:]), label)
                 unused = set(range(opening + 2 + occupied_in_meter, opening + 2 + len(meter)))
+                self.assertEqual(len(idle_meter), len(meter), text)
+                for index, cell in enumerate(meter):
+                    if index < occupied_in_meter:
+                        self.assertEqual(cell[0], " ", text)
+                        self.assertEqual(cell[1], cell[2], text)
+                        if color_mode == "truecolor":
+                            self.assertEqual(cell[1:3], ("67cbd0", "67cbd0"), text)
+                    else:
+                        self.assertEqual(cell[0], "\ue0b1", text)
+                        if color_mode == "truecolor":
+                            self.assertEqual(cell[2], "203f49", text)
                 for frame in frames:
                     for index, cell in enumerate(frame):
+                        self.assertEqual(cell[0], frames[0][index][0],
+                                         f"{prefix}: glyph {index} changed")
+                        self.assertEqual(cell[2], frames[0][index][2],
+                                         f"{prefix}: background {index} changed")
                         if index not in unused:
                             self.assertEqual(cell, frames[0][index],
                                              f"{prefix}: non-unused cell {index} changed")
@@ -568,9 +606,9 @@ class NativeStatusLineTests(NativeFixture):
                 else:
                     self.assertEqual(frames[16], frames[0], "Full cycle must close without a jump")
                     self.assertGreaterEqual(len(set(frames)), 12, f"{prefix} has too few visible frames")
-                    surfaces = {frame[index][2] for frame in frames for index in unused}
-                    self.assertGreaterEqual(len(surfaces), 4 if len(meter) == 4 else 6,
-                                            f"{prefix} collapsed to {surfaces}")
+                    foregrounds = {frame[index][1] for frame in frames for index in unused}
+                    self.assertGreaterEqual(len(foregrounds), 4 if len(meter) == 4 else 6,
+                                            f"{prefix} collapsed to {foregrounds}")
 
     def test_motion_disabled_does_not_change_context_colors_while_working(self):
         self.configure(motion=False)

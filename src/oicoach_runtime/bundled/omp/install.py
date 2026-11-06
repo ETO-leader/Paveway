@@ -22,10 +22,19 @@ VERSION = "18.16.0"
 COMMIT = "650f3a108229ee11bf68ba3377f4e8c3391cd424"
 BUN_VERSION = "1.4.4"
 RESOURCES = Path(__file__).resolve().parent
+PATCHES = ("statusline.patch", "conversation.patch", "composer.patch")
 BUN_URL = "https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-1.4.4.tgz"
 BUN_INTEGRITY = "FBU6T21NT+i+rESbi0Z8A8G5xN51c+WZ0v6pIjI6szSzOlqVNv64nf7FPnwNIyxKD1M7Wg5cEobLC/QbzCeLtA=="
 NATIVE_URL = "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-x64/-/pi-natives-linux-x64-18.16.0.tgz"
 NATIVE_INTEGRITY = "hd0RhNV6S1tDttmirwKXSZ91uiGN2XLF0qMNtpK1uY6Pav+ZUkyM4GGBdQST530IzrsUCn5E6zjkX98o0QPoBQ=="
+
+
+def patch_digest() -> str:
+    digest = hashlib.sha256()
+    for name in PATCHES:
+        digest.update(name.encode() + b"\0")
+        digest.update((RESOURCES / name).read_bytes())
+    return digest.hexdigest()
 
 
 def cache_root() -> Path:
@@ -69,7 +78,7 @@ def prepared_runtime() -> dict[str, str] | None:
     if not manifest.is_file():
         return None
     data = json.loads(manifest.read_text())
-    patch_hash = hashlib.sha256((RESOURCES / "statusline.patch").read_bytes()).hexdigest()
+    patch_hash = patch_digest()
     if data.get("commit") != COMMIT or data.get("patch") != patch_hash:
         return None
     if not Path(data["bun"]).is_file() or not (Path(data["source"]) / "packages/coding-agent/src/cli.ts").is_file():
@@ -91,8 +100,7 @@ def ensure_runtime(source: Path | None = None) -> dict[str, str]:
         bun = bun_dir / "bin/bun"
         if not bun.is_file():
             download_package(BUN_URL, BUN_INTEGRITY, bun_dir)
-        patch = RESOURCES / "statusline.patch"
-        patch_hash = hashlib.sha256(patch.read_bytes()).hexdigest()
+        patch_hash = patch_digest()
         target = root / f"source-{COMMIT[:12]}-{patch_hash[:12]}"
         if not target.is_dir():
             with tempfile.TemporaryDirectory(prefix="prepare-", dir=root) as temporary:
@@ -111,7 +119,8 @@ def ensure_runtime(source: Path | None = None) -> dict[str, str]:
                     run(["git", "remote", "add", "origin", "https://github.com/can1357/oh-my-pi.git"], cwd=tree)
                     run(["git", "fetch", "--depth=1", "origin", COMMIT], cwd=tree)
                     run(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=tree)
-                run(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=tree)
+                for name in PATCHES:
+                    run(["git", "apply", "--whitespace=nowarn", str(RESOURCES / name)], cwd=tree)
                 env = dict(os.environ)
                 env["PATH"] = str(bun.parent) + os.pathsep + env.get("PATH", "")
                 # Keep the host reproducible and independent of global Bun caches.

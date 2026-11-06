@@ -2,37 +2,69 @@
 
 Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动、模型选择和 Session。后台仍由原有 Runtime 队列与 RPC 执行，退出 UI 不停止 daemon。前后台使用独立物理 Session，不同时写同一个文件；通过配置快照、记忆和持久收件箱衔接。
 
+## 对话与输入区域
+
+Paveway 只调整原生消息的呈现与输入 chrome，不替换 Transcript、Markdown 或编辑器。用户消息使用紧凑的细紫色强调线；GPT 消息保留透明背景及原生 Markdown，以低调的 `GPT` 标识区分角色。普通消息之外的 Tool Calls、自定义事件、Recap、压缩摘要继续走 OMP 各自的渲染器，不按显示文字猜测角色。
+
+消息由 `pi-tui/chat/user-message.ts`、`assistant-message.ts` 渲染。OMP 18.16.0 的 `registerMessageRenderer()` 仅针对自定义消息，`registerAssistantTextRenderer()` 是正文替换接口，不适合添加稳定的消息级角色标记。因此随包 `conversation.patch` 增加显式启用的 `ui.setConversationPresentation()`，在原生渲染器内部选择紧凑样式，并保留 Assistant 的流式稳定前缀账本；未设置时使用 OMP 原样行为。
+
+输入区通过公开 `registerComposerStyle()` 注册 Paveway chrome，由公开 `setEditorComponent()` 创建原生 `CustomEditor` 子类。形状元数据参与原生内容宽度、光标、IME 标记和高度预算，不把编辑结果事后套框或位移。`composer.patch` 仅补充 `CustomEditor.composerStyle`，让宿主同步偏好时保留工厂明确选择的形状；普通编辑器不受影响。输入、粘贴、历史、补全、Unicode 编辑、滚动与键盘分发仍属于 OMP。
+
+配色限定在本次两个区域：`paveway-presentation.mjs` 提供品牌紫、边界紫灰、次要灰和正文浅灰白语义色，复用状态栏的品牌值；不改全局主题或青色运行状态。TrueColor 使用 RGB，256 色使用校准色号；`NO_COLOR`、`FORCE_COLOR=0`、`TERM=dumb` 时新增呈现不输出颜色。标记不要求 Nerd Font。输入提示只占用可用空白，窄屏、低高度或无足够空间时隐藏；快捷键取自宿主绑定，而不是写死默认值。
+
+补丁按 `statusline.patch`、`conversation.patch`、`composer.patch` 顺序应用。安装缓存由全部补丁的组合哈希确定；升级建立新的隔离源码目录，不覆写已运行的缓存、全局 OMP 或后台 Worker。保存草稿、退出并重新进入原生 UI 后生效。
+
+验证入口（仅使用隔离用户目录和本地 loopback 模型，不发送付费请求）：
+
+```bash
+PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_conversation.py -v
+```
+
+真实终端前端的中文 IME 预编辑／候选窗、鼠标选区和具体 Windows Terminal 字体栅格效果不能由 PTY 或渲染单测证明；原生编辑路径与 IME 光标标记保留，不把模拟按键通过写成这些体验的人工验收。
+
+实际 PTY 截图、复现命令与验收边界见 [对话与 Composer 验收记录](verification/conversation-composer/verification.md)。
+
 ## Windline 统一状态栏
 
 输入框下方只有一条状态栏。左右组件使用相同的独立 Bubble：每个胶囊都有自己的左右圆帽、实色背景和内边距，胶囊之间留一列状态栏背景，不再连接成 Powerline 色带。左组为 PAVEWAY、Profile／模型／Thinking 身份、Profile/task；右组为有信息的 Wakeup、非零 Inbox、低对比度会话费用及青色上下文胶囊。无事件与零未确认消息不常驻；工作目录、Git 分支和重复的 `OMP native` 也不常驻，原生路径／Git 功能没有删除。
 
-配色使用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量。模型工作时，仅上下文条未使用部分以既有 OMP 125ms 相位帧向右传播颜色波浪：16 阶青蓝调色板、位置错相、2 秒一个周期；True Color 与显式校准的 ANSI-256 色号共用相同运动模型。只剩 1–2 格未用容量时保持深青色静态，避免短条闪烁；已用部分始终保持实心青色，标签、圆帽和 Compaction 标记位置不参与动画。空闲、取消、切换会话和退出会停表／复位；关闭 `tui.motion` 后不产生状态栏动画刷新。真实 PTY GIF 与候选对照见 [Context 波浪验收](verification/windline-statusline/context-wave/verification.md)。在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
+配色沿用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量胶囊。Context 由连续实心已用区和固定位置的 Chevron 未用区组成；工作时只让箭头前景亮度随既有 OMP 125ms 相位向右流动，16 帧／2 秒一个周期，首尾亮度连续。箭头背景、占用填充、标签与圆帽不随动画改变；True Color 与校准的 ANSI-256 色号使用同一相位模型。只剩 1–2 格、占用未知、空闲或关闭动画时，仍显示完整静态箭头。布局与其他胶囊跨帧缓存，上下文数据、符号或宽度改变立即重算；不新增定时器或后台任务。空闲、取消、切换会话和退出沿用宿主停表／复位机制；在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
 
 ```yaml
 tui:
   motion: false
 ```
 
-模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时显示完整 `auto… (spec…)` 边界说明；其余情况在未使用容量中用 `│`／`┊` 标记自动压缩／预压缩起点，已使用区域不会被覆盖。容量条按预算使用 4／8／16 格；更窄时保留比例与能容纳的窗口信息。
+模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时显示完整 `auto… (spec…)` 边界说明；紧凑有色布局在未用区的对应箭头上用下划线标记预压缩、下划线加粗标记自动压缩，不以其他字符打断 Chevron，也不覆盖已用区。容量条按预算使用 4／8／16 格；0% 全部为箭头，100% 全部为实心，非零且未满时保留至少一格已用和未用区。更窄时先省装饰，保留百分比与能容纳的窗口信息，模型名为数值预留宽度。
 
-预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。圆帽风格与 OMP `symbolPreset` 解耦，默认 `auto` 下 Nerd 与 Unicode preset 都使用标准 Powerline 圆帽 ``／``，ASCII preset 使用 ASCII 括号。圆帽前景与自身胶囊背景一致，外部使用终端默认背景而不是固定夜色。若圆帽显示宽度不是单列则退回括号；该检查只用于布局预算，不推断字体或终端是否真的安装字形。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色下品牌紫、身份蓝、Workflow 蓝灰和 Context 青色使用校准的语义色，不被灰阶吞没。无色容量条用实线／虚线区分已用和未用。
+预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。默认 `auto` 下 Nerd 使用 Powerline 圆帽 ``／`` 与空心 Chevron ``（U+E0B1）；Unicode／ASCII 不假设字体包含私用区，使用括号和 `>`。现有显式 `powerline` 风格复用同一 Chevron 实现（ASCII／`TERM=dumb` 的箭头仍为 `>`），`plain` 使用可读回退；OMP 本身没有名为 `powerline` 的 `symbolPreset`。圆帽前景与自身胶囊背景一致，外部使用终端默认背景；胶囊内部始终有明确背景，深色与浅色主题下均不依赖默认背景维持箭头对比。圆帽或箭头不是单列时分别退回括号或 `>`；宽度检查不是字体检测。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色保留语义色与前景光流层次。无色已用区用连续 `━`（ASCII 为 `=`），未用区保留箭头，不输出 ANSI 动画或压缩边界样式。
 
 显式覆盖圆帽风格可在 Paveway 配置中设置：
 
 ```toml
 [statusline]
-# auto: Nerd/Unicode 用 Powerline，ASCII 用括号
+# auto: Nerd 用 Powerline，Unicode/ASCII 用括号与 >
 # powerline / plain: 强制对应风格
 cap_style = "auto"
 ```
 
 `PAVEWAY_STATUSLINE_CAPS=powerline|plain` 提供一次性的显式环境覆盖，优先于配置文件；两者都只表达用户选择，不做终端品牌或字体探测。
 
+Chevron 验证入口：
+
+```bash
+bun test tests/paveway-statusline.test.mjs
+PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_statusline.py -v
+```
+
+PTY 验证字符单元格、颜色、动画生命周期与 resize，不证明用户终端的 Powerline 字形、抗锯齿或字间接缝。旧 [Context 波浪验收](verification/windline-statusline/context-wave/verification.md) 只记录已替换的表现，不是 Chevron 的视觉验收。
+
+
 ### 可复现的宿主集成
 
-原生入口检查配置的 OMP 版本，然后在获取前台所有权之前准备隔离的 **18.16.0** 宿主（commit `650f3a108229ee11bf68ba3377f4e8c3391cd424`）。该版本原来的 `setFooter()` 是 no-op；随包补丁增加 `ui.setStatusLine(renderer)`，直接挂入现有 StatusLine，不换 Composer、不改 Transcript、Scrollback 或鼠标滚轮。OMP 自身在 Resize／全屏选择器中短暂借用 Alternate Screen 的行为保留，不强制常驻 Alternate Screen。
+原生入口检查配置的 OMP 版本，然后在获取前台所有权之前准备隔离的 **18.16.0** 宿主（commit `650f3a108229ee11bf68ba3377f4e8c3391cd424`）。该版本原来的 `setFooter()` 是 no-op；随包补丁增加 `ui.setStatusLine(renderer)`，直接挂入现有 StatusLine；对话与输入外观由上面的独立 opt-in 接口提供，不替换 Transcript、Scrollback、编辑逻辑或鼠标滚轮。OMP 自身在 Resize／全屏选择器中短暂借用 Alternate Screen 的行为保留，不强制常驻 Alternate Screen。
 
-安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,statusline.patch,omp}`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
+安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,statusline.patch,conversation.patch,composer.patch,omp}`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
 
 首次准备需要 Git、网络和 Linux x86-64 glibc；下载固定 Bun／原生插件并校验 SHA-512，JS 依赖使用上游冻结锁文件和独立依赖缓存。缓存默认在 `~/.cache/paveway/omp/18.16.0`，可用 `PAVEWAY_OMP_CACHE` 指定。后续启动离线复用已准备宿主。可以提前准备：
 

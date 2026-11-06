@@ -19,7 +19,7 @@ function truncateToWidth(value, width) {
     }
     return result;
 }
-function host(mode = "truecolor", symbols = "unicode") {
+function host(mode = "truecolor", symbols = "nerd") {
     const sep = symbols === "nerd"
         ? {powerlineCapLeft: "\ue0b6", powerlineLeft: "\ue0b0"}
         : {powerlineCapLeft: "", powerlineLeft: "▶"};
@@ -41,15 +41,17 @@ function renderer(state = paveway(), ui = host()) {
 // Decode terminal background state, so tests assert what a consumer sees, not source/escape spelling.
 function terminalCells(line) {
     const cells = [];
-    let background = "default", foreground = "default", bold = false;
+    let background = "default", foreground = "default", bold = false, underline = false;
     for (const token of line.matchAll(/\x1b\[([0-9;]*)m|([^\x1b])/gu)) {
         if (token[1] !== undefined) {
             const codes = token[1].split(";").map(Number);
             for (let index = 0; index < codes.length; index++) {
                 const code = codes[index];
-                if (code === 0) { background = "default"; foreground = "default"; bold = false; }
+                if (code === 0) { background = "default"; foreground = "default"; bold = false; underline = false; }
                 else if (code === 1) bold = true;
                 else if (code === 22) bold = false;
+                else if (code === 4) underline = true;
+                else if (code === 24) underline = false;
                 else if (code === 39) foreground = "default";
                 else if (code === 49) background = "default";
                 else if ((code === 48 || code === 38) && codes[index + 1] === 2) {
@@ -63,7 +65,7 @@ function terminalCells(line) {
             }
         } else {
             const text = token[2];
-            for (let index = 0; index < visibleWidth(text); index++) cells.push({text, background, foreground, bold});
+            for (let index = 0; index < visibleWidth(text); index++) cells.push({text, background, foreground, bold, underline});
         }
     }
     return cells;
@@ -82,16 +84,17 @@ function meterFromLine(line, label = "50% · 500K") {
 function bubblesFromLine(line, opening = "\ue0b6", closing = "\ue0b4") {
     const cells = terminalCells(line);
     const bubbles = [];
+    const isCap = (cell, glyph) => cell.text === glyph && cell.background === "default";
     for (let start = 0; start < cells.length; start++) {
-        if (cells[start].text !== opening) continue;
-        const end = cells.findIndex((cell, index) => index > start && cell.text === closing);
+        if (!isCap(cells[start], opening)) continue;
+        const end = cells.findIndex((cell, index) => index > start && isCap(cell, closing));
         expect(end).toBeGreaterThan(start);
-        expect(cells.slice(start + 1, end).some(cell => cell.text === opening)).toBe(false);
+        expect(cells.slice(start + 1, end).some(cell => isCap(cell, opening))).toBe(false);
         bubbles.push({start, end, left: cells[start], right: cells[end], inner: cells.slice(start + 1, end)});
         start = end;
     }
-    expect(cells.filter(cell => cell.text === opening)).toHaveLength(bubbles.length);
-    expect(cells.filter(cell => cell.text === closing)).toHaveLength(bubbles.length);
+    expect(cells.filter(cell => isCap(cell, opening))).toHaveLength(bubbles.length);
+    expect(cells.filter(cell => isCap(cell, closing))).toHaveLength(bubbles.length);
     return bubbles;
 }
 function expectIndependentBubbles(line, {opening = "\ue0b6", closing = "\ue0b4"} = {}) {
@@ -169,11 +172,11 @@ describe("real context capacity", () => {
         const roomy = renderer().render(160, snapshot());
         expect(plain(roomy)).toContain("auto85% (spec75%)");
         const compact = renderer().render(100, snapshot());
-        expect(plain(compact)).toContain("│");
+        expect(meterFromLine(compact).some(cell => cell.underline || cell.bold)).toBe(true);
         const markerLine = renderer(paveway({coach: "c".repeat(48)})).render(160, snapshot());
         expect(meterFromLine(markerLine)).toHaveLength(16);
-        expect(plain(markerLine)).toContain("┊");
-        expect(plain(markerLine)).toContain("│");
+        expect(meterFromLine(markerLine).some(cell => cell.underline)).toBe(true);
+        expect(meterFromLine(markerLine).some(cell => cell.bold)).toBe(true);
         const full = snapshot({context: {...snapshot().context, percent: 100}});
         const fullMeter = meterFromLine(renderer().render(160, full), "100% · 500K");
         expect(fullMeter).toHaveLength(16);
@@ -182,121 +185,137 @@ describe("real context capacity", () => {
     });
 });
 
-describe("motion belongs only to unused capacity", () => {
-    test("phase changes colors, never text, width, identity or occupied cells", () => {
+describe("fixed Chevron light flow", () => {
+    test("only unused foregrounds change; glyphs, backgrounds, labels and occupied cells stay fixed", () => {
         const line = renderer();
-        const first = line.render(160, snapshot({phase: 0}));
-        const later = line.render(160, snapshot({phase: 8}));
-        expect(plain(later)).toBe(plain(first));
-        expect(visibleWidth(later)).toBe(160);
-        const capCells = value => terminalCells(value).filter(cell => ["\ue0b6", "\ue0b4"].includes(cell.text))
-            .map(cell => [cell.text, cell.background]);
-        expect(capCells(later)).toEqual(capCells(first));
-        const before = terminalCells(first), after = terminalCells(later);
-        const end = plain(first).indexOf("50% · 500K") - 1;
-        const start = end - meterFromLine(first).length;
-        expect(after.slice(0, start + 8)).toEqual(before.slice(0, start + 8));
-        expect(after.slice(end)).toEqual(before.slice(end));
-        expect(after.slice(start + 8, end)).not.toEqual(before.slice(start + 8, end));
-        expect(line.render(160, snapshot({phase: 0}))).toBe(first);
-    });
-    test("256-color wave keeps multiple designed levels and the same direction", () => {
-        const line = createStatusLine(() => paveway(), host("256color", "unicode"));
-        const empty = phase => snapshot({phase, context: {...snapshot().context, percent: 0}});
-        const meter = phase => meterFromLine(line.render(160, empty(phase)), "0% · 500K");
-        const first = meter(0), later = meter(8);
-        expect(plain(line.render(160, empty(8)))).toBe(plain(line.render(160, empty(0))));
-        const levels = new Set(first.map(cell => cell.background));
-        expect(levels.size).toBeGreaterThanOrEqual(8);
-        expect(first).toHaveLength(16);
-        expect(later.map(cell => cell.background)).not.toEqual(first.map(cell => cell.background));
-        for (const surface of levels) {
-            expect(surface).toMatch(/^256:(23|24|30|31|37|38|44|45|80|116|152|159)$/u);
+        const frames = Array.from({length: 17}, (_, phase) => line.render(160, snapshot({phase})));
+        const first = terminalCells(frames[0]);
+        const end = plain(frames[0]).indexOf("50% · 500K") - 1;
+        const start = end - 16;
+        for (const rendered of frames) {
+            expect(plain(rendered)).toBe(plain(frames[0]));
+            expect(visibleWidth(rendered)).toBe(160);
+            const cells = terminalCells(rendered);
+            expect(cells.slice(0, start + 8)).toEqual(first.slice(0, start + 8));
+            expect(cells.slice(end)).toEqual(first.slice(end));
+            expect(cells.map(cell => cell.background)).toEqual(first.map(cell => cell.background));
+            expect(cells.slice(start + 8, end).every(cell => cell.text === "\ue0b1")).toBe(true);
         }
-        const crest = cells => {
-            const values = cells.map(cell => Number(cell.background.slice(4)));
-            return values.indexOf(Math.max(...values));
-        };
-        for (let phase = 0; phase < 16; phase++) {
-            expect(crest(meter(phase + 1))).toBe((crest(meter(phase)) + 1) % 16);
-        }
-        expect(meter(16)).toEqual(meter(0));
+        expect(frames[8]).not.toBe(frames[0]);
+        expect(frames[16]).toBe(frames[0]);
     });
-    test("a traveling crest moves left to right and wraps exactly", () => {
-        const cells = phase => contextMeterCells(0, 16, snapshot({phase}));
-        const crest = phase => {
-            const values = cells(phase).map(cell => luminance(cell.background));
-            return values.indexOf(Math.max(...values));
-        };
-        for (let phase = 0; phase < 16; phase++) {
-            expect(crest(phase + 1)).toBe((crest(phase) + 1) % 16);
-            // The color arriving at a cell is the color that was one cell to its left.
-            for (let x = 0; x < 16; x++) {
-                expect(cells(phase + 1)[x].background).toBe(cells(phase)[(x + 15) % 16].background);
+    for (const mode of ["truecolor", "256color"]) {
+        test(`${mode} light packet travels right with a soft periodic seam`, () => {
+            const line = renderer(paveway(), host(mode));
+            const meter = phase => meterFromLine(line.render(160,
+                snapshot({phase, context: {...snapshot().context, percent: 0}})), "0% · 500K");
+            const first = meter(0);
+            const crest = cells => cells.findIndex(cell => cell.foreground === first[0].foreground);
+            expect(first.every(cell => cell.text === "\ue0b1")).toBe(true);
+            expect(new Set(first.map(cell => cell.foreground)).size).toBeGreaterThanOrEqual(5);
+            for (let phase = 0; phase < 16; phase++) {
+                const before = meter(phase), after = meter(phase + 1);
+                expect(crest(after)).toBe((crest(before) + 1) % 16);
+                expect(after.map(cell => cell.foreground)).toEqual(
+                    before.map((_, index) => before[(index + 15) % 16].foreground));
+                expect(after.map(cell => cell.background)).toEqual(first.map(cell => cell.background));
+                if (mode === "truecolor") {
+                    for (let x = 0; x < 16; x++) {
+                        expect(Math.abs(luminance(after[x].foreground) - luminance(before[x].foreground))).toBeLessThan(20);
+                    }
+                }
             }
-        }
-        expect(cells(16)).toEqual(cells(0));
-        expect(new Set(cells(0).map(cell => cell.background)).size).toBeGreaterThanOrEqual(8);
-    });
-    test("wave is anchored to the unused region and short tails stay static", () => {
+            expect(meter(16)).toEqual(first);
+            expect(meter(-1)).toEqual(meter(15));
+        });
+    }
+    test("the packet is anchored to unused capacity and short tails never blink", () => {
         for (const percent of [1, 9, 50, 75, 99]) {
             for (const phase of [0, 4, 8, 17, 31]) {
                 const unused = contextMeterCells(percent, 16, snapshot({phase})).filter(cell => !cell.occupied);
                 const origin = contextMeterCells(0, unused.length, snapshot({phase}));
-                expect(unused.map(cell => cell.background)).toEqual(origin.map(cell => cell.background));
+                expect(unused).toEqual(origin);
             }
         }
-        for (const percent of [90, 99]) {
-            const moving = contextMeterCells(percent, 16, snapshot({working: true, phase: 1})).filter(cell => !cell.occupied);
-            expect(moving.length).toBeLessThanOrEqual(2);
-            expect(moving.every(cell => cell.background === "#203f49")).toBe(true);
-            expect(contextMeterCells(percent, 16, snapshot({working: true, phase: 9}))).toEqual(
-                contextMeterCells(percent, 16, snapshot({working: true, phase: 1})));
+        for (const percent of [90, 99, 100]) {
+            expect(contextMeterCells(percent, 16, snapshot({phase: 9}))).toEqual(
+                contextMeterCells(percent, 16, snapshot({phase: 1})));
         }
-        expect(contextMeterCells(100, 16, snapshot({working: true, phase: 7}))
-            .every(cell => cell.occupied && cell.background === "#67cbd0")).toBe(true);
     });
-    test("four-cell capacity keeps a crest and moves it in whole cells", () => {
+    test("compact four-cell flow retains a visible crest throughout the cycle", () => {
         const cells = phase => contextMeterCells(0, 4, snapshot({phase}));
         const crest = phase => {
-            const values = cells(phase).map(cell => luminance(cell.background));
+            const values = cells(phase).map(cell => luminance(cell.foreground));
             return values.indexOf(Math.max(...values));
         };
         for (let phase = 0; phase < 16; phase += 4) {
             expect(crest(phase + 4)).toBe((crest(phase) + 1) % 4);
         }
         for (let phase = 0; phase < 16; phase++) {
-            expect(luminance(cells(phase)[crest(phase)].background)).toBeGreaterThan(150);
+            expect(luminance(cells(phase)[crest(phase)].foreground)).toBeGreaterThan(170);
         }
         expect(cells(16)).toEqual(cells(0));
     });
-    test("compaction labels and markers stay fixed while unused colors move", () => {
-        const line = renderer();
-        const first = line.render(160, snapshot({phase: 0}));
-        const later = line.render(160, snapshot({phase: 7}));
-        expect(plain(later)).toBe(plain(first));
-        expect(meterFromLine(later).map(cell => cell.text)).toEqual(meterFromLine(first).map(cell => cell.text));
-        expect(meterFromLine(later)).not.toEqual(meterFromLine(first));
-    });
     for (const lifecycle of [{working: false}, {motion: false}, {working: false, motion: false}]) {
-        test(`idle/reduced-motion is static: ${JSON.stringify(lifecycle)}`, () => {
+        test(`idle/reduced-motion keeps complete static chevrons: ${JSON.stringify(lifecycle)}`, () => {
             const line = renderer();
             const first = line.render(120, snapshot({...lifecycle, phase: 0}));
             expect(line.render(120, snapshot({...lifecycle, phase: 18}))).toBe(first);
-            const surface = terminalCells(first)[plain(first).indexOf("50% · 500K")].background;
-            const cells = contextMeterCells(50, 16, snapshot(lifecycle));
-            expect(cells.slice(8).every(cell => cell.background === surface)).toBe(true);
-            const renderedMeter = meterFromLine(first);
-            const occupied = contextMeterCells(50, renderedMeter.length).filter(cell => cell.occupied).length;
-            expect(renderedMeter.slice(occupied).length).toBeGreaterThan(0);
-            expect(renderedMeter.slice(occupied).every(cell => cell.background === surface)).toBe(true);
+            const meter = meterFromLine(first);
+            const unused = meter.filter(cell => cell.text === "\ue0b1");
+            expect(unused.length).toBeGreaterThan(0);
+            expect(unused.every(cell => cell.foreground !== cell.background)).toBe(true);
+            expect(meter.filter(cell => cell.text === " ").every(cell => cell.background === "#67cbd0")).toBe(true);
         });
     }
-    test("running to idle to reduced-motion changes no occupied cells", () => {
+    test("live context updates and resize invalidate layout without waiting for a tick", () => {
         const line = renderer();
-        const occupied = options => meterFromLine(line.render(160, snapshot(options))).slice(0, 8);
-        expect(occupied({working: false})).toEqual(occupied({working: true, phase: 10}));
-        expect(occupied({motion: false, phase: 29})).toEqual(occupied({working: true, phase: 10}));
+        for (const [percent, occupied] of [[0, 0], [1, 1], [50, 8], [99, 15], [100, 16], [0, 0]]) {
+            const context = {...snapshot().context, percent};
+            const meter = meterFromLine(line.render(160, snapshot({phase: 4, context})), `${percent}% · 500K`);
+            expect(meter.filter(cell => cell.text === " ")).toHaveLength(occupied);
+            expect(meter.filter(cell => cell.text === "\ue0b1")).toHaveLength(16 - occupied);
+        }
+        for (const width of [40, 80, 160, 100, 24, 160]) {
+            const rendered = line.render(width, snapshot({phase: 4}));
+            expect(visibleWidth(rendered)).toBe(width);
+            expect(plain(rendered)).toContain("50%");
+        }
+    });
+    test("symbol/color/ratio matrix keeps single-cell positions and resets all styling", () => {
+        for (const [preset, capStyle, glyph] of [["nerd", "auto", "\ue0b1"],
+            ["unicode", "powerline", "\ue0b1"], ["unicode", "auto", ">"], ["ascii", "auto", ">"]]) {
+            for (const mode of ["truecolor", "256color", "none"]) {
+                const line = createStatusLine(() => paveway({inbox: 0, wakeup: null}), host(mode, preset), {capStyle});
+                for (const percent of [0, 1, 50, 99, 100]) {
+                    for (const width of [8, 20, 40, 64, 80, 120, 160, 240]) {
+                        const state = snapshot({context: {...snapshot().context, percent}});
+                        const first = line.render(width, state);
+                        const later = line.render(width, {...state, phase: 7});
+                        expect(visibleWidth(first)).toBe(width);
+                        expect(plain(first)).toContain(`${percent}%`);
+                        expect(plain(later)).toBe(plain(first));
+                        expect(plain(first)).not.toMatch(/[\r\n\ufffd]/u);
+                        if (mode === "none") expect(first).not.toContain("\x1b");
+                        if (mode === "256color") expect(first).not.toContain(";2;");
+                        if (preset === "ascii") expect(plain(first)).toMatch(/^[\x20-\x7e]*$/u);
+                        const arrows = terminalCells(first).filter(cell => cell.text === glyph);
+                        expect(arrows.every(cell => visibleWidth(cell.text) === 1)).toBe(true);
+                        if (width >= 80 && percent < 100) expect(arrows.length).toBeGreaterThan(0);
+                        if (percent === 100) expect(arrows).toEqual([]);
+                        const tail = terminalCells(first + "Z").at(-1);
+                        expect(tail).toEqual({text: "Z", background: "default", foreground: "default", bold: false, underline: false});
+                    }
+                }
+            }
+        }
+    });
+    test("a wide-reported Chevron falls back without changing its one-cell budget", () => {
+        const ui = host();
+        ui.visibleWidth = value => visibleWidth(value) + (plain(value).match(/\ue0b1/gu) ?? []).length;
+        const rendered = renderer(paveway(), ui).render(160, snapshot());
+        expect(visibleWidth(rendered)).toBe(160);
+        expect(meterFromLine(rendered).slice(8).every(cell => cell.text === ">")).toBe(true);
     });
 });
 
@@ -361,14 +380,13 @@ describe("independent responsive bubbles", () => {
         for (const surface of semantic) expect(surfaces).toContain(surface);
         expect(new Set(semantic).size).toBe(4);
     });
-    test("Unicode preset uses Powerline caps without trusting host separators", () => {
+    test("Unicode fallback has no private-use glyphs, even when host separators do", () => {
         const ui = host("truecolor", "unicode");
         ui.theme.sep = {powerlineCapLeft: "\ue0b6", powerlineLeft: "\ue0b0"};
         const rendered = renderer(paveway(), ui).render(160, snapshot());
-        expect(rendered).toContain("\ue0b6");
-        expect(rendered).toContain("\ue0b4");
-        expect(rendered).not.toMatch(/[◖◗\ue0b0\ue0b2]/u);
-        expectIndependentBubbles(rendered);
+        expect(plain(rendered)).not.toMatch(/[\uE000-\uF8FF]/u);
+        expect(meterFromLine(rendered).slice(8).every(cell => cell.text === ">")).toBe(true);
+        expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
     });
     test("wide measured Powerline glyphs fall back to complete ASCII pairs", () => {
         const ui = host();
@@ -378,30 +396,25 @@ describe("independent responsive bubbles", () => {
         expect(visibleWidth(rendered)).toBe(100);
         expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
     });
-    for (const symbols of ["nerd", "unicode"]) {
-        test(`${symbols} preset defaults to standard Powerline caps`, () => {
-            const rendered = renderer(paveway(), host("truecolor", symbols)).render(120, snapshot());
-            expect(rendered).toContain("\ue0b6");
-            expect(rendered).toContain("\ue0b4");
-            expect(rendered).not.toMatch(/[◖◗]/u);
+    for (const [symbols, capStyle] of [["nerd", "auto"], ["unicode", "powerline"]]) {
+        test(`${symbols}/${capStyle} uses the same single-cell Powerline Chevron`, () => {
+            const rendered = createStatusLine(() => paveway(), host("truecolor", symbols), {capStyle}).render(160, snapshot());
+            expect(meterFromLine(rendered).slice(8).map(cell => cell.text).join("")).toBe("\ue0b1".repeat(8));
             expectIndependentBubbles(rendered);
         });
     }
-    test("symbol preset changes never restore the half-circle fallback", () => {
+    test("live symbol changes invalidate cached glyphs and preserve cell budgets", () => {
         let symbols = "nerd";
-        const ui = host("truecolor", symbols);
+        const ui = host();
         ui.theme.getSymbolPreset = () => symbols;
         const line = createStatusLine(() => paveway(), ui);
-        const nerd = line.render(120, snapshot());
+        const nerd = line.render(160, snapshot());
         symbols = "unicode";
-        const unicode = line.render(120, snapshot());
-        expect(plain(unicode)).toBe(plain(nerd));
-        expect(unicode).toContain("\ue0b6");
-        expect(unicode).not.toMatch(/[◖◗]/u);
-        expectIndependentBubbles(unicode);
-        // A reloaded renderer with the live setting chooses the same caps.
-        const reloaded = renderer(paveway(), host("truecolor", "unicode")).render(120, snapshot());
-        expect(plain(reloaded)).toBe(plain(unicode));
+        const unicode = line.render(160, snapshot());
+        expect(plain(unicode)).not.toMatch(/[\uE000-\uF8FF]/u);
+        expect(meterFromLine(unicode).slice(8).every(cell => cell.text === ">")).toBe(true);
+        expect(visibleWidth(unicode)).toBe(visibleWidth(nerd));
+        expectIndependentBubbles(unicode, {opening: "(", closing: ")"});
     });
     test("explicit plain removes Powerline PUA even with the Unicode preset", () => {
         const rendered = createStatusLine(() => paveway(), host("truecolor", "unicode"),
@@ -436,16 +449,6 @@ describe("independent responsive bubbles", () => {
             expect(rendered).not.toMatch(/[\uE000-\uF8FF]/u);
             expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
         } finally { delete process.env.PAVEWAY_STATUSLINE_CAPS; }
-    });
-    test("256-color and True Color choose the same caps and layout at every width", () => {
-        for (const width of [80, 100, 120, 160]) {
-            const truecolor = renderer(paveway(), host("truecolor", "unicode")).render(width, snapshot());
-            const indexed = renderer(paveway(), host("256color", "unicode")).render(width, snapshot());
-            expect(plain(indexed)).toBe(plain(truecolor));
-            expect(visibleWidth(indexed)).toBe(width);
-            expectIndependentBubbles(indexed);
-            expectIndependentBubbles(truecolor);
-        }
     });
     test("ASCII preset uses symmetric parentheses and plain instruments", () => {
         const rendered = renderer(paveway(), host("truecolor", "ascii")).render(100, snapshot());
@@ -500,6 +503,20 @@ describe("independent responsive bubbles", () => {
         const error = bubblesFromLine(failed).find(item => item.inner.some(cell => cell.text === "!"));
         expect(error.inner[0].background).toBe("#633c4b");
         expect(error.inner.find(cell => cell.text === "!").foreground).toBe("#f5dce0");
+    });
+    test("absent and unknown wakeups remain distinct after layout caching", () => {
+        let state = paveway({wakeup: null});
+        const line = createStatusLine(() => state, host());
+        expect(plain(line.render(160, snapshot()))).not.toContain("Wakeup");
+        for (const wakeup of [undefined, {}, null, undefined]) {
+            state = {...state, wakeup};
+            for (let phase = 0; phase < 2; phase++) {
+                const text = plain(line.render(160, snapshot({phase})));
+                expect(text.includes("Wakeup ?")).toBe(wakeup !== null);
+            }
+        }
+        expect(plain(line.render(1, snapshot()))).toBe("!");
+        expect(plain(line.render(1, snapshot({phase: 7})))).toBe("!");
     });
     test("undefined and uncertain wakeups are warning bubbles, not an invented countdown", () => {
         for (const wakeup of [undefined, {}, {unavailable: false, running: false}]) {
