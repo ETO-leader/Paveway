@@ -86,7 +86,8 @@ class NativeFixture(unittest.TestCase):
     @staticmethod
     def is_prompt_request(body, text):
         """Match a submitted turn, not auxiliary requests carrying its history."""
-        messages = body.get("messages", [])
+        messages = [message for message in body.get("messages", []) if not (
+            isinstance(message.get("content"), str) and message["content"].startswith("Runtime Memory Context —"))]
         if not messages or messages[-1].get("role") != "user":
             return False
         content = messages[-1].get("content")

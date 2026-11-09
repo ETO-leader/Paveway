@@ -192,7 +192,7 @@ def update(config, workflow_id, expected_revision, operation, **values):
 
 
 def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, *, base=None, builtin_skills=(), skill_directories=()):
-    """Snapshot before spawn: later UI edits cannot alter an in-flight round."""
+    """Freeze launch settings; compatibility-only memory_context is not system data."""
     validate(settings)
     from .builtin_skills import resolve
     packaged = resolve(list(builtin_skills))
@@ -227,9 +227,9 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
         documents.update((name, skill.markdown) for name, skill in packaged.items())
     from .store import canonical_json
     from .prompt_composer import compose, compose_template, manifest
-    system_text = compose(settings, base=base, memory_context=memory_context)
+    system_text = compose(settings, base=base)
     write("system.md", system_text)
-    template_text = compose_template(settings, base=base, memory_context=memory_context)
+    template_text = compose_template(settings, base=base)
     write("prompt-manifest.json", canonical_json(manifest(settings, system_text, base=base, template=template_text)))
     if template_text:
         arguments += ["--system-prompt-template", write("system-template.md", template_text)]

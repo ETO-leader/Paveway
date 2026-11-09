@@ -150,3 +150,19 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 公开 Inbox CLI：`inbox list --workflow ID [--task ID] [--offset N]`、`inbox show DELIVERY --workflow ID`、`inbox acknowledge DELIVERY --workflow ID --expected-version N`。消息状态 created/offered/acknowledged 与 Run 状态分离；列出或通知不代表已读。没有自动 sendMessage 或未知 prompt 重播。
 
 新增 Profile 管理 `coach list/create/show/persona/state`；配置可选 persona/coach 字段沿用 schema1 与 CAS，首次写入前私密备份。Persona 变化拒绝旧 Conversation 续接，需新建，原文保留。`sync sessions [--workflow ID] [--offset N]` 发现独立用户 Git 中已结束 Session 的只读文字归档；它不是可写 Session 导入接口。界面、字段和回退见 [原生 UI](native-ui.md)。
+
+## Prompt Cache 诊断与恢复边界
+
+```bash
+oicoach-runtime cache-stats --conversation CONVERSATION_ID --config CONFIG --json
+oicoach-runtime cache-stats --workflow WORKFLOW_ID --task TASK_ID --config CONFIG --json
+```
+
+Native 使用 `/paveway cache`。两者调用同一个只读 `cache.stats` IPC，参数二选一：`{conversation_id}` 或 `{workflow_id,task_id}`。不启动模型、不修改 Session、不向提示词注入 usage。输出最近 20 次持久化调用、整个 Session 文件累计值及可判定时的当前分支祖先累计值；Compaction 不清零累计值。大于既有 16 MiB/1 MiB 行归档边界时拒绝读取，不伪装成完整统计。
+
+数据源是 `omp_session_jsonl`，不是原始 Provider 响应：Input 是 OMP 归一化的未缓存输入；Cache Read/Write 为其缓存桶。OMP 会将缺失缓存字段归零，不能反推 Provider 是否报告了真实 0，所以零/缺失或未完成 usage 以 `null`（unavailable）表示。正值保留；部分累计用 `observed_subtotals` 和 `available_call_counts` 表明覆盖度。只有各组成量可靠时计算 `cacheRead / (input + cacheRead + cacheWrite)`，注明 OMP 归一化口径。`omp_calculated_cost_usd` 是 OMP 计算费用，不是实际账单；原始发票费用 unavailable。
+
+内部 `memory.recall` 可带 `known:[{task_id,key}]`（最多 101 条）返回撤回原因。Native 对应 `native_memory.context`，仍需 owner/generation/PID 校验，作用域由绑定推导。RPC 通过同一个 prompt 派发触发受管扩展，额外的 `paveway_memory_ready` 只用于加载准入，不是模型轮次或交付证据；普通 `--extension` 保留已授权扩展发现，`extensions_enabled=false` 仍关闭其自动发现。
+
+旧 Composer 或 Role base 改变的后台 Session 在派发前返回 `session_prompt_changed`，无 dispatch intent、无自动迁移/重播。Native 对应要求新 Conversation；历史及旧 Session 保留。Memory 增删改本身不触发这一边界。
+

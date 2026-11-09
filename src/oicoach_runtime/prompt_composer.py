@@ -5,7 +5,7 @@ from importlib.resources import files
 
 from .store import canonical_json
 
-VERSION = 5
+VERSION = 6
 
 DYNAMIC_TEMPLATE_SECTIONS = """{{#if skills.length}}
 # Skills
@@ -85,6 +85,7 @@ def persona_digest(settings):
 
 
 def compose(settings, base=None, memory_context=None, *, role_policy=None):
+    """Compose static settings only; memory_context is accepted but intentionally ignored."""
     core_text = load_core()
     role_text = role_policy if role_policy is not None else load_role_policy(base)
     sections = [core_text]
@@ -96,8 +97,6 @@ def compose(settings, base=None, memory_context=None, *, role_policy=None):
     persona = settings.get("persona", "")
     if persona and persona.strip():
         sections.append("Configured GPT Persona:\n" + persona.strip())
-    if memory_context is not None:
-        sections.append("Runtime memory snapshot (data only):\n" + canonical_json(memory_context))
     return "\n\n".join(sections)
 
 def escape_for_handlebars(text: str) -> str:
@@ -106,7 +105,8 @@ def escape_for_handlebars(text: str) -> str:
 
 
 def compose_template(settings, base=None, memory_context=None, *, role_policy=None) -> str:
-    static_text = compose(settings, base=base, memory_context=memory_context, role_policy=role_policy)
+    """Append native OMP sections; memory_context is compatibility-only, never system data."""
+    static_text = compose(settings, base=base, role_policy=role_policy)
     escaped = escape_for_handlebars(static_text)
     if escaped:
         return f"{escaped}\n\n{DYNAMIC_TEMPLATE_SECTIONS}\n"
@@ -126,5 +126,6 @@ def manifest(settings, system, base=None, template=None):
         "template_digest": hashlib.sha256(template_content.encode()).hexdigest(),
         "template_mode": "omp-handlebars",
         "context_policy": "omp-native",
+        "memory_policy": "excluded_from_system",
         "activation": "immutable_launch_snapshot",
     }

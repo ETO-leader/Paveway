@@ -176,12 +176,11 @@ def _run_owned(config, config_path, workflow, lease, lock):
     for option in ("tools", "skills", "rules"):
         if not getattr(config.agent, option + "_enabled"):
             argv += ["--no-" + option]
-    memory = request(config.server.socket_path, "memory.recall", {"workflow_id": workflow_id, "task_id": task_id}) if workflow.memory_enabled else None
     directories = ()
     if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
         from .omp_config import skill_directories
         directories = asyncio.run(skill_directories(config, str(workflow.workspace), environment))
-    argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled, memory,
+    argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
                      base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories)
     overlay = root / "native.yml"
     overlay.write_text(json.dumps({"autoResume": False, "startup": {"setupWizard": False}}))

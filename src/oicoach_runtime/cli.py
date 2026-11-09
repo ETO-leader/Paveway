@@ -308,6 +308,12 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("--task", required=name == "messages")
             child.add_argument("--query", default="")
             child.add_argument("--offset", type=int, default=0)
+    cache = commands.add_parser("cache-stats", help="Inspect persisted OMP cache usage and calculated costs without starting a model")
+    common(cache)
+    selector = cache.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--conversation", help="Native conversation ID")
+    selector.add_argument("--workflow", help="Workflow ID; requires --task")
+    cache.add_argument("--task", help="Background task ID paired with --workflow")
     vjudge = commands.add_parser("vjudge", help="VJudge authentication and session management")
     vjudge_commands = vjudge.add_subparsers(dest="operation", required=True)
     auth_child = vjudge_commands.add_parser("auth", help="VJudge authentication actions")
@@ -384,6 +390,14 @@ def parser() -> argparse.ArgumentParser:
 
 
 def remote_arguments(args):
+    if args.command == "cache-stats":
+        if args.conversation is not None:
+            if args.task is not None:
+                raise RuntimeContractError("--task cannot be combined with --conversation")
+            return "cache.stats", {"conversation_id": args.conversation}
+        if args.task is None:
+            raise RuntimeContractError("--workflow requires --task")
+        return "cache.stats", {"workflow_id": args.workflow, "task_id": args.task}
     if args.command in ("memory", "history"):
         if args.command == "history" and args.operation == "show":
             return "history.show", {"run_id": args.identifier}

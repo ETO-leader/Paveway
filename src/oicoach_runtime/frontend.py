@@ -72,7 +72,7 @@ class Frontend:
         return record
 
     def begin(self, workflow_id, task_id, workspace, conversation_id=None, new=False, settings=None,
-              workflow_revision="", workflow_instructions="", inference_preference=None):
+              workflow_revision="", workflow_instructions="", inference_preference=None, role_base=None):
         validate_id(workflow_id)
         validate_id(task_id)
         if type(new) is not bool or (new and conversation_id):
@@ -83,7 +83,7 @@ class Frontend:
         conversation_id = conversation_id or str(uuid.uuid4())
         validate_id(conversation_id)
         owner_token = secrets.token_hex(32)
-        from .prompt_composer import settings_digest, persona_digest
+        from .prompt_composer import VERSION, settings_digest, persona_digest
         settings = settings or {"schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": []}
         with self.store.transaction() as db:
             old = self.store.metadata(PREFIX + conversation_id)
@@ -95,6 +95,9 @@ class Frontend:
                 raise ConflictError("Persona changed; start --new (or a new task). The old conversation and original settings remain intact")
             if old and old.get("workflow_revision", workflow_revision) != workflow_revision:
                 raise ConflictError("Workflow revision changed; start --new and preserve the old conversation")
+            if old and old.get("session_file") and (
+                    old.get("composer_version") != VERSION or old.get("role_base") != role_base):
+                raise ConflictError("Prompt architecture/role changed; start --new. Legacy sessions and history are preserved")
             key = hashlib.sha256(canonical_json([workflow_id, task_id, conversation_id]).encode()).hexdigest()
             directory = self.store.config.state_dir / "native" / key
             record = {"contract_version": 1, "conversation_id": conversation_id, "workflow_id": workflow_id,
@@ -110,6 +113,7 @@ class Frontend:
             record["background_task_id"] = "native-" + hashlib.sha256(conversation_id.encode()).hexdigest()
             record.update(configuration_digest=settings_digest(settings), persona_digest=persona_digest(settings),
                           workflow_revision=workflow_revision,
+                          composer_version=VERSION, role_base=role_base,
                           inference_preference=inference_preference,
                           inference_changed=old is None or old.get("inference_preference") != inference_preference,
                           last_opened_at=self.store.timestamp(),

@@ -821,9 +821,11 @@ class RuntimeTests(unittest.TestCase):
         for session in (self.config.state_dir / "sessions").glob("*/session.json"):
             prompts = json.loads(session.read_text())["prompts"]
             for prompt in prompts:
-                self.assertEqual(prompt["memory"]["location"], "system_prompt.runtime_memory_snapshot")
-                system = next((session.parent / "customizations" / prompt["run_id"]).glob("system.md")).read_text()
-                context = system.split("Runtime memory snapshot (data only):\n", 1)[1]
+                self.assertEqual(prompt["memory"]["location"], "conversation.paveway-memory-context")
+                directory = session.parent / "customizations" / prompt["run_id"]
+                system = (directory / "system.md").read_text()
+                self.assertNotIn("MEMORY_PRIVATE_MARKER", system)
+                context = json.dumps(json.loads((directory / "memory-context.json").read_text())["snapshot"])
                 self.assertIn("MEMORY_PRIVATE_MARKER", context)
                 self.assertNotIn("OTHER_TASK_PRIVATE", context)
                 if prompt["task_id"] == "fresh-task":

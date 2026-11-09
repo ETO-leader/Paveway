@@ -28,6 +28,7 @@ class SessionConflictError(ConflictError):
         "session_blocked": "当前任务的会话需要修复。输入 /new 创建新任务继续，或用 /events 查看旧任务状态；原会话和历史保留。",
         "session_workflow_changed": "当前任务绑定的工作目录或 workflow 版本已改变。输入 /new 创建使用当前配置的新任务，或恢复原来的绑定配置。",
         "session_file_missing": "当前任务绑定的会话文件已丢失。请恢复会话备份，或输入 /new 创建新任务；不会悄悄替换原会话。",
+        "session_prompt_changed": "当前会话使用旧提示词架构，或角色绑定已改变。输入 /new 或使用新 task/session 继续；旧会话与历史完整保留，不自动迁移或重播。",
     }
 
     def __init__(self, code):

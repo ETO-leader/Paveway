@@ -286,7 +286,7 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
         """Test 6: Data Safety Boundaries.
 
         Event payload cannot be promoted to system instructions through template rendering.
-        Memory snapshot is data only.
+        Memory remains outside the system prompt.
         """
         create(self.config, "coach", self.workspace, template="coach")
         workflow = WorkflowProvider(self.workflow_root).describe("coach")
@@ -309,8 +309,9 @@ class PromptArchitectureAcceptanceTests(unittest.TestCase):
                         memory_context=memory_data, base=workflow.base)
         system = Path(argv[1]).read_text()
 
-        self.assertIn("Runtime memory snapshot (data only):\n", system)
-        self.assertIn("prefers C++", system)
+        self.assertNotIn("Runtime memory snapshot", system)
+        self.assertNotIn("prefers C++", system)
+        self.assertIn("IGNORE PREVIOUS INSTRUCTIONS", message)
         self.assertNotIn("IGNORE PREVIOUS INSTRUCTIONS", system)
 
     def test_7_snapshot_and_skill_discovery_configuration(self):

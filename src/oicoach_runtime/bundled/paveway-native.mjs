@@ -1,10 +1,11 @@
 // Thin native OMP extension. Runtime remains the owner of durable operations.
-import {createHash, randomUUID} from "node:crypto";
+import {createHash} from "node:crypto";
 import {lstatSync, readFileSync, readSync, writeFileSync, writeSync} from "node:fs";
-import {createConnection} from "node:net";
+import {runtimeRequest} from "./paveway-runtime.mjs";
 import {registerWakeups} from "./paveway-wakeup.mjs";
 import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
+import {registerMemoryContext} from "./paveway-memory-context.mjs";
 import {loadNativeTui} from "./paveway-settings.mjs";
 import {createStatusLine} from "./paveway-statusline.mjs";
 import {installComposer} from "./paveway-composer.mjs";
@@ -15,35 +16,6 @@ function stop() {
     finally { process.kill(process.pid, "SIGKILL"); }
 }
 
-export function runtimeRequest(path, command, args = {}) {
-    return new Promise((resolve, reject) => {
-        const info = lstatSync(path);
-        if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077))
-            return reject(new Error("Runtime socket is not private"));
-        const id = randomUUID();
-        const frame = JSON.stringify({api_version: 1, id, command, arguments: args}) + "\n";
-        if (Buffer.byteLength(frame) > 131072) return reject(new Error("Request too large"));
-        const socket = createConnection(path);
-        let data = Buffer.alloc(0);
-        const fail = () => { socket.destroy(); reject(new Error("Runtime unavailable; no automatic retry")); };
-        socket.setTimeout(10000, fail);
-        socket.on("error", fail);
-        socket.on("connect", () => socket.write(frame));
-        socket.on("data", chunk => {
-            data = Buffer.concat([data, chunk]);
-            if (data.length > 131072) return fail();
-            if (!data.includes(10)) return;
-            socket.destroy();
-            try {
-                const reply = JSON.parse(data.toString("utf8"));
-                if (reply.api_version !== 1 || reply.id !== id) return fail();
-                if (reply.error) return reject(new Error(reply.error.code + ": " + reply.error.message));
-                resolve(reply.result);
-            } catch { fail(); }
-        });
-        socket.on("end", () => { if (!data.includes(10)) fail(); });
-    });
-}
 
 export default async function paveway(pi) {
     try {
@@ -84,6 +56,13 @@ export default async function paveway(pi) {
         };
         const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference, publishStatus);
         registerMemory(pi, config, bound, runtimeRequest);
+        registerMemoryContext(pi, {
+            scope: {workflow_id: config.workflow_id, task_id: config.task_id},
+            enabled: config.memory_enabled,
+            recall: known => runtimeRequest(config.socket_path, "native_memory.context",
+                {...bound(), parameters: {known}}),
+            fail: stop,
+        });
         const sessionReady = async (_event, ctx) => {
             try {
                 // OMP emits spawned-session hooks in the same extension host.
@@ -134,6 +113,12 @@ export default async function paveway(pi) {
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
             if (!admitted) stop();
             try {
+                if (args.trim() === "cache") {
+                    const usage = await runtimeRequest(config.socket_path, "cache.stats",
+                        {conversation_id: config.conversation_id});
+                    ctx.ui.notify(JSON.stringify(usage, null, 2), "info");
+                    return;
+                }
                 if (args.trim() && args.trim() !== "status") {
                     await management.run(args, ctx);
                     return;

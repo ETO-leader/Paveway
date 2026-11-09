@@ -50,6 +50,22 @@ class Runtime:
         self.runtime_build_id = runtime_build_id()
 
     def dispatch_api(self, command, raw):
+        if command == "cache.stats":
+            from .cache_usage import session_usage
+            from .frontend import Frontend
+            arguments(raw, ("conversation_id", "workflow_id", "task_id"))
+            if set(raw) == {"conversation_id"}:
+                record = Frontend(self.store).get(raw["conversation_id"])
+            elif set(raw) == {"workflow_id", "task_id"}:
+                record = self.store.binding_for_task(raw["task_id"], raw["workflow_id"])
+            else:
+                raise RuntimeContractError("Choose a conversation or workflow/task")
+            if not record.get("session_file"):
+                return {"source": "omp_session_jsonl", "status": "unavailable", "reason": "session_not_persisted"}
+            path = Path(record["session_file"])
+            if path.is_symlink() or not path.resolve().is_relative_to(Path(record["session_dir"]).resolve()):
+                raise ConflictError("OMP session escaped its assigned directory")
+            return session_usage(path, record.get("session_id"))
         if command.startswith("native_memory.") or command == "native_history.search":
             from .frontend import Frontend, alive
             arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
@@ -70,6 +86,9 @@ class Runtime:
             if not self.provider.describe(record["workflow_id"]).memory_enabled:
                 raise RuntimeContractError("Paveway memory tools are disabled in this workflow")
             operation = command.removeprefix("native_memory.")
+            if operation == "context":
+                arguments(values, ("known",), ("known",))
+                return Memory(self.store).context(record["workflow_id"], record["task_id"], **values)
             contracts = {"list": (("scope", "query", "offset"), ()), "show": (("scope", "key"), ("key",)),
                 "put": (("scope", "key", "title", "content", "expected_version", "kind", "pinned"), ("key", "title", "content", "expected_version")),
                 "delete": (("scope", "key", "expected_version"), ("key", "expected_version"))}
@@ -132,6 +151,7 @@ class Runtime:
                 instructions = ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
                                       workflow_revision=workflow.revision, workflow_instructions=instructions,
+                                      role_base=workflow.base,
                                       inference_preference={key: workflow.customization.get("inference", {}).get(key) or getattr(self.config.agent, key)
                                                             for key in ("model", "thinking")})
             contracts = {
@@ -181,7 +201,7 @@ class Runtime:
                 "show": (("workflow_id", "task_id", "key"), ("workflow_id", "key")),
                 "list": (("workflow_id", "task_id", "query", "offset"), ("workflow_id",)),
                 "delete": (("workflow_id", "task_id", "key", "expected_version"), ("workflow_id", "key", "expected_version")),
-                "recall": (("workflow_id", "task_id"), ("workflow_id", "task_id")),
+                "recall": (("workflow_id", "task_id", "known"), ("workflow_id", "task_id")),
             }
             operation = command.removeprefix("memory.")
             if operation not in contracts:
@@ -319,6 +339,14 @@ class Runtime:
                     raise RuntimeContractError("Workflow revision changed after native scheduling; inspect the event and start a new conversation")
                 binding_event = {**event, "task_id": trusted["binding_task_id"]}
             binding = self.store.bind(binding_event, workflow)
+            policy_key = "prompt-policy:v1:" + binding["binding_id"]
+            policy = self.store.metadata(policy_key)
+            from .prompt_composer import VERSION
+            current_policy = {"composer_version": VERSION, "base": workflow.base}
+            if binding["session_file"] and policy != current_policy:
+                raise SessionConflictError("session_prompt_changed")
+            with self.store.transaction() as db:
+                self.store._set_metadata(db, policy_key, current_policy)
             from .prompt_composer import persona_digest
             persona_key = "persona-binding:v1:" + binding["binding_id"]
             original_persona = self.store.metadata(persona_key)
@@ -330,6 +358,8 @@ class Runtime:
             binding["customization"] = workflow.customization
             binding["builtin_skills"] = workflow.builtin_skills
             binding["base"] = workflow.base
+            binding["memory_enabled"] = workflow.memory_enabled
+            binding["memory_scope"] = {"workflow_id": event["workflow_id"], "task_id": event["task_id"]}
             envelope = {
                 "event_id": event["event_id"], "run_id": run_id, "workflow_id": event["workflow_id"],
                 "task_id": event["task_id"], "dedupe_key": event["dedupe_key"],
@@ -345,7 +375,7 @@ class Runtime:
             if workflow.memory_enabled:
                 binding["memory_context"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
                 envelope["memory"] = {key: value for key, value in binding["memory_context"].items() if key != "notes"}
-                envelope["memory"]["location"] = "system_prompt.runtime_memory_snapshot"
+                envelope["memory"]["location"] = "conversation.paveway-memory-context"
                 envelope["available_tools"][0]["commands"].extend(["memory", "history"])
             binding["workflow_instructions"], prompt = workflow.render_parts("wake", envelope)
             if trusted:
@@ -480,6 +510,10 @@ class Runtime:
                 raise ConflictError("Bound workflow or workspace changed")
             if binding["session_file"] and not Path(binding["session_file"]).is_file():
                 raise ConflictError("Bound session is missing; restart cannot create a replacement")
+            from .prompt_composer import VERSION
+            if binding["session_file"] and self.store.metadata("prompt-policy:v1:" + binding["binding_id"]) != {
+                    "composer_version": VERSION, "base": workflow.base}:
+                raise SessionConflictError("session_prompt_changed")
             binding["customization"] = workflow.customization
             binding["builtin_skills"] = workflow.builtin_skills
             binding["base"] = workflow.base

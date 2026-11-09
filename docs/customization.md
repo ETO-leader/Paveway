@@ -28,8 +28,8 @@ CLI 的 --model/--thinking 至少给一项；传空串清除该覆盖。选择�
 
 编辑时先选模式，再输入正文：
 - 系统提示词采用分层与动态组装架构：
-  1. **Paveway 静态四层 Prompt**：Layer 1 Paveway Core（基础身份、执行约束、工具与记忆契约）、Layer 2 内置角色策略（如 oi-coach 教学原则）、Layer 3 用户自定义（追加 Prompt 与 Persona）、Layer 4 动态 Runtime Context（记忆快照等）。
-  2. **OMP 原生 Handlebars 动态系统模板**：Paveway 四层指令经字面值安全转义后，与 OMP 原生动态占位符（Skills、Rules、工具目录 `toolInventory` / `toolInfo`、`xd://` 设备指引等）组装为 Handlebars 模板源 `system-template.md`，并在启动时唯一通过 OMP 原生 `--system-prompt-template` 传递。彻底停用旧的 `--system-prompt` 入口。
+  1. **稳定系统前缀**：Paveway Core → Role Policy → User System Prompt → Persona。Memory、Run ID、时间、会话 ID 和统计不进入这些层。
+  2. **OMP 原生 Handlebars 系统模板**：稳定前缀经字面值安全转义后，与 OMP 原生动态占位符（Skills、Rules、工具目录 `toolInventory` / `toolInfo`、`xd://` 设备指引等）组装为 `system-template.md`，唯一通过 `--system-prompt-template` 传递。OMP 继续拥有工具 Schema、MCP、eval prelude 与尾部 project-context 的实际组装。
   3. **Skill 按需读取**：系统提示词只提供 `<skills>` 索引（名称与用途描述），不全量展开正文；模型按需通过 `skill://<name>` 读取。
   4. **MCP Server Instructions 自动加载**：由 OMP 原生根据连接的服务动态挂载与加载。
   5. **MCP 工具详细说明按需发现**：通过原生 `# xd:// Tool Devices` 指引模型通过 `read xd://` 查阅工具文档与 Schema，通过 `write xd://...` 调用工具，不在 Core 或静态提示词中固定硬编码工具 Schema。
@@ -38,10 +38,10 @@ CLI 的 --model/--thinking 至少给一项；传空串清除该覆盖。选择�
 Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Esc 取消。正文最多 64 KiB，中文按 UTF-8 字节计算。原样保存 `$`、`{{...}}`、反斜线等特殊文字；在生成系统模板时自动进行字面值安全转义，不会被 OMP 误当作 Handlebars 模板代码执行。正文留空表示仅使用 Paveway 默认框架指令。
 `/prompt show` 显示用户自定义的部分，不冒充当前 OMP 原生系统提示词的完整展开。`/prompt reset` 确认后清空自定义部分，不删除 Skill，也不改动 OMP 原有项目/全局配置。
 
-`event.md` 仍由外部 workflow 管理。旧 manifest 缺省 `instructions_in_system=false` 时，规则及 envelope 保持原来的用户消息通道；新建 coach 使用 true，将可信模板的静态前缀放入系统 prompt，仅将事件 JSON（mode、用户输入和 Runtime 数据）作为用户消息。模板必须恰有一个位于末尾的 `${event_json}`；在替换前拆分，payload 不会提升为系统指令。此功能确保自定义文本通过 OMP 原生系统模板机制放进真正的系统提示词，不把普通 ask 正文或事件 payload 提升成系统指令。
+`event.md` 仍由外部 workflow 管理，不修改用户模板。事件模板及 envelope 走用户消息通道；兼容字段 `instructions_in_system` 不把事件内容提升为系统指令。Core/Role 仅来自包资源，User Prompt/Persona 来自受信配置。实际 Memory 消息顺序及压缩恢复见 [记忆契约](memory.md)。
 0.18.0 起，每回合的原生系统提示都会附加命名约定：自称 GPT 或使用第一人称，不以 coaching title 自称。此约定在默认提示、append、replace 及 Skill/工具停用时都生效，保存在本轮 system.md 中；不会改写 event.md、用户保存的自定义正文、Skill 或旧历史。UI 的 `/prompt show` 仍只显示用户自定义部分。
 
-系统 prompt 包含及时维护记忆及按需检索要求；启用记忆时追加当轮有界 `Runtime memory snapshot` 数据段。2026-10-30 起按用户要求取消固定 10k token 限制，使用 OMP 原生窗口及压缩；记忆快照仅受 IPC 传输字节边界约束。用户保存的自定义正文和 Skill 不变。
+系统 prompt 只包含稳定的记忆维护/信任契约；动态记忆通过 OMP 消息入口追加，不因笔记增删改而变化。`compose/compose_template/snapshot` 的可选 `memory_context` 参数为调用兼容保留，但不再参与系统文本。Composer v6 对旧 Memory-in-System 会话使用明确的新会话边界，保留旧历史。2026-10-30 起继续使用 OMP 原生窗口及压缩，无固定 10k token 限制。
 
 ## 用户 Skill
 

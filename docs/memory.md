@@ -68,9 +68,15 @@ kind 是 `fact | preference | summary | hypothesis`。这是笔记作者的分�
 
 ## 自动注入和模型维护
 
-仅在 workflow.memory_enabled=true 时，派发前读取有效笔记，注入系统 prompt 的 `Runtime memory snapshot` 数据段。快照含 `contract_version=1`、`notes`、`truncated`、`token_limit=null`、`byte_limit=65536` 和可信度说明。pinned、task 专属及近期更新优先，最多检查 101 条候选；超出 64 KiB 传输边界的笔记可经 list/show 查询。单条笔记仍最多 4096 UTF-8 字节，记忆总库不受快照大小限制。
+启用 `workflow.memory_enabled` 时，Native 与 Scheduler RPC 共用 `paveway-memory-context.mjs`，在 OMP `before_agent_start` 中读取当前有效笔记。System Prompt **不再包含 Memory**。选择仍按 pinned、task 专属、近期更新排序，最多检查 101 条候选，正文快照保持 64 KiB 传输边界；单条仍最多 4096 UTF-8 字节，超出选择范围的笔记通过 list/show 查询，记忆库总量不裁剪。
 
-原生前台的系统提示词快照在启动 OMP 时生成，不会随着数据库变化实时替换。启动后保存的新笔记立即可用 `paveway_memory_list/show` 查询，写入工具结果也进入当前回合；重新启动原生进程时加载新的系统快照。后台每次派发仍读取当时有效笔记。应区分“数据库已保存”“当前启动快照已包含”和“模型已调用工具读到”，不能把三者视为同一件事。自动维护依赖 GPT 实际调用工具，不是把每句话自动转换为笔记。
+会话证据来自 OMP 当前分支中实际接受的 `paveway-memory-context` 消息及 Compaction `preserveData.pavewayMemory`，不是发送前写入数据库的“已交付”标记。逐条比较 `(workflow_id, task_id, key)`、版本和内容指纹；重排候选列表不触发重复注入。只追加新增/变化笔记及明确的 `deleted`、`expired`、`outside_current_context` 撤回；后者表示退出有界上下文，不是假称数据库删除。停用 Memory 时追加一次 `memory_disabled` 撤回，不读取禁用的记忆库。
+
+OMP 将 custom 消息持久化在本轮输入之后，但默认会将它转成 developer 角色。因此受管 `context` 投影从首次发送起始终将 Memory 映射为 **user 级历史数据，并排在对应输入之前**；不改写磁盘原文。后续请求对既有消息使用完全相同的投影，Memory 更新只扩展已发送前缀。原始用户输入、图片、事件 Run ID/时间仍属于原有消息通道。写入工具结果在当前回合可见，外部记忆更改在下一次顶层输入准备时刷新，不声称每个 tool continuation 都重新查询数据库。
+
+Compaction 保存压缩时点的精确有界 Memory 状态。出站上下文在摘要后恢复未被保留尾部覆盖的笔记，并带当前 key 目录，否定摘要中的旧/失效副本。恢复块固定到该 Compaction 和其 `firstKeptEntryId`：后续增改不会改变这个早先块；后续更正/撤回仍优先。不向磁盘历史每轮追加完整快照，也不无条件载入完整记忆库。新一轮、重启、取消及重试均从 OMP 实际分支重新判断，不把 hook 准备结果当提交；消息留在已接受上下文不等于 Provider 已处理它。
+
+Composer v6 是明确的恢复边界：旧的 Memory-in-System 会话或 Role base 改变时，Native 要求 `--new`，后台返回 `session_prompt_changed`，需使用新 task/session。旧文件、旧对话和归档原样保留，不自动改写、导入或重播。Persona 原有绑定继续有效；用户 Prompt、Skill、MCP 配置仍走既有 OMP 更新语义，变更本身可能使缓存前缀失效。
 
 ### 对话窗口
 

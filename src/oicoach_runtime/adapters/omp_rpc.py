@@ -27,12 +27,14 @@ class OmpRpc:
         self.exit_task = None
         self.process_fd = None
         self.stop_task = None
+        self.memory_run_id = None
 
     async def start(self, binding, run_id):
         if self.process is not None and self.process.returncode is None:
             raise AgentError("Managed process is already running")
         self.exit_event.clear()
         self.stop_task = None
+        self.memory_run_id = None
         agent = self.config.agent
         from ..proxy import child_environment
         environment = dict(child_environment(self.config_path), OICOACH_RUN_ID=run_id,
@@ -60,8 +62,19 @@ class OmpRpc:
         if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
             skill_directories = await self._skill_directories(binding["workspace"], environment)
         argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
-            binding.get("memory_context"), base=binding.get("base"),
-            builtin_skills=builtin_skills, skill_directories=skill_directories))
+            base=binding.get("base"), builtin_skills=builtin_skills, skill_directories=skill_directories))
+        if "memory_enabled" in binding or binding.get("memory_context") is not None:
+            self.memory_run_id = run_id
+            from importlib.resources import files
+            from pathlib import Path
+            data = Path(binding["session_dir"]) / "customizations" / run_id / "memory-context.json"
+            scope = binding.get("memory_scope") or {"workflow_id": binding["workflow_id"], "task_id": binding["task_id"]}
+            data.write_text(json.dumps({"scope": scope, "snapshot": binding.get("memory_context"), "run_id": run_id,
+                "enabled": binding.get("memory_enabled", binding.get("memory_context") is not None),
+                "socket_path": self.config.server.socket_path if binding.get("memory_enabled") and self.config_path else None}))
+            data.chmod(0o600)
+            environment["PAVEWAY_MEMORY_DATA"] = str(data)
+            argv.extend(["--extension", str(files("oicoach_runtime").joinpath("bundled/paveway-rpc-memory.mjs"))])
         for option in ("tools", "extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
@@ -138,6 +151,7 @@ class OmpRpc:
     async def ready(self):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.config.agent.startup_timeout_seconds
+        rpc_ready, memory_ready = False, self.memory_run_id is None
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -151,15 +165,21 @@ class OmpRpc:
             if frame.get("type") == "ready":
                 if type(frame.get("protocolVersion")) is not int or frame["protocolVersion"] != 1:
                     raise AgentError("Unsupported OMP RPC protocol version", code="agent_protocol_version_unsupported")
+                rpc_ready = True
+            elif frame.get("type") == "paveway_memory_ready":
+                if type(frame.get("contractVersion")) is not int or frame["contractVersion"] != 1 or frame.get("runId") != self.memory_run_id:
+                    raise AgentError("Runtime Memory extension identity mismatch", code="agent_memory_ready_invalid")
+                memory_ready = True
+            if rpc_ready and memory_ready:
                 return
-            # Old optional extension frames are not a prerequisite or proof of
-            # native readiness. OMP owns context sizing and compaction now.
+            # Legacy context-window guard frames remain optional. Memory
+            # integration admission is separate from OMP's context sizing.
 
     async def state(self):
         return await self.command("get_state")
 
     async def command(self, command):
-        if command not in ("get_state", "get_messages", "get_last_assistant_text"):
+        if command not in ("get_state", "get_messages", "get_last_assistant_text", "get_session_stats"):
             raise AgentError("Unsupported adapter inspection command")
         request_id = str(uuid.uuid4())
         await self.write({"id": request_id, "type": command})

@@ -51,6 +51,7 @@ def main():
     parser.add_argument("--system-prompt-template", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--extension", type=Path)
+    parser.add_argument("--trusted-extension", type=Path)
     for option in ("tools", "extensions", "skills", "rules"):
         parser.add_argument("--no-" + option, action="store_true")
     args = parser.parse_args()
@@ -73,6 +74,9 @@ def main():
         session_file.write_text(json.dumps(session))
     settled = True
     exit_code = 0
+    if os.environ.get("PAVEWAY_MEMORY_DATA") and startup_mode != "missing-memory-ready":
+        memory_launch = json.loads(Path(os.environ["PAVEWAY_MEMORY_DATA"]).read_text())
+        emit({"type": "paveway_memory_ready", "contractVersion": 1, "runId": memory_launch["run_id"]})
     if startup_mode in ("normal", "guard-first"):
         emit({"type": "paveway_context_ready", "tokenLimit": 10000})
         emit({"type": "ready", "protocolVersion": 1}, split=True)
