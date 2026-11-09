@@ -52,7 +52,7 @@ class QueueConfig:
 
 @dataclass(frozen=True)
 class StatusLineConfig:
-    # auto: Powerline for nerd, parentheses for unicode/ascii. powerline/plain are explicit.
+    # auto: Powerline for nerd/unicode, ASCII parentheses for ascii. powerline/plain are explicit.
     cap_style: str = "auto"
 
 

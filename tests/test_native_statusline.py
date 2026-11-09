@@ -212,7 +212,7 @@ class NativeStatusLineTests(NativeFixture):
             create(self.config, self.workflow, self.root / "workspace", "example")
 
     def cap_glyphs(self, preset, cap_style):
-        style = cap_style if cap_style != "auto" else ("powerline" if preset == "nerd" else "plain")
+        style = cap_style if cap_style != "auto" else ("plain" if preset == "ascii" else "powerline")
         return ("(", ")") if style == "plain" else ("\ue0b6", "\ue0b4")
 
     def assert_bubbles(self, terminal, preset=None, cap_style=None):
@@ -282,20 +282,44 @@ class NativeStatusLineTests(NativeFixture):
                 terminal.close()
         self.assertEqual(caps["nerd"], caps["unicode"])
 
-    def test_unicode_default_and_explicit_plain_caps(self):
-        for cap_style in ("auto", "plain"):
-            with self.subTest(cap_style=cap_style):
-                self.configure(preset="unicode", cap_style=cap_style)
+    def test_unicode_auto_restores_powerline_caps_and_chevrons(self):
+        for color_mode in ("truecolor", "256color", "none"):
+            with self.subTest(color_mode=color_mode):
+                self.configure(preset="unicode", color_mode=color_mode)
                 terminal = Terminal(self)
-                terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
-                self.assert_bubbles(terminal)
-                text = terminal.screen.display[terminal.status()]
-                self.assertIn("(", text)
-                self.assertIn(")", text)
-                self.assertNotIn("\ue0b6", text)
-                self.assertNotIn("\ue0b4", text)
-                terminal.capture(f"unicode-{cap_style}-plain")
-                terminal.close()
+                try:
+                    terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+                    for columns in (80, 100, 120, 160):
+                        if columns != terminal.screen.columns:
+                            terminal.resize(columns)
+                        self.assert_bubbles(terminal)
+                        cells = terminal.cells()
+                        text = "".join(cell[0] for cell in cells)
+                        self.assertTrue(text.startswith("\ue0b6 PAVEWAY \ue0b4"), text)
+                        self.assertEqual(cells[-1][0], "\ue0b4", text)
+                        meter, opening, _closing = self.context_meter(cells, text)
+                        self.assertIn("\ue0b1", [cell[0] for cell in meter], text)
+                        if color_mode != "none":
+                            surface = "203f49" if color_mode == "truecolor" else "005f5f"
+                            self.assertEqual(cells[opening][1:3], (surface, "default"))
+                            self.assertEqual(cells[-1][1:3], (surface, "default"))
+                            self.assertTrue(all(cell[2] == surface for cell in meter if cell[0] == "\ue0b1"))
+                        terminal.capture(f"unicode-auto-{color_mode}-{columns}")
+                finally:
+                    terminal.close()
+
+    def test_explicit_plain_caps_remove_powerline_glyphs(self):
+        self.configure(preset="unicode", cap_style="plain")
+        terminal = Terminal(self)
+        terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
+        self.assert_bubbles(terminal)
+        text = terminal.screen.display[terminal.status()]
+        self.assertIn("(", text)
+        self.assertIn(")", text)
+        self.assertNotRegex(text, "[\ue000-\uf8ff]")
+        self.assertIn(">", text)
+        terminal.capture("unicode-explicit-plain")
+        terminal.close()
 
     def test_ascii_preset_defaults_to_ascii_caps(self):
         self.configure(preset="ascii")
@@ -310,7 +334,7 @@ class NativeStatusLineTests(NativeFixture):
     def test_color_modes_keep_powerline_caps(self):
         for color_mode in ("256color", "truecolor"):
             with self.subTest(color_mode=color_mode):
-                self.configure(preset="unicode", color_mode=color_mode, cap_style="powerline")
+                self.configure(preset="unicode", color_mode=color_mode)
                 terminal = Terminal(self)
                 terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
                 self.assert_bubbles(terminal)
@@ -332,8 +356,9 @@ class NativeStatusLineTests(NativeFixture):
         hidden = socket.with_name(socket.name + ".statusline-fault")
         socket.rename(hidden)
         try:
-            terminal.until(lambda: "Wakeup !" in terminal.screen.display[terminal.status()]
-                           and "Inbox ?" in terminal.screen.display[terminal.status()], timeout=15)
+            terminal.until(lambda: (row := terminal.status()) is not None
+                           and "Wakeup !" in terminal.screen.display[row]
+                           and "Inbox ?" in terminal.screen.display[row], timeout=15)
             terminal.capture("runtime-unavailable-160")
             self.assert_bubbles(terminal)
             text = terminal.screen.display[terminal.status()]
@@ -343,8 +368,9 @@ class NativeStatusLineTests(NativeFixture):
             self.assertTrue(any(cell[1] == "f5dce0" for cell in error_cells), text)
         finally:
             hidden.rename(socket)
-        terminal.until(lambda: "Wakeup !" not in terminal.screen.display[terminal.status()]
-                       and "Inbox ?" not in terminal.screen.display[terminal.status()], timeout=15)
+        terminal.until(lambda: (row := terminal.status()) is not None
+                       and "Wakeup !" not in terminal.screen.display[row]
+                       and "Inbox ?" not in terminal.screen.display[row], timeout=15)
         terminal.capture("runtime-recovered-160")
 
     def test_background_running_wakeup_is_observed_from_runtime(self):
@@ -413,7 +439,7 @@ class NativeStatusLineTests(NativeFixture):
         self.assertEqual(terminal.raw.count(b"\x1b[?1049h"), terminal.raw.count(b"\x1b[?1049l"))
 
     def test_working_frames_cancel_idle_and_inbox_are_real(self):
-        self.configure(context_window=16000)
+        self.configure(context_window=16000, preset="unicode")
         release = threading.Event()
         self.addCleanup(release.set)
         def slow_response(_body):
@@ -482,7 +508,7 @@ class NativeStatusLineTests(NativeFixture):
         return cells[opening + 2:label.start() - 1], opening, closing
 
     def capture_chevron_frames(self, release, prefix, columns, window, color_mode, motion, prompt):
-        self.configure(context_window=window, color_mode=color_mode, motion=motion)
+        self.configure(context_window=window, color_mode=color_mode, motion=motion, preset="unicode")
         release.clear()
         terminal = Terminal(self, columns=columns)
         try:

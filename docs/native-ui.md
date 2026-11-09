@@ -37,13 +37,13 @@ tui:
 
 模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时显示完整 `auto… (spec…)` 边界说明；紧凑有色布局在未用区的对应箭头上用下划线标记预压缩、下划线加粗标记自动压缩，不以其他字符打断 Chevron，也不覆盖已用区。容量条按预算使用 4／8／16 格；0% 全部为箭头，100% 全部为实心，非零且未满时保留至少一格已用和未用区。更窄时先省装饰，保留百分比与能容纳的窗口信息，模型名为数值预留宽度。
 
-预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。默认 `auto` 下 Nerd 使用 Powerline 圆帽 ``／`` 与空心 Chevron ``（U+E0B1）；Unicode／ASCII 不假设字体包含私用区，使用括号和 `>`。现有显式 `powerline` 风格复用同一 Chevron 实现（ASCII／`TERM=dumb` 的箭头仍为 `>`），`plain` 使用可读回退；OMP 本身没有名为 `powerline` 的 `symbolPreset`。圆帽前景与自身胶囊背景一致，外部使用终端默认背景；胶囊内部始终有明确背景，深色与浅色主题下均不依赖默认背景维持箭头对比。圆帽或箭头不是单列时分别退回括号或 `>`；宽度检查不是字体检测。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色保留语义色与前景光流层次。无色已用区用连续 `━`（ASCII 为 `=`），未用区保留箭头，不输出 ANSI 动画或压缩边界样式。
+预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。默认 `auto` 沿用原有胶囊契约：Nerd 与 Unicode 均使用 Powerline 圆帽 ``／``，Context 未用区使用空心 Chevron ``（U+E0B1）；仅 ASCII 默认使用括号和 `>`。现有显式 `powerline` 风格复用同一 Chevron 实现（ASCII／`TERM=dumb` 的箭头仍为 `>`），`plain` 使用括号和 `>`；`TERM=dumb` 禁用颜色并使用 ASCII 仪表文字，不改变圆帽风格选择。OMP 本身没有名为 `powerline` 的 `symbolPreset`。圆帽前景与自身胶囊背景一致，外部使用终端默认背景；胶囊内部始终有明确背景，深色与浅色主题下均不依赖默认背景维持箭头对比。圆帽或箭头不是单列时分别退回括号或 `>`；宽度检查只用于布局预算，不检测字体覆盖率。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色保留语义色与前景光流层次。无色已用区用连续 `━`（ASCII 为 `=`），未用区保留箭头，不输出 ANSI 动画或压缩边界样式。
 
 显式覆盖圆帽风格可在 Paveway 配置中设置：
 
 ```toml
 [statusline]
-# auto: Nerd 用 Powerline，Unicode/ASCII 用括号与 >
+# auto: Nerd/Unicode 用 Powerline 圆帽与 ，ASCII 用括号与 >
 # powerline / plain: 强制对应风格
 cap_style = "auto"
 ```
@@ -56,6 +56,8 @@ Chevron 验证入口：
 bun test tests/paveway-statusline.test.mjs
 PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_statusline.py -v
 ```
+
+单测宿主默认使用 Unicode，并显式覆盖 Nerd／ASCII、配置与环境覆盖的优先级，以及非 Context 胶囊跨相位的字符、颜色和位置。原生 PTY 的 `test_unicode_auto_restores_powerline_caps_and_chevrons` 使用 Unicode + `auto`，检查 TrueColor、ANSI-256、无色模式和 80／100／120／160 列的圆帽、Chevron 与默认外部背景；光流矩阵也使用 Unicode + `auto`，避免显式 `powerline` 掩盖默认行为回归。
 
 PTY 验证字符单元格、颜色、动画生命周期与 resize，不证明用户终端的 Powerline 字形、抗锯齿或字间接缝。旧 [Context 波浪验收](verification/windline-statusline/context-wave/verification.md) 只记录已替换的表现，不是 Chevron 的视觉验收。
 

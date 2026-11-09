@@ -148,12 +148,12 @@ function palette(mode) {
 }
 
 // Precedence: explicit environment override, explicit Paveway setting, then the
-// symbol preset. Unicode does not promise Powerline font coverage.
+// symbol-preset default. Only ASCII defaults to plain; this is not font detection.
 function capStyle(ui, configured) {
     for (const value of [process.env.PAVEWAY_STATUSLINE_CAPS, configured]) {
         if (value === "powerline" || value === "plain") return value;
     }
-    return ui.theme?.getSymbolPreset?.() === "nerd" ? "powerline" : "plain";
+    return ui.theme?.getSymbolPreset?.() === "ascii" ? "plain" : "powerline";
 }
 
 function chevronGlyph(ui, style) {

@@ -19,7 +19,7 @@ function truncateToWidth(value, width) {
     }
     return result;
 }
-function host(mode = "truecolor", symbols = "nerd") {
+function host(mode = "truecolor", symbols = "unicode") {
     const sep = symbols === "nerd"
         ? {powerlineCapLeft: "\ue0b6", powerlineLeft: "\ue0b0"}
         : {powerlineCapLeft: "", powerlineLeft: "▶"};
@@ -124,13 +124,84 @@ function expectIndependentBubbles(line, {opening = "\ue0b6", closing = "\ue0b4"}
 
 let environment;
 beforeEach(() => {
-    environment = Object.fromEntries(["NO_COLOR", "TERM", "COLORTERM", "FORCE_COLOR"].map(key => [key, process.env[key]]));
-    delete process.env.NO_COLOR; delete process.env.FORCE_COLOR;
+    environment = Object.fromEntries(["NO_COLOR", "TERM", "COLORTERM", "FORCE_COLOR", "PAVEWAY_STATUSLINE_CAPS"].map(key => [key, process.env[key]]));
+    delete process.env.NO_COLOR; delete process.env.FORCE_COLOR; delete process.env.PAVEWAY_STATUSLINE_CAPS;
     process.env.TERM = "xterm-256color"; process.env.COLORTERM = "";
 });
 afterEach(() => {
     for (const [key, value] of Object.entries(environment)) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+});
+
+describe("pre-Chevron capsule defaults", () => {
+    for (const [preset, opening, closing, chevron] of [
+        ["unicode", "\ue0b6", "\ue0b4", "\ue0b1"],
+        ["nerd", "\ue0b6", "\ue0b4", "\ue0b1"],
+        ["ascii", "(", ")", ">"],
+    ]) {
+        test(`${preset} + auto preserves the original capsule pair`, () => {
+            const rendered = createStatusLine(() => paveway(), host("truecolor", preset),
+                {capStyle: "auto"}).render(160, snapshot());
+            expect(plain(rendered)).toStartWith(`${opening} PAVEWAY ${closing}`);
+            expectIndependentBubbles(rendered, {opening, closing});
+        });
+        test(`${preset} + auto uses the matching Context Chevron`, () => {
+            const rendered = createStatusLine(() => paveway(), host("truecolor", preset),
+                {capStyle: "auto"}).render(160, snapshot());
+            const meter = meterFromLine(rendered, preset === "ascii" ? "50% / 500K" : "50% · 500K");
+            expect(meter.slice(8).map(cell => cell.text).join("")).toBe(chevron.repeat(8));
+        });
+    }
+    for (const [configured, override, opening, closing, chevron] of [
+        ["plain", undefined, "(", ")", ">"],
+        ["powerline", undefined, "\ue0b6", "\ue0b4", "\ue0b1"],
+        ["powerline", "plain", "(", ")", ">"],
+        ["plain", "powerline", "\ue0b6", "\ue0b4", "\ue0b1"],
+    ]) {
+        test(`${configured} setting with ${override ?? "no"} environment override`, () => {
+            if (override) process.env.PAVEWAY_STATUSLINE_CAPS = override;
+            const rendered = createStatusLine(() => paveway(), host(), {capStyle: configured})
+                .render(160, snapshot({context: {...snapshot().context, autoCompact: false}}));
+            expect(plain(rendered)).toStartWith(`${opening} PAVEWAY ${closing}`);
+            expectIndependentBubbles(rendered, {opening, closing});
+            expect(meterFromLine(rendered).slice(8).map(cell => cell.text).join("")).toBe(chevron.repeat(8));
+        });
+    }
+    for (const preset of ["unicode", "nerd", "ascii"]) {
+        for (const mode of ["truecolor", "256color", "none"]) {
+            test(`${preset}/${mode} keeps every non-Context capsule and its position fixed across phases`, () => {
+                const line = renderer(paveway(), host(mode, preset));
+                const opening = preset === "ascii" ? "(" : "\ue0b6";
+                const closing = preset === "ascii" ? ")" : "\ue0b4";
+                for (const width of [64, 80, 100, 120, 160, 240]) {
+                    const state = snapshot({context: {...snapshot().context, autoCompact: false}});
+                    const first = line.render(width, state);
+                    const bubbles = bubblesFromLine(first, opening, closing);
+                    expect(bubbles.length).toBeGreaterThan(1);
+                    const nonContext = bubbles.slice(0, -1);
+                    expect(bubbles.at(-1).inner.map(cell => cell.text).join("")).toContain("50%");
+                    expect(bubbles[0].start).toBe(0);
+                    expect(bubbles.at(-1).end).toBe(width - 1);
+                    if (width >= 160) {
+                        const labels = nonContext.map(bubble => bubble.inner.map(cell => cell.text).join(""));
+                        expect(labels).toEqual([
+                            " PAVEWAY ",
+                            preset === "ascii" ? " analyst / Test model / high " : " analyst · Test model · high ",
+                            " analyst/task ",
+                            preset === "ascii" ? " Wake 1m20s " : " ◷ 1m20s ",
+                            preset === "ascii" ? " In 3 " : " ✉ 3 ",
+                            " $0.12 ",
+                        ]);
+                    }
+                    for (let phase = 1; phase <= 16; phase++) {
+                        const frame = line.render(width, {...state, phase});
+                        expect(visibleWidth(frame)).toBe(width);
+                        expect(bubblesFromLine(frame, opening, closing).slice(0, -1)).toEqual(nonContext);
+                    }
+                }
+            });
+        }
     }
 });
 
@@ -284,7 +355,7 @@ describe("fixed Chevron light flow", () => {
     });
     test("symbol/color/ratio matrix keeps single-cell positions and resets all styling", () => {
         for (const [preset, capStyle, glyph] of [["nerd", "auto", "\ue0b1"],
-            ["unicode", "powerline", "\ue0b1"], ["unicode", "auto", ">"], ["ascii", "auto", ">"]]) {
+            ["unicode", "powerline", "\ue0b1"], ["unicode", "auto", "\ue0b1"], ["ascii", "auto", ">"]]) {
             for (const mode of ["truecolor", "256color", "none"]) {
                 const line = createStatusLine(() => paveway({inbox: 0, wakeup: null}), host(mode, preset), {capStyle});
                 for (const percent of [0, 1, 50, 99, 100]) {
@@ -380,13 +451,14 @@ describe("independent responsive bubbles", () => {
         for (const surface of semantic) expect(surfaces).toContain(surface);
         expect(new Set(semantic).size).toBe(4);
     });
-    test("Unicode fallback has no private-use glyphs, even when host separators do", () => {
+    test("Unicode preset uses Powerline caps without trusting host separators", () => {
         const ui = host("truecolor", "unicode");
-        ui.theme.sep = {powerlineCapLeft: "\ue0b6", powerlineLeft: "\ue0b0"};
+        ui.theme.sep = {powerlineCapLeft: "\ue0b2", powerlineLeft: "\ue0b0"};
         const rendered = renderer(paveway(), ui).render(160, snapshot());
-        expect(plain(rendered)).not.toMatch(/[\uE000-\uF8FF]/u);
-        expect(meterFromLine(rendered).slice(8).every(cell => cell.text === ">")).toBe(true);
-        expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
+        expect(rendered).toContain("\ue0b6");
+        expect(rendered).toContain("\ue0b4");
+        expect(rendered).not.toMatch(/[◖◗\ue0b0\ue0b2]/u);
+        expectIndependentBubbles(rendered);
     });
     test("wide measured Powerline glyphs fall back to complete ASCII pairs", () => {
         const ui = host();
@@ -396,7 +468,7 @@ describe("independent responsive bubbles", () => {
         expect(visibleWidth(rendered)).toBe(100);
         expectIndependentBubbles(rendered, {opening: "(", closing: ")"});
     });
-    for (const [symbols, capStyle] of [["nerd", "auto"], ["unicode", "powerline"]]) {
+    for (const [symbols, capStyle] of [["nerd", "auto"], ["unicode", "auto"], ["unicode", "powerline"]]) {
         test(`${symbols}/${capStyle} uses the same single-cell Powerline Chevron`, () => {
             const rendered = createStatusLine(() => paveway(), host("truecolor", symbols), {capStyle}).render(160, snapshot());
             expect(meterFromLine(rendered).slice(8).map(cell => cell.text).join("")).toBe("\ue0b1".repeat(8));
@@ -411,10 +483,14 @@ describe("independent responsive bubbles", () => {
         const nerd = line.render(160, snapshot());
         symbols = "unicode";
         const unicode = line.render(160, snapshot());
-        expect(plain(unicode)).not.toMatch(/[\uE000-\uF8FF]/u);
-        expect(meterFromLine(unicode).slice(8).every(cell => cell.text === ">")).toBe(true);
-        expect(visibleWidth(unicode)).toBe(visibleWidth(nerd));
-        expectIndependentBubbles(unicode, {opening: "(", closing: ")"});
+        expect(unicode).toBe(nerd);
+        expect(meterFromLine(unicode).slice(8).every(cell => cell.text === "\ue0b1")).toBe(true);
+        expectIndependentBubbles(unicode);
+        symbols = "ascii";
+        const ascii = line.render(160, snapshot());
+        expect(plain(ascii)).toMatch(/^[\x20-\x7e]*$/u);
+        expect(visibleWidth(ascii)).toBe(visibleWidth(unicode));
+        expectIndependentBubbles(ascii, {opening: "(", closing: ")"});
     });
     test("explicit plain removes Powerline PUA even with the Unicode preset", () => {
         const rendered = createStatusLine(() => paveway(), host("truecolor", "unicode"),
@@ -461,17 +537,19 @@ describe("independent responsive bubbles", () => {
         const bubbles = bubblesFromLine(rendered, "(", ")");
         expect(bubbles.length).toBeGreaterThan(0);
     });
-    test("TERM=dumb controls ANSI only, never the Powerline cap choice", () => {
-        process.env.TERM = "dumb";
-        const rendered = renderer(paveway(), host("truecolor", "nerd")).render(100, snapshot());
-        expect(rendered).not.toContain("\x1b");
-        expect(rendered).toContain("\ue0b6");
-        expect(rendered).toContain("\ue0b4");
-        expect(visibleWidth(rendered)).toBe(100);
-        expect(plain(rendered)).toContain("Wake");
-        expect(plain(rendered)).toContain("50%");
-        bubblesFromLine(rendered);
-    });
+    for (const preset of ["unicode", "nerd", "ascii"]) {
+        test(`TERM=dumb preserves ${preset} caps and falls back to plain instruments`, () => {
+            process.env.TERM = "dumb";
+            const rendered = renderer(paveway(), host("truecolor", preset)).render(160, snapshot());
+            expect(rendered).not.toContain("\x1b");
+            expect(visibleWidth(rendered)).toBe(160);
+            expect(plain(rendered)).toContain("Wake");
+            expect(plain(rendered)).toContain("50%");
+            expect(rendered).not.toContain("\ue0b1");
+            expect(meterFromLine(rendered, "50% / 500K").slice(8).every(cell => cell.text === ">")).toBe(true);
+            expect(plain(rendered)).toStartWith(preset === "ascii" ? "( PAVEWAY )" : "\ue0b6 PAVEWAY \ue0b4");
+        });
+    }
     test("no-event wakeup and zero unread are absent, not empty instrument bubbles", () => {
         for (const wakeup of [null, {unavailable: false, running: false, timing: "none"}]) {
             const rendered = renderer(paveway({wakeup, inbox: 0})).render(160, snapshot());
