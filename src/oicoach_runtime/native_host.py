@@ -10,18 +10,8 @@ from pathlib import Path
 from .errors import RuntimeContractError
 
 
-def prepare_native_host(executable):
+def prepare_native_host():
     """Provision before acquiring a frontend lease; never install inside admission."""
-    try:
-        version = subprocess.run([executable, "--version"], capture_output=True, text=True,
-                                 check=True, timeout=20).stdout.strip()
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeContractError("Cannot identify the configured OMP executable") from error
-    if version != "omp/18.16.0":
-        raise RuntimeContractError(
-            "Paveway's Windline host is pinned to OMP 18.16.0; the configured executable "
-            "has another version. Install OMP 18.16.0 before starting the native UI. "
-            "The configured background worker is unchanged.")
     resources = Path(str(files("oicoach_runtime").joinpath("bundled/omp")))
     try:
         prepared = subprocess.run([sys.executable, str(resources / "install.py")],

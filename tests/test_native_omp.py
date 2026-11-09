@@ -7,6 +7,7 @@ from pathlib import Path
 import pty
 import select
 import shutil
+import shlex
 import struct
 import subprocess
 import sys
@@ -200,6 +201,39 @@ class NativeOmpTests(NativeFixture):
         body = "NATIVE_HEAD " + "漢字 filler " * 6000 + " NATIVE_MIDDLE " + "漢字 filler " * 6000 + " NATIVE_TAIL"
         self.chat(body, background=True)
         self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
+
+    def test_different_worker_version_does_not_block_isolated_host(self):
+        worker = self.root / "worker-omp"
+        invocations = self.root / "worker-invocations"
+        worker.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then\n'
+            "  printf 'omp/99.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            f'printf "%s\\n" "$@" >> {shlex.quote(str(invocations))}\n'
+            f'exec {shlex.quote(self.config.agent.executable)} "$@"\n')
+        worker.chmod(0o700)
+        self.stop_daemon()
+        self.config = replace(self.config, agent=replace(self.config.agent, executable=str(worker)))
+        saved_config = config_text(self.config)
+        self.path.write_text(saved_config)
+        self.daemon = subprocess.Popen(
+            [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
+            env=self.env, stdout=self.log, stderr=self.log)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                request(self.config.server.socket_path, "status")
+                break
+            except RuntimeContractError:
+                time.sleep(0.03)
+        else:
+            self.fail("isolated daemon did not restart")
+        self.chat("NATIVE_DIFFERENT_WORKER_VERSION", background=True)
+        self.assertIn("--mode\nrpc\n", invocations.read_text())
+        self.assertNotIn("--trusted-extension", invocations.read_text())
+        self.assertEqual(self.path.read_text(), saved_config)
 
     def test_native_resume_keeps_identity_and_readonly_archive(self):
         first = self.chat("FIRST_NATIVE_MESSAGE")

@@ -1,0 +1,1195 @@
+{
+  "font": "Paveway-DejaVuSansMNerdFontMono-Regular.ttf",
+  "font_sha256": "f0ad5d5e932a02c7c0169b67bb4a7a1d8ecde33ab42c7d584b4c91cebef98300",
+  "size": 20,
+  "source": "isolated-native-pty",
+  "captures": [
+    {
+      "name": "bubble-256color-powerline.json",
+      "json_sha256": "a282ba87baa06976d739b21745380da60abdfaf52784ee2b4623d3c22063576e",
+      "ansi_sha256": "721b4d41e649298370e756ebc810bd632d5975a7f4fa67e499086ed64e658133",
+      "image": "bubble-256color-powerline.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-ascii-plain.json",
+      "json_sha256": "3ac9338ada67903b16bc3c7ecf89d1a41cd198cd86f8ffe6618095f9475b16cc",
+      "ansi_sha256": "702b07e63492631041c1f93aeee7a9da89e33175340dac0e9bc0769ada3a92c2",
+      "image": "bubble-ascii-plain.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-0.json",
+      "json_sha256": "24bdb2040ef3e3aae07ce3e00c505ae8ec2f36d392f494c6515af24ddd778d57",
+      "ansi_sha256": "7245dc698d32df5d6850a52a2ce47a3f2a44130cbc86f3516583756580d61722",
+      "image": "bubble-chevron-16-256-0.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-1.json",
+      "json_sha256": "c93bd89c05d2b117b226c97cea1fe31e55c4317e14f9ac6698fa019a500ccd6b",
+      "ansi_sha256": "4f1866a59abf25c379bd9e82001e67447d397201d850340537e09a7eda61659b",
+      "image": "bubble-chevron-16-256-1.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-10.json",
+      "json_sha256": "7e102faaddb0882a673b3db20819411f6af02fc9210402d7ebd647560399e416",
+      "ansi_sha256": "0956e0227e7d79d37c0c6bf0213b2cbab4d520fc000cc219d740462172c0ee96",
+      "image": "bubble-chevron-16-256-10.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-11.json",
+      "json_sha256": "b9d5e7f2bc338a041492986eb03fdb27dcdea2aef8d610aa80e0c06c2820ae47",
+      "ansi_sha256": "85adc7a0a1e9d50bf4c0908e2415f3f765c5950afca393125db109749bfeaebc",
+      "image": "bubble-chevron-16-256-11.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-12.json",
+      "json_sha256": "702b532dd7f83e24ccdabf42ea057366c4a02951c6b1c0aa853b642703291edc",
+      "ansi_sha256": "41fe3712de30df0671b1c09fc231788b189de317e871834c154a3612952c1dd5",
+      "image": "bubble-chevron-16-256-12.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-13.json",
+      "json_sha256": "f81841b897f4351930b49e29c6ff63dd6d9c134e035ad0da4110e411815c7a97",
+      "ansi_sha256": "07790cfcbbc8982d01f957c624acc058b0ec33ab228c9cf157710653bca6c4aa",
+      "image": "bubble-chevron-16-256-13.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-14.json",
+      "json_sha256": "c0f57396b47100451270864106aa257a5718409315f870efaf9b6f4565a8374c",
+      "ansi_sha256": "76a57b3ac4513e1b38d63cf5bdd4a5ec8fbf64ea2046944101e71de881852420",
+      "image": "bubble-chevron-16-256-14.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-15.json",
+      "json_sha256": "80c8baeaa8c52d4483e7af193d2f6975b72c7412de5bd85d1e4bf4cff13f0cfe",
+      "ansi_sha256": "c947d779874465a439911768ec3dd701831ec3e637e371eba942e077d3034994",
+      "image": "bubble-chevron-16-256-15.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-16.json",
+      "json_sha256": "12ce30b5123f4313e0ebb07b3c566b343ce104aa65018cd53b6b093251487322",
+      "ansi_sha256": "0350fe5172ed340a7a2a12958d50b54426684fe60edbad978f45d6ada7b3c8bb",
+      "image": "bubble-chevron-16-256-16.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-2.json",
+      "json_sha256": "1c1a4a47a9a2d290507f83881455c56683ab2012be10c9a0b1a803496a71d374",
+      "ansi_sha256": "09abaaa6034dc66161bc4d49280d0cc3eaf780d6370b92d48dc65ed2d7677145",
+      "image": "bubble-chevron-16-256-2.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-3.json",
+      "json_sha256": "7a1a791abae85a3b84c39c7781f180a98b69f9dc1efde5ea13674034fa4de59d",
+      "ansi_sha256": "7610907493e0445ecebfe4fc1e4e7ca3f7ec64eca641a10f1551b4d8be778e4d",
+      "image": "bubble-chevron-16-256-3.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-4.json",
+      "json_sha256": "bc91043f1b37266de711845c00b5c0036713d814d46a968be9bc5038609cb003",
+      "ansi_sha256": "da27bea494aa0515c0d11a42a8eb7c3d0659179ed16284c2beef0a744b0b597e",
+      "image": "bubble-chevron-16-256-4.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-5.json",
+      "json_sha256": "78f55e70b304c2cb54548aba28400533b9e4454a29f14e09043fe01777c840f4",
+      "ansi_sha256": "69b83a4846910874c601533c084e25644842bc24e9ccb543ddff57ce473baee7",
+      "image": "bubble-chevron-16-256-5.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-6.json",
+      "json_sha256": "098374db97a81cdd58073c6865c991d9e03571a3c6c439e1b6e8375c444e4a3b",
+      "ansi_sha256": "8033f8f50ceb584603bfda41e17da659288b68e99995fc2d9f293f900cc063c2",
+      "image": "bubble-chevron-16-256-6.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-7.json",
+      "json_sha256": "96a0fff506c21b63e6caf4f933d5a4a6b666e70c445d2a7659877bf64706b011",
+      "ansi_sha256": "b56386461de127e1709b7d99cb6fc9cbed8935c80b11efe7c2a4c096833c1548",
+      "image": "bubble-chevron-16-256-7.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-8.json",
+      "json_sha256": "d3adc761ab795edb859c021c47c0125ff9261dd8ce725bc336017ff600f4ad03",
+      "ansi_sha256": "408547bd89f3fcfcaab2e03671ba0e956a2d18d5d389bea54a51ff028a0ee750",
+      "image": "bubble-chevron-16-256-8.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-256-9.json",
+      "json_sha256": "3dfa04e6e475bc696451e85effe98d18760ab0ebc48be0963dfc312174386329",
+      "ansi_sha256": "ab782d5aa5b17a1f2ab6b55c5ecba87f0f6b9320011373ffb7360d5efda3a3eb",
+      "image": "bubble-chevron-16-256-9.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-0.json",
+      "json_sha256": "c12fe932fea5bfae50bc84c18aa09e9fa898e7135b97bf94392c10ebd44e0beb",
+      "ansi_sha256": "6af402ca66b088a2ca0e64f19afba886f9269b6fd37f118743739eda09fc4092",
+      "image": "bubble-chevron-16-truecolor-0.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-1.json",
+      "json_sha256": "f13e4c455c8cf6ad621919b9d0f8de91cc6c25bb4bc86ee049bb3a9d4c3ced41",
+      "ansi_sha256": "d43a2659030679f61ffc6e44b36d6905a6ecd4322b2ec84448cbda47c0cd47c6",
+      "image": "bubble-chevron-16-truecolor-1.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-10.json",
+      "json_sha256": "cddd11860329af7cf05c78ce50a1d9938b226390f24bf9877a7c4cac501073eb",
+      "ansi_sha256": "d9ae939f8042bc2a937ac859c102d24f72a4d43684478ed7ce7e8ed6419014d6",
+      "image": "bubble-chevron-16-truecolor-10.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-11.json",
+      "json_sha256": "c734aa79d4a9f35e380f9d16f72dc6ebe2ed3e1da100d57a376ca80fa4568ffa",
+      "ansi_sha256": "55962d4af72bd57cae199f6943fd39cd9f0ccde45992c6f3a7da729f644b4e1c",
+      "image": "bubble-chevron-16-truecolor-11.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-12.json",
+      "json_sha256": "1f2b66a11e943b9781d83d2bd49d8bd4b0a8977d7d4f3359c0e7f36ceaaef583",
+      "ansi_sha256": "c42f864bd501d10eedb79f8e52ed37ebfa84db6cdf3b09d64bfe8ad7fa4bdc50",
+      "image": "bubble-chevron-16-truecolor-12.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-13.json",
+      "json_sha256": "3a9c403856ae4fee264d417e1d60bc938be5d783bb5b08faa1009cddb0879de9",
+      "ansi_sha256": "a88e196b3dbfa90aa9d58303c90a9825aebdd68f5cad324a1c13c2bbdaf42f7a",
+      "image": "bubble-chevron-16-truecolor-13.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-14.json",
+      "json_sha256": "e08da2db491a5466cf7b7d2b2d7d55c27a4f6fee67bb99797bac41ea6b96b5dd",
+      "ansi_sha256": "ede7a945fbcf223c1482b56eabb29e5b71b0a5e9db20b3c3ee405938ee2d67cf",
+      "image": "bubble-chevron-16-truecolor-14.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-15.json",
+      "json_sha256": "21bc29595f0265a47f9df87b9004bba346225713eeedc3e119e2b7997929bb75",
+      "ansi_sha256": "4cdf8a51e8b8a49e0b8e16b5948dcd11c2ad610a8f2134f8c6046a37fcecd153",
+      "image": "bubble-chevron-16-truecolor-15.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-16.json",
+      "json_sha256": "8b2db872238ea20cf0c4672b965f055d6046391178ef5bc9cff450ae94639cdf",
+      "ansi_sha256": "48994fd3b0e0063ba70428265fedce18c9051b6d39cf01b3b2013829711fadb1",
+      "image": "bubble-chevron-16-truecolor-16.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-2.json",
+      "json_sha256": "bc872e22068c9cd992dfcd0a7dc73b9d5c8d51fe5aba29f4be0489c54ca02d05",
+      "ansi_sha256": "32962760da4d7e0d9cba8d030efc33ec528f14713b730386ba4ccec6f7eeccce",
+      "image": "bubble-chevron-16-truecolor-2.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-3.json",
+      "json_sha256": "fa9562156cb22535055a1606357f4cc68d10bdd9e288a3ed5b656bc1016fb471",
+      "ansi_sha256": "1cdd2451426e4715e945d2cdd3d1c775e9b3fa9b1710598c5a4fd8b0ace9f020",
+      "image": "bubble-chevron-16-truecolor-3.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-4.json",
+      "json_sha256": "f38475562e41be65581a8158b4e7e2520cda7ea713faa153274ffb77ba7cbe2f",
+      "ansi_sha256": "a825b2598fd627ff36ca961dea08e968a2393ab0a0e468ea167d9c6abcc92f50",
+      "image": "bubble-chevron-16-truecolor-4.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-5.json",
+      "json_sha256": "93085a47630e6aa66016baa7ffa6ea80a87c490241eadeaa7aec814319427f6f",
+      "ansi_sha256": "836e98528120d3ceec00fb81a0e2e7be10dce743e86a3db8aee2bfb88b1be9d3",
+      "image": "bubble-chevron-16-truecolor-5.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-6.json",
+      "json_sha256": "e12719c0b39706dd58b412f6e6de5729f65d88a12ba19c19821235969c806983",
+      "ansi_sha256": "93ab23c8d59ca36fc7e929cce23eee3b80642b9324ad1422c1f933853cd58c86",
+      "image": "bubble-chevron-16-truecolor-6.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-7.json",
+      "json_sha256": "45f23b9b71017462f59b050d800edec08ce33516300d15d0d07cc5c60393afad",
+      "ansi_sha256": "365a636476a7ebc339b17e77df0eb2a2e6950fd8802f8c35ec9309f953a99e40",
+      "image": "bubble-chevron-16-truecolor-7.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-8.json",
+      "json_sha256": "12aa2914a116c6c240932ab3ebd031908bad79fdcfc469b39307f13c6f4d54b3",
+      "ansi_sha256": "f7ec2c22765ac088aef657d35ccc1887525b6554aa4bb761294d60365ec46419",
+      "image": "bubble-chevron-16-truecolor-8.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-16-truecolor-9.json",
+      "json_sha256": "acb061f19a60532925ee1cbcf7da3bdcbb1d70311a19bcea4e659add11aaa046",
+      "ansi_sha256": "be734b747dfe325969964605346036fffe5207ec3934db4d6024c3d99a76d157",
+      "image": "bubble-chevron-16-truecolor-9.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-0.json",
+      "json_sha256": "ed95e279b090f7b852a3d2dcf65198583e75ee22437060cf480d677c6a3283ca",
+      "ansi_sha256": "18eb2c8c91302087d42724929288207599d42d78a28976cbc199fd2af71bc13c",
+      "image": "bubble-chevron-4-256-0.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-1.json",
+      "json_sha256": "4a87a79e2a4c6145c0c8944c41cef1721b14bb3077a0d167d0d40b7a185b7e79",
+      "ansi_sha256": "ff87891af1be14ec3198cd5e031275ee9e298731afe907773af6fb6b570efbc2",
+      "image": "bubble-chevron-4-256-1.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-10.json",
+      "json_sha256": "adc6d60d4ef50cec5d472be9ee3ce1dbbdb45a94e7752e19c3b46e99ba52756d",
+      "ansi_sha256": "aad8138d826f731a2ab1bbed8a3b3b59322ab1f737a1da4b0251df3a9133a3a5",
+      "image": "bubble-chevron-4-256-10.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-11.json",
+      "json_sha256": "19003a94a05b6b6d297c70496932f19e346df30e27b32d09b05101af55e352d9",
+      "ansi_sha256": "75b5338d164df23e2bd2cbc870a375d90b053af0a634f5a40e2604200b404f41",
+      "image": "bubble-chevron-4-256-11.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-12.json",
+      "json_sha256": "1948ea24198b0bba6447b5157a0cd8dfbf0624f3d6e2156b015075c380cefd3a",
+      "ansi_sha256": "bd891e48349fd8e2f21244607f360ab5fae2f291c17f03b8ab5a78279f79df36",
+      "image": "bubble-chevron-4-256-12.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-13.json",
+      "json_sha256": "d761ac6bdaee596f7a2f71fc07be98a801b8a1e69330a3b88462bf0dc2de9054",
+      "ansi_sha256": "b0b511ae91f7d610c93b7034995f4ba0eb5399c30ed4bb6a2320ce331d581d1e",
+      "image": "bubble-chevron-4-256-13.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-14.json",
+      "json_sha256": "53e55f10e2b10608d86764dbcf83563bf7634d7695724ca5e9fa9cf346ae55ec",
+      "ansi_sha256": "31aa4ba0346b54a72676f4549c02aa0afd4d210873b2774f6f1cabdb359d6274",
+      "image": "bubble-chevron-4-256-14.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-15.json",
+      "json_sha256": "a0f0f17bc3dddcb61202d8abb5303dcb7b31980a4d066ac90d67b5865cf485ff",
+      "ansi_sha256": "9682eb5e2ea118602bacb6cbada3c9a4cd3e54144febf03002cd2addaa33a24c",
+      "image": "bubble-chevron-4-256-15.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-16.json",
+      "json_sha256": "0b740dd64c7ca2b1dd0181a5744b7ec8b031b119d7da8abc92594df2e56489dd",
+      "ansi_sha256": "6a2e9498257850ca7e595ccd59852d1ee625833c40bfe1e208202dce6470667a",
+      "image": "bubble-chevron-4-256-16.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-2.json",
+      "json_sha256": "182b923ce22c8652423a0ac01a7cb8e7d8a0db015a6aad8703f2436a37c77b49",
+      "ansi_sha256": "4718bdc911fb6bcd45f2d588f03053f0282c9124f5f79663f95921a656e32d13",
+      "image": "bubble-chevron-4-256-2.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-3.json",
+      "json_sha256": "3cdd077846ca800ceb1c05bb0c8707ee9ded490c04c25455e63e7993f3884fbf",
+      "ansi_sha256": "d85d2b65fb1882844ef55f2e6f32b42dce8bc13732b00e0787fcbab6c144f0f5",
+      "image": "bubble-chevron-4-256-3.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-4.json",
+      "json_sha256": "321fef9eeda0433c9a61f0e0983b780452c7b5f6aac40e4261c3d638ef81593d",
+      "ansi_sha256": "ae27c2becde45965d7e4e05b23a920292f46ca4fabc6e5e44699149e9efbbb94",
+      "image": "bubble-chevron-4-256-4.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-5.json",
+      "json_sha256": "6917d46e85b0e845cf365c8ce3f4f5c3a5e8a351274448099029c07e71d5f06f",
+      "ansi_sha256": "2c6132da9bb46521fe7ba8c034e36bfbfb47a2231740f1c0b88ba1cc374eadc0",
+      "image": "bubble-chevron-4-256-5.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-6.json",
+      "json_sha256": "dfe8fb2a0e7f2c59114d1570981444bad6cc082e72d2180bbca80033a85d1d2e",
+      "ansi_sha256": "8d64e8e9780226aa26a74be9b10bf67ead11c07e25c7af701a16b2330e0999fa",
+      "image": "bubble-chevron-4-256-6.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-7.json",
+      "json_sha256": "5fa405b68584fc8b03e8a390aa5f401678b0f09b53594d01fe718bb70371a034",
+      "ansi_sha256": "e3e3fad3e47d587150717b17c508ba376d55ddfef27b136432358464a7468c2d",
+      "image": "bubble-chevron-4-256-7.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-8.json",
+      "json_sha256": "f490854e0bb5de43ed1e9d22bf2a59878309b7403a75a69517cde2c92cc54357",
+      "ansi_sha256": "0fbef461df19bf44c26ddd41a07102d8743800ca8d14ebc8bb342664ebd43059",
+      "image": "bubble-chevron-4-256-8.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-256-9.json",
+      "json_sha256": "67e9cd12859f6db08452f2821c893da39b0940798e78c66c20305559d1184577",
+      "ansi_sha256": "bf326b033b8c759812d73537c0e90044bcd101ca9b8ffea92d805e7c9ba3f640",
+      "image": "bubble-chevron-4-256-9.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-0.json",
+      "json_sha256": "4d9b4c32aa5f503c959ff38d6b3c0d09a0c239d000cfd3200ebe566afde88f3d",
+      "ansi_sha256": "4267642ed965dcc6f8632f21f19d55ecfc5081a51c60015d0087b7474027ab0f",
+      "image": "bubble-chevron-4-truecolor-0.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-1.json",
+      "json_sha256": "514850def769a0457d9b0341dc298e604929b85bfe133b49da0d7586ea7ba378",
+      "ansi_sha256": "54361fc63b40ac069e1e54fa7cf7ffd8decaa89b766176aedc02265edf8e80d4",
+      "image": "bubble-chevron-4-truecolor-1.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-10.json",
+      "json_sha256": "cb71b35dea094717c9214f7b208fc05f36390bb4b9b2507e337ec4dd229f0eca",
+      "ansi_sha256": "0a2631dc6c91faf97115dca00f7535f9492bdd14df8c5fa7d9c5982e96f95e48",
+      "image": "bubble-chevron-4-truecolor-10.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-11.json",
+      "json_sha256": "64cdcc5d0cb62ea1ef74edb2c2a4f9d9c23fd91f223d62a0dfc92421b94ca6bd",
+      "ansi_sha256": "08c66bd5409f047105eb8335fbf977772a4d60778d3d1a6736f8e6712492f88c",
+      "image": "bubble-chevron-4-truecolor-11.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-12.json",
+      "json_sha256": "3aae7b3b32d8b305ad13ceb9333d21898e19bcf236c293bd4c74505491bb0e9d",
+      "ansi_sha256": "50fa3927eddd0119f13b3054136d7331cd237ef0433a899c716013153737383f",
+      "image": "bubble-chevron-4-truecolor-12.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-13.json",
+      "json_sha256": "052860bae2ff9cd1c44e0c3665f52c53283f0eba29b3696b344e6ef301aa46f2",
+      "ansi_sha256": "0809ac2ff54c3715fbc469734e253e8b37303806747a028e327e4c283ad7173f",
+      "image": "bubble-chevron-4-truecolor-13.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-14.json",
+      "json_sha256": "9190f507b9fd9bcc7d33f04d7670a78ff9254a883c11c297ffd51eaf8e943708",
+      "ansi_sha256": "937ff2baad5ea40f6a4c67fc71648719eca48089b398034e983b9c518b4369c3",
+      "image": "bubble-chevron-4-truecolor-14.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-15.json",
+      "json_sha256": "c73c1ed81e7b7572ab2304df36d56367c3b1a6b6c7ab773bff0a0991fe091ee0",
+      "ansi_sha256": "be4597b239ec402a8f7b3bf9df1cbd18fc179c9ce9b71f647dbec91139b8a29d",
+      "image": "bubble-chevron-4-truecolor-15.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-16.json",
+      "json_sha256": "1069210f14da9985e55d1f816ab99cc1543c033a476ef0a50f000b228e899cfd",
+      "ansi_sha256": "e2f7104f91b96438685aea9fa85c4fced7c4633f8c3e816bc6b6436971b63522",
+      "image": "bubble-chevron-4-truecolor-16.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-2.json",
+      "json_sha256": "542e42eea6183519260f631649030b873e079e12ab8c39af1ccaaf543e6a6a52",
+      "ansi_sha256": "fd56b777e4c661231ea06fc446770de424d030fd8e03e09a3b19a572f79b184f",
+      "image": "bubble-chevron-4-truecolor-2.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-3.json",
+      "json_sha256": "6723fc05242218ddcadaeea889d9248cc6402bfe8de1ad5e4677549b6a898e37",
+      "ansi_sha256": "ffa4de2a321651281ca1179188e7b3656486290fb63d53fc014cd7a4a0b06551",
+      "image": "bubble-chevron-4-truecolor-3.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-4.json",
+      "json_sha256": "786db34f84d197e99f8ad0fbe0881058d63f61ee89e3a8adc685256773a9fc1f",
+      "ansi_sha256": "e6d041eb39e0921de989cf0682f8a373af1269acf01a785c62cb5fbadd16ccac",
+      "image": "bubble-chevron-4-truecolor-4.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-5.json",
+      "json_sha256": "c1fe3e124554437c006be1b121701d471c6381a31dd0081ce90250229bf5a9be",
+      "ansi_sha256": "062e0df6a9c938e000ea6ced313a55811845504eab4e5a07fde33fe8a8962fba",
+      "image": "bubble-chevron-4-truecolor-5.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-6.json",
+      "json_sha256": "73a8aa4be0098be03e56af3d1949e6813695e6e454558bc5195d83dfd4e16c15",
+      "ansi_sha256": "e9634604be3b71dcf07e5ff95494b30a30e1c1a22f65090ef8c4e5524eda6e06",
+      "image": "bubble-chevron-4-truecolor-6.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-7.json",
+      "json_sha256": "faaca4b11bf1e881a35952b55928c1f8e336eba86df10288abf8a44f1ef5b90e",
+      "ansi_sha256": "2dbb94e0206b68b3beb5a9ccbcdd020c83c6b71781d690a9accb6aa6e0ef7f5f",
+      "image": "bubble-chevron-4-truecolor-7.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-8.json",
+      "json_sha256": "8e37b62e49696e42c29cff0a1ed9550fae7a5c918def70b84acbf8cea3d124f8",
+      "ansi_sha256": "0cb11aa5311bcf0650efb13cbbb3c443d8a0e440dabdb1f168c522a3252aa75f",
+      "image": "bubble-chevron-4-truecolor-8.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-9.json",
+      "json_sha256": "6b508486ac8ed96b134be1b2d41f9bab2a352b6511000b05fbb2834390f9d6dd",
+      "ansi_sha256": "e7e85d0a3ab33ee5b3d44f6e3a55849b6af20af89fb428cdf10cb16701ae3ae2",
+      "image": "bubble-chevron-4-truecolor-9.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-4-truecolor-idle.json",
+      "json_sha256": "5aa92742688acdba171f98d3c46980347ff4e3b9607136b07b3555ec5b6607e3",
+      "ansi_sha256": "9f410ee7dbe49752188a80d145acc07ef7987bcf0e183846676312a448143886",
+      "image": "bubble-chevron-4-truecolor-idle.png",
+      "pixels": [
+        768,
+        240
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-0.json",
+      "json_sha256": "7188d3c3a3e2b9a2133603f03a24410be4bde7eb9ea86aaeac78dc23ddcd81f5",
+      "ansi_sha256": "9a2617d37b460252587c895918a02e10902fbf40788577dcc9c3bcb583f49dca",
+      "image": "bubble-chevron-8-256-0.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-1.json",
+      "json_sha256": "135c320e4f3d015abab53d28c082e59579a964bb6ecb308bbd72c6cf67470588",
+      "ansi_sha256": "2381b5e4ed8d1574ab4f0b01a84f1c59798fd2d141014dfa5b0d7db19713c2de",
+      "image": "bubble-chevron-8-256-1.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-10.json",
+      "json_sha256": "ed1d48682b7949fdbcb5364de38bbb957483e5d0abd45de686480f163a9644d8",
+      "ansi_sha256": "bf392aa82f70b11a188059a2fcdaa1034be6930f9b02354c8f6da21ef0f37d74",
+      "image": "bubble-chevron-8-256-10.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-11.json",
+      "json_sha256": "7d90d2fabec3c64d0999b0370c6be87c27f3160c701023c2cb83285a93da2a92",
+      "ansi_sha256": "0b8122626310b115035baa4c422be00dd5e1f6d93306a7beffd3f0a3d9d874ed",
+      "image": "bubble-chevron-8-256-11.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-12.json",
+      "json_sha256": "8e354f45af9fcf4d5ebab32dcb6fbc3be5e34c8c9176d1853f10c752b9df2030",
+      "ansi_sha256": "dc30596e8d9cfef45510004c8356c40db40e5654ae9d94714dac0937eba1e26b",
+      "image": "bubble-chevron-8-256-12.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-13.json",
+      "json_sha256": "ac6c5dabab594ff2445e154b425cb907863cc9d07e25f8a4581a9b0443e774d6",
+      "ansi_sha256": "fe072e651805e5e2c250b3a1a042ff67b118543b4a6e18daebe79e121264fc0b",
+      "image": "bubble-chevron-8-256-13.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-14.json",
+      "json_sha256": "e3a68db9131782dfd2cccfd3e0c746c63e2a06cef1a56dd670c3602f88b952b8",
+      "ansi_sha256": "3926a7d251754867d4df915e180af9910eb239b3e685a183d9a2a54da90d3aaa",
+      "image": "bubble-chevron-8-256-14.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-15.json",
+      "json_sha256": "1d9d5c46a8d326e5d19cdf976d4345955c45995832a0b90ece4abab089c950db",
+      "ansi_sha256": "080d091d4533bcdc21a9a7dcdaf3ae10a757557e6433bc391212c8d2a10fef97",
+      "image": "bubble-chevron-8-256-15.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-16.json",
+      "json_sha256": "91f281284068dc822d71b4219014b45f1170621e3840abf73317541c6f23b0f8",
+      "ansi_sha256": "a68d0dba300a4fa4aa55fc55b6356fd0900f1551facd5e67a6d3ee9842fb415b",
+      "image": "bubble-chevron-8-256-16.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-2.json",
+      "json_sha256": "4e3eed924ac701a82252baa457284b865eb182ed81c15ee9d685aa86d32c7105",
+      "ansi_sha256": "a5ab2506c724183ae734e63df5fb33379b569a6d5584e5b918f92ded422c8b98",
+      "image": "bubble-chevron-8-256-2.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-3.json",
+      "json_sha256": "079d073b7618b2cae41f15648465c920eacbdcbcb7eb93e0a6baba406920a2c5",
+      "ansi_sha256": "6ddcc1d614632d29651be333d24bdfa8c935bbdc062a4a9c7fa7a04ae111699a",
+      "image": "bubble-chevron-8-256-3.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-4.json",
+      "json_sha256": "1a8bd1c9050b3cc99c1ca27be9f42ef0015443470f585e50739289b6a2df2d74",
+      "ansi_sha256": "deec1f17169f61fbaa92675722e6131dcefbd4220d380c422192b1cef211ee4d",
+      "image": "bubble-chevron-8-256-4.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-5.json",
+      "json_sha256": "ca4264f20c5a7c291299dd129d4406a41384654b33ab46b88cecdccb8184ce23",
+      "ansi_sha256": "41b66a5ef8c0bd2c11fbcfff1aac56fe5fc09b9279b4de47a6403d7cbcc9f162",
+      "image": "bubble-chevron-8-256-5.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-6.json",
+      "json_sha256": "60a29a3f4defa76a66424a0c9218f7c131bfefb1225887c867cb918ff94bd14b",
+      "ansi_sha256": "1d133329c6e03c74c178f01cc21ca62a83e5c10d0c73a3bce9a2950789023ec6",
+      "image": "bubble-chevron-8-256-6.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-7.json",
+      "json_sha256": "c8e877d1b3670c51c67798904ff914175944f8db3702349eb1201c8ca8442790",
+      "ansi_sha256": "9434f3c4deeaff3f977012df0da701cb52eb0f39daefd3ccc548c1d1b78a92a6",
+      "image": "bubble-chevron-8-256-7.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-8.json",
+      "json_sha256": "4de04a86ed106635c4ee73f8be3476b764113037d18abf741851a5257f6a3beb",
+      "ansi_sha256": "b8e623bf87db4b858c1e759eb68fee44c840200cb6545b8fefae957d38e62574",
+      "image": "bubble-chevron-8-256-8.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-256-9.json",
+      "json_sha256": "26ac1eb35fd9c49545714fa0822e04719eda8f6225e51b5cfeebae2c7b8e0ccb",
+      "ansi_sha256": "ed027e378983432594b023c08e8d6f620b7227705364d46df1e85950a0ccb8e8",
+      "image": "bubble-chevron-8-256-9.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-0.json",
+      "json_sha256": "1383d07860e4b8c938545c3a3637b627dd45b8a2343f62d07285af4ed87eeeba",
+      "ansi_sha256": "9be48f60bb22b0e27ee444b4bc4e773810a1d591b64fbdc97583eeeb8b823eb8",
+      "image": "bubble-chevron-8-truecolor-0.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-1.json",
+      "json_sha256": "3f1ac7518ec89ea0b59e342640461e5081bb0422e61f6bbe3278ee39f0ec902b",
+      "ansi_sha256": "8357631838e776a5bdf93363eccee654b7a1e974d4e0641043e78c1deb568544",
+      "image": "bubble-chevron-8-truecolor-1.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-10.json",
+      "json_sha256": "8c77454971f5b540e09ad117e67f4027f44591f07ae8738b7497f1d93a97420b",
+      "ansi_sha256": "4c2dd04e08dd3fe7069d1fcbb4b48826107fc9425e4cdf09ff0feb435f64f188",
+      "image": "bubble-chevron-8-truecolor-10.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-11.json",
+      "json_sha256": "0c60a4ffb953a0f84581bee6b7dc793a6ab23e7fa88c1946811b6fc4a8fa8775",
+      "ansi_sha256": "297bcbd8ca4d5de81e15f8107174690baf9cc7598fcaf7542050d3eb230b1c1b",
+      "image": "bubble-chevron-8-truecolor-11.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-12.json",
+      "json_sha256": "4e247d2d88f995c435de62b6131b9faa5bedbcb4f3345f8119dfd23eea1a916c",
+      "ansi_sha256": "5264bf4e41713303fe40bdfddab697bb0ac6c4443de36327009a120ab458d76e",
+      "image": "bubble-chevron-8-truecolor-12.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-13.json",
+      "json_sha256": "9f422edb50e664bdd51d26668c3e51b10465d2edf031fb91bd1b6249508ed672",
+      "ansi_sha256": "332ef966cbd0bdfb57a95bf44ba8a19a84b80dcfdbdf711bf454c5f79b83c610",
+      "image": "bubble-chevron-8-truecolor-13.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-14.json",
+      "json_sha256": "b803cea943a805916669f9825e85eb19d66e18c6c0ee79159032bd63cbf421ea",
+      "ansi_sha256": "0badb81c38729d5e3f84b146c37e9eae36c1d19f6d12cc5d6de95af5b98d3926",
+      "image": "bubble-chevron-8-truecolor-14.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-15.json",
+      "json_sha256": "6febc42ca649164cded495456c63e6afa225427e1f847e4d83319edc4a979811",
+      "ansi_sha256": "72a8860d8fae2a55574448b56c3d888179201cadd199b2b13c814f6b069894f8",
+      "image": "bubble-chevron-8-truecolor-15.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-16.json",
+      "json_sha256": "cd02fb63087e3725fd6ff2c34dc6541265cf7db81824aef54af9584a99c62ff6",
+      "ansi_sha256": "469b9f24b179fa97062eda76446c986308531106c61261fbbedda44a26b7109d",
+      "image": "bubble-chevron-8-truecolor-16.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-2.json",
+      "json_sha256": "aaf6bf26653473bbbdfb17428b173b7184f24b684926190fe93f5ae025ec9cda",
+      "ansi_sha256": "d2010969e9b3110e99f907075a216fa8b69d27f5dcd6ad658d798e279a7d12aa",
+      "image": "bubble-chevron-8-truecolor-2.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-3.json",
+      "json_sha256": "bb30f6578aa27d28ea2b6224e05375774e89fbf147aaaf98a22446f81d1924bc",
+      "ansi_sha256": "3b5e611b05dee6928ef4b19851cb11ea8ab5087215f4c4fd0f2fcbd77c6c7650",
+      "image": "bubble-chevron-8-truecolor-3.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-4.json",
+      "json_sha256": "f4ebda5ddea36dd39a5e0dfad3be87bd45f2eb2946ff05f7209f187ec52ca755",
+      "ansi_sha256": "1461f3ee0553163d86e37fc230400702da89d1964e9d114c738a278b737e4db2",
+      "image": "bubble-chevron-8-truecolor-4.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-5.json",
+      "json_sha256": "a008e155d7654b61e79a6b9d9917ac295b6cba613b3742c93796b6937be3b90e",
+      "ansi_sha256": "92437ffd100be5739bfa57c3664e541a982c0fa9ef931d01f6d5b56cbf8b9dac",
+      "image": "bubble-chevron-8-truecolor-5.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-6.json",
+      "json_sha256": "12011763b4fe2445526f2d268999b5c1185b4738d545347977c526e31180b2a4",
+      "ansi_sha256": "5faccfca238192ff21432663fedfe3a2cc90ea5655858d164591239693faa566",
+      "image": "bubble-chevron-8-truecolor-6.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-7.json",
+      "json_sha256": "2928bdd289dfe6af796abd78f2a7984e8093e2f0c07c282ff27d4cf1964143d7",
+      "ansi_sha256": "0821e790b4b402cbbcb9d671deda6131611a3825c01c7a93a94d0b41b9307853",
+      "image": "bubble-chevron-8-truecolor-7.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-8.json",
+      "json_sha256": "ad3e95ae1e752943df3eb31e11805b2af20136f627f8873b902524619db260e2",
+      "ansi_sha256": "00cd3973d7e5289e6fd001f6627934c0277b75c400d4671a9d29ebf2b8d9109e",
+      "image": "bubble-chevron-8-truecolor-8.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-8-truecolor-9.json",
+      "json_sha256": "190f22b9ffb8a2464c69cbb11ee3194996df1dd179bf3e402c0fb3c411023aac",
+      "ansi_sha256": "f619d026492fca17311c903a394480ff25aa103661efa0a993fa17ad84c31be1",
+      "image": "bubble-chevron-8-truecolor-9.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-chevron-high-truecolor-idle.json",
+      "json_sha256": "faff2b23a8e99416b90468b90a1c1678181bebeb9e64d998915c03c76bc57eb6",
+      "ansi_sha256": "5f377114d6733b1735b5f21de4ecc358efd18fc771a804ef517f8ec70d6c08b9",
+      "image": "bubble-chevron-high-truecolor-idle.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-empty-100.json",
+      "json_sha256": "9339779e18067c68f3b74a2c3d0b1112b4b1a5d59d64eed980ec478f244ac338",
+      "ansi_sha256": "60ac4a350cacb6a064b4839086578692bad8e9e0438beeb6b1ce131b16e6df4c",
+      "image": "bubble-empty-100.png",
+      "pixels": [
+        1200,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-120.json",
+      "json_sha256": "a002ce9f00a485e925bcd353ef75ebae7f1b71ac9d80ec12420a2da2b5931d5b",
+      "ansi_sha256": "fc46c9507a49bc33ff559c69c25dab44b5defdbfa014bcb43f4cc8fdac9f7c4a",
+      "image": "bubble-empty-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-160.json",
+      "json_sha256": "f28b0b9ca65f3f3f8268b5c4c9a64903e452847fc89e7e0614071f3238977e99",
+      "ansi_sha256": "96f46cf62f67c6a777f9b624cdfa34da36f51856fb1aa1c31239e4de14ab8c85",
+      "image": "bubble-empty-160.png",
+      "pixels": [
+        1920,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-80.json",
+      "json_sha256": "e6a564d441543f692fa37610503dbfffc3bceac179e2800aa91e0436ae688a41",
+      "ansi_sha256": "69dfb01d6ea9475129f9b807800df5fafcaff2784a550e2f53c3a9da45b39460",
+      "image": "bubble-empty-80.png",
+      "pixels": [
+        960,
+        264
+      ]
+    },
+    {
+      "name": "bubble-truecolor-powerline.json",
+      "json_sha256": "4c62a35fe7455cd41daf7aaa758c8f3c936823071c6dc2e192d6bcdd6384bba2",
+      "ansi_sha256": "8c64b7ad118eee7c889db80acdca111be47b245760088a4205d2e52762db8808",
+      "image": "bubble-truecolor-powerline.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-unicode-auto-none-120.json",
+      "json_sha256": "86526fd35b017feaef1f3d542d78d094edd9ef01cc6856e348879695a5c56cfb",
+      "ansi_sha256": "1db2c9991220020191b1f7b698c98fc8f5acc6a3e0c9c2d924ec10d4597661e8",
+      "image": "bubble-unicode-auto-none-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    }
+  ],
+  "wide_font": "msyh.ttc",
+  "wide_font_sha256": "d79c55e68b1131eea0cc1c47be4f572d964f28c682e143db2ad09c1e4cb07a3f",
+  "windows_terminal": [
+    {
+      "file": "paveway-rail-windows-truecolor.png",
+      "sha256": "ab6ba45569db70c6fbc3ada59bec91559a8da792e2abd9e6324bad6794854d86",
+      "pixels": [
+        2368,
+        1184
+      ],
+      "capture": "PrintWindow(PW_RENDERFULLCONTENT)",
+      "source_ansi": "bubble-truecolor-powerline.ansi"
+    },
+    {
+      "file": "paveway-rail-windows-256.png",
+      "sha256": "12badd6c0f4368e6a2363026e0c52df67969dd53489d22ee0860d74d28015d62",
+      "pixels": [
+        2368,
+        1184
+      ],
+      "capture": "PrintWindow(PW_RENDERFULLCONTENT)",
+      "source_ansi": "bubble-256color-powerline.ansi"
+    }
+  ],
+  "note": "Curated derived assets; raw paired JSON/ANSI and full rendering remain in /tmp. No user session data.",
+  "assets": [
+    {
+      "file": "bubble-chevron-16-256-frames.png",
+      "sha256": "b0eeeab85268b17de33580340dd46620b2772ec2fe429abced0624bca5d78baf"
+    },
+    {
+      "file": "bubble-chevron-16-truecolor-frames.png",
+      "sha256": "c05d04e9ce8b8f1d4ce4def355abad9f356522f62b56d0c91fef2053722f3a58"
+    },
+    {
+      "file": "bubble-chevron-4-256-frames.png",
+      "sha256": "37a4f94eedeb2c0bd28ab4f1b4ce67ac66eb5a2a28d9d2dc7726fe13ea3223cb"
+    },
+    {
+      "file": "bubble-chevron-4-truecolor-frames.png",
+      "sha256": "bdcc846dd126ff819fbf5e72db020428cd779cd5c1114215c0c9cdfb075103aa"
+    },
+    {
+      "file": "bubble-chevron-8-256-frames.png",
+      "sha256": "a13de4c2fde7c1601ee7217429e199a984a3547c56fed2c83730e4e8abd7d719"
+    },
+    {
+      "file": "bubble-chevron-8-256.gif",
+      "sha256": "c0f2ca895571683ef0768c72558e314241a47500dd15d7e97c3e75ea5d1def67"
+    },
+    {
+      "file": "bubble-chevron-8-truecolor-frames.png",
+      "sha256": "2a33824c35feab4412de9ef86ed8d47af1bd804ccf2c734b0b44115d55f65017"
+    },
+    {
+      "file": "bubble-chevron-8-truecolor.gif",
+      "sha256": "738be5a86f86de8f01b233f885d27e95caff8a111b90ac37ab7abac474a995cf"
+    },
+    {
+      "file": "layout.png",
+      "sha256": "d4fcd39bbfff9ff01a1ba1c528368858de49ed31c3a7f56252dab0f2ade653cf"
+    },
+    {
+      "file": "windows-terminal.png",
+      "sha256": "b7d2a4ec365a3139ceb6414a9c1d5ffbc5b13b757e5fc4dc474df316342eaf2d"
+    }
+  ]
+}

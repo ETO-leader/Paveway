@@ -74,8 +74,7 @@ function meterFromLine(line, label = "50% · 500K") {
     const cells = terminalCells(line);
     const labelStart = plain(line).indexOf(label);
     expect(labelStart).toBeGreaterThan(1);
-    // Read capacity from the bubble boundary, not a color boundary: idle unused
-    // capacity must share the capsule surface rather than cut a hole in it.
+    // Read capacity from the bubble boundary, not the rail's color boundaries.
     const opening = cells.findLastIndex((cell, index) => index < labelStart && ["\ue0b6", "("].includes(cell.text));
     expect(opening).toBeGreaterThanOrEqual(0);
     expect(cells[opening + 1].text).toBe(" ");
@@ -206,7 +205,7 @@ describe("pre-Chevron capsule defaults", () => {
 });
 
 describe("real context capacity", () => {
-    for (const [percent, occupied] of [[0, 0], [1, 1], [9, 1], [50, 8], [99, 15], [100, 16]]) {
+    for (const [percent, occupied] of [[0, 0], [1, 1], [9, 1], [50, 8], [74, 11], [75, 12], [84, 13], [85, 13], [99, 15], [100, 16]]) {
         test(`${percent}% preserves endpoints and occupies ${occupied}/16 cells`, () => {
             const cells = contextMeterCells(percent, 16, snapshot());
             expect(cells.filter(cell => cell.occupied)).toHaveLength(occupied);
@@ -225,11 +224,13 @@ describe("real context capacity", () => {
             expect(plain(line)).toContain("?% · 500K");
             expect(plain(line)).not.toContain("0% · 500K");
             const first = contextMeterCells(percent, 16, snapshot({phase: 0}));
-            const surface = terminalCells(line)[plain(line).indexOf("?% · 500K")].background;
-            expect(first.every(cell => !cell.occupied && cell.background === surface)).toBe(true);
+            const expectedBackgrounds = Array.from({length: 16}, (_, index) =>
+                index >= 14 ? "#574939" : index >= 12 ? "#30545b" : "#203f49");
+            expect(first.every(cell => !cell.occupied)).toBe(true);
+            expect(first.map(cell => cell.background)).toEqual(expectedBackgrounds);
             const renderedMeter = meterFromLine(line, "?% · 500K");
             expect(renderedMeter).toHaveLength(16);
-            expect(renderedMeter.every(cell => cell.background === surface)).toBe(true);
+            expect(renderedMeter.map(cell => cell.background)).toEqual(expectedBackgrounds);
             expect(contextMeterCells(percent, 16, snapshot({phase: 19}))).toEqual(first);
         }
     });
@@ -243,16 +244,135 @@ describe("real context capacity", () => {
         const roomy = renderer().render(160, snapshot());
         expect(plain(roomy)).toContain("auto85% (spec75%)");
         const compact = renderer().render(100, snapshot());
-        expect(meterFromLine(compact).some(cell => cell.underline || cell.bold)).toBe(true);
+        expect(meterFromLine(compact).some(cell => cell.background === "#574939")).toBe(true);
         const markerLine = renderer(paveway({coach: "c".repeat(48)})).render(160, snapshot());
         expect(meterFromLine(markerLine)).toHaveLength(16);
-        expect(meterFromLine(markerLine).some(cell => cell.underline)).toBe(true);
-        expect(meterFromLine(markerLine).some(cell => cell.bold)).toBe(true);
+        expect(meterFromLine(markerLine).some(cell => cell.background === "#30545b")).toBe(true);
+        expect(meterFromLine(markerLine).some(cell => cell.background === "#574939")).toBe(true);
+        expect(meterFromLine(roomy).map(cell => cell.background)).toEqual(meterFromLine(markerLine).map(cell => cell.background));
+        expect(meterFromLine(roomy).every(cell => !cell.underline && !cell.bold)).toBe(true);
         const full = snapshot({context: {...snapshot().context, percent: 100}});
         const fullMeter = meterFromLine(renderer().render(160, full), "100% · 500K");
         expect(fullMeter).toHaveLength(16);
         expect(fullMeter.every(cell => cell.background === "#67cbd0" && cell.text === " ")).toBe(true);
         expect(plain(renderer().render(160, snapshot({context: {...snapshot().context, autoCompact: false}})))).toContain("auto off");
+    });
+});
+
+describe("Context dual-limit rail", () => {
+    const normal = "#203f49", spec = "#30545b", auto = "#574939";
+    const cases = [
+        {name: "normal limits", limits: {}, bands: [normal, normal, normal, spec, auto]},
+        {name: "missing auto", limits: {thresholdPercent: undefined}, bands: [normal, normal, normal, spec, spec]},
+        {name: "missing spec", limits: {speculationPercent: null}, bands: [normal, normal, normal, normal, auto]},
+        {name: "equal limits", limits: {thresholdPercent: 75}, bands: [normal, normal, normal, auto, auto]},
+        {name: "reversed limits", limits: {speculationPercent: 90}, bands: [normal, normal, normal, normal, auto]},
+        {name: "close limits", limits: {speculationPercent: 74, thresholdPercent: 75}, bands: [normal, normal, normal, auto, auto]},
+        {name: "zero spec", limits: {speculationPercent: 0}, bands: [spec, spec, spec, spec, auto]},
+        {name: "zero auto", limits: {thresholdPercent: 0}, bands: [auto, auto, auto, auto, auto]},
+        {name: "hundred limits", limits: {speculationPercent: 100, thresholdPercent: 100}, bands: [normal, normal, normal, normal, normal]},
+        {name: "clamped limits", limits: {speculationPercent: -10, thresholdPercent: 120}, bands: [spec, spec, spec, spec, spec]},
+        {name: "disabled", limits: {autoCompact: false}, bands: [normal, normal, normal, normal, normal]},
+        {name: "not explicitly enabled", limits: {autoCompact: undefined}, bands: [normal, normal, normal, normal, normal]},
+    ];
+    for (const {name, limits, bands} of cases) {
+        test(`${name} maps absolute cell positions at every rail width`, () => {
+            for (const count of [0, 4, 8, 16]) {
+                const state = snapshot({context: {...snapshot().context, ...limits}});
+                const empty = contextMeterCells(0, count, state);
+                // Probe all cells independently of the implementation's rounding.
+                const boundaries = count === 4 ? [0, 1, 2, 3, 3]
+                    : count === 8 ? [0, 2, 4, 6, 7] : [0, 4, 8, 12, 14];
+                if (count === 0) expect(empty).toEqual([]);
+                else {
+                    for (let probe = 0; probe < boundaries.length; probe++) {
+                        // Four cells cannot distinguish spec75 from auto85:
+                        // auto begins at ceil(4*.85)=4, outside the rail.
+                        if (count === 4 && probe === 4) continue;
+                        expect(empty[boundaries[probe]].background).toBe(bands[probe]);
+                    }
+                }
+                for (const percent of [0, 1, 74, 75, 84, 85, 99, 100]) {
+                    const cells = contextMeterCells(percent, count, state);
+                    expect(cells).toHaveLength(count);
+                    expect(cells.map(cell => cell.background)).toEqual(
+                        cells.map((cell, index) => cell.occupied ? "#67cbd0" : empty[index].background));
+                    for (const phase of [1, 7, 16, 31]) {
+                        expect(contextMeterCells(percent, count, {...state, phase}).map(cell => cell.background))
+                            .toEqual(cells.map(cell => cell.background));
+                    }
+                }
+            }
+        });
+    }
+    test("unknown limits never invent a band", () => {
+        for (const missing of [undefined, null, NaN, Infinity, -Infinity]) {
+            for (const count of [0, 4, 8, 16]) {
+                const state = snapshot({context: {...snapshot().context, thresholdPercent: missing, speculationPercent: missing}});
+                expect(contextMeterCells(0, count, state).every(cell => cell.background === normal)).toBe(true);
+                const specOnly = contextMeterCells(0, count, snapshot({context: {...snapshot().context, thresholdPercent: missing}}));
+                expect(specOnly.every((cell, index) => cell.background === (index >= Math.ceil(count * .75) ? spec : normal))).toBe(true);
+                const autoOnly = contextMeterCells(0, count, snapshot({context: {...snapshot().context, speculationPercent: missing}}));
+                expect(autoOnly.every((cell, index) => cell.background === (index >= Math.ceil(count * .85) ? auto : normal))).toBe(true);
+            }
+        }
+    });
+    test("numeric status uses the highest valid crossed limit in every host mode and symbol preset", () => {
+        const statuses = [
+            [74, {}, "cyan"], [75, {}, "spec"], [84, {}, "spec"], [85, {}, "auto"], [100, {}, "auto"],
+            [null, {}, "cyan"], [NaN, {}, "cyan"], [Infinity, {}, "cyan"],
+            [100, {autoCompact: false}, "cyan"],
+            [80, {speculationPercent: 90}, "cyan"], [90, {speculationPercent: 90}, "auto"],
+            [75, {thresholdPercent: 75}, "auto"],
+            [80, {thresholdPercent: undefined}, "spec"],
+            [80, {thresholdPercent: Infinity}, "spec"],
+            [80, {speculationPercent: NaN}, "cyan"],
+            [100, {thresholdPercent: -Infinity, speculationPercent: Infinity}, "cyan"],
+            [80, {speculationPercent: undefined}, "cyan"],
+            [100, {thresholdPercent: null, speculationPercent: null}, "cyan"],
+            [0, {speculationPercent: 0}, "spec"],
+            [0, {thresholdPercent: 0}, "auto"],
+            [99, {speculationPercent: 100, thresholdPercent: 100}, "cyan"],
+            [100, {speculationPercent: 100, thresholdPercent: 100}, "auto"],
+        ];
+        for (const preset of ["nerd", "unicode", "ascii"]) {
+            for (const mode of ["truecolor", "256color", "none"]) {
+                const colors = mode === "256color"
+                    ? {cyan: "256:80", spec: "256:152", auto: "256:179"}
+                    : {cyan: "#67cbd0", spec: "#a6c9c2", auto: "#d5ab68"};
+                for (const [percent, limits, status] of statuses) {
+                    const state = snapshot({context: {...snapshot().context, percent, ...limits}});
+                    const line = renderer(paveway(), host(mode, preset)).render(160, state);
+                    const label = `${Number.isFinite(percent) ? percent : "?"}%`;
+                    const start = plain(line).indexOf(label);
+                    expect(start).toBeGreaterThan(0);
+                    expect(terminalCells(line).slice(start, start + label.length).every(cell =>
+                        cell.foreground === (mode === "none" ? "default" : colors[status]))).toBe(true);
+                    if (mode === "none") expect(line).not.toContain("\x1b");
+                }
+            }
+        }
+    });
+    test("rendered rail pins palette colors and leaves every other bubble unchanged", () => {
+        for (const preset of ["nerd", "unicode", "ascii"]) {
+            for (const mode of ["truecolor", "256color", "none"]) {
+                const line = renderer(paveway(), host(mode, preset));
+                const state = snapshot({context: {...snapshot().context, percent: 0}});
+                const on = line.render(120, state);
+                const off = line.render(120, {...state, context: {...state.context, autoCompact: false}});
+                const meter = meterFromLine(on, preset === "ascii" ? "0% / 500K" : "0% · 500K");
+                const palette = mode === "256color" ? ["256:23", "256:24", "256:58"]
+                    : mode === "none" ? ["default", "default", "default"] : [normal, spec, auto];
+                expect(meter).toHaveLength(8);
+                expect(meter.map(cell => cell.background)).toEqual(
+                    Array.from({length: 8}, (_, index) => palette[index >= 7 ? 2 : index >= 6 ? 1 : 0]));
+                const caps = preset === "ascii" ? {opening: "(", closing: ")"} : {};
+                const others = value => bubblesFromLine(value, caps.opening, caps.closing)
+                    .filter(bubble => !bubble.inner.map(cell => cell.text).join("").includes("0%"))
+                    .map(bubble => ({left: bubble.left, inner: bubble.inner, right: bubble.right}));
+                expect(others(on)).toEqual(others(off));
+            }
+        }
     });
 });
 
@@ -305,7 +425,7 @@ describe("fixed Chevron light flow", () => {
             for (const phase of [0, 4, 8, 17, 31]) {
                 const unused = contextMeterCells(percent, 16, snapshot({phase})).filter(cell => !cell.occupied);
                 const origin = contextMeterCells(0, unused.length, snapshot({phase}));
-                expect(unused).toEqual(origin);
+                expect(unused.map(cell => cell.foreground)).toEqual(origin.map(cell => cell.foreground));
             }
         }
         for (const percent of [90, 99, 100]) {

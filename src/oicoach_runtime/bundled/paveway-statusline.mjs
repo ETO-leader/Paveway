@@ -3,6 +3,7 @@ const TOKENS = Object.freeze({
     brand: "#8475cc", identity: "#35577f", workflow: "#29384e",
     ink: "#dae7f3", cyan: "#67cbd0", warning: "#d5ab68", error: "#f5dce0",
     context: "#203f49", cost: "#222c40", event: "#30505c", fault: "#633c4b",
+    contextSpec: "#30545b", contextAuto: "#574939", contextNotice: "#a6c9c2",
 });
 // Independent visual decision: terminal font coverage is not a UI-symbol preset.
 const CAPS = Object.freeze({
@@ -33,6 +34,21 @@ function knownPercent(value) {
     return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
 }
 
+// A missing boundary has no rail or warning. Inverted limits cannot define a
+// speculative interval; keep the authoritative Auto boundary, never swap them.
+function contextRail(context = {}, count = 0) {
+    const auto = context.autoCompact === true ? knownPercent(context.thresholdPercent) : null;
+    let spec = context.autoCompact === true ? knownPercent(context.speculationPercent) : null;
+    if (auto !== null && spec !== null && spec > auto) spec = null;
+    const percent = knownPercent(context.percent);
+    return {
+        specStart: spec === null ? Infinity : Math.ceil(count * spec / 100),
+        autoStart: auto === null ? Infinity : Math.ceil(count * auto / 100),
+        foreground: percent !== null && auto !== null && percent >= auto ? TOKENS.warning
+            : percent !== null && spec !== null && percent >= spec ? TOKENS.contextNotice : TOKENS.cyan,
+    };
+}
+
 function rgb(hex) {
     return [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
 }
@@ -55,9 +71,11 @@ export function contextMeterCells(percent, count, snapshot = {}) {
     const remaining = count - occupied;
     const moving = ratio !== null && snapshot.working === true && snapshot.motion !== false;
     const phase = Number.isFinite(snapshot.phase) ? snapshot.phase : 0;
+    const rail = contextRail(snapshot.context, count);
     return Array.from({length: count}, (_, index) => ({
         occupied: index < occupied,
-        background: index < occupied ? TOKENS.cyan : TOKENS.context,
+        background: index < occupied ? TOKENS.cyan : index >= rail.autoStart ? TOKENS.contextAuto
+            : index >= rail.specStart ? TOKENS.contextSpec : TOKENS.context,
         foreground: index < occupied ? TOKENS.cyan
             : moving ? chevronColor(index - occupied, remaining, phase) : CHEVRON_STATIC,
     }));
@@ -93,6 +111,7 @@ const ANSI_TOKENS = new Map([
     [TOKENS.brand, 98], [TOKENS.identity, 60], [TOKENS.workflow, 17], [TOKENS.context, 23],
     [TOKENS.cost, 235], [TOKENS.event, 24], [TOKENS.fault, 95], [TOKENS.ink, 189],
     [TOKENS.cyan, 80], [TOKENS.warning, 179], [TOKENS.error, 224],
+    [TOKENS.contextSpec, 24], [TOKENS.contextAuto, 58], [TOKENS.contextNotice, 152],
 ]);
 // Keep foreground light levels distinct in ANSI-256 as well as TrueColor.
 CHEVRON_LIGHT.forEach((hex, index) => ANSI_TOKENS.set(hex, CHEVRON_ANSI[index]));
@@ -210,9 +229,7 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
             const boundary = context.autoCompact === true && knownPercent(context.thresholdPercent) !== null
                 ? `auto${percentText(context.thresholdPercent)}${knownPercent(context.speculationPercent) !== null ? ` (spec${percentText(context.speculationPercent)})` : ""}`
                 : context.autoCompact === false ? "auto off" : "";
-            const threshold = knownPercent(context.thresholdPercent);
-            const abnormal = context.autoCompact === true && threshold !== null
-                && knownPercent(context.percent) !== null && context.percent >= threshold;
+            const contextForeground = contextRail(context).foreground;
             const wakeup = state.wakeup;
             const timing = sanitizeStatusText(wakeup?.timing);
             const wakeFault = wakeup?.unavailable ? "Wakeup !" : wakeup === undefined
@@ -258,10 +275,10 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
                 ? add("identity", shorten(model, modelBudget, ascii), TOKENS.identity, "left") : undefined;
             let meterWidth = width >= 64 ? 4 : 0;
             let capacity = add("context", meterWidth ? " ".repeat(meterWidth + 1) + contextLabel : percent,
-                TOKENS.context, "right", abnormal ? TOKENS.warning : TOKENS.cyan);
+                TOKENS.context, "right", contextForeground);
             if (!capacity) {
                 meterWidth = 0;
-                capacity = add("context", percent, TOKENS.context, "right", abnormal ? TOKENS.warning : TOKENS.cyan);
+                capacity = add("context", percent, TOKENS.context, "right", contextForeground);
             }
             const clock = ascii ? "Wake" : "◷";
             if (!wakeFault && wakeup && (wakeup.running || (timing && timing !== "none"))) {
@@ -296,23 +313,15 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
                 }
             }
             upgrade(flow, workflow);
-            let boundaryLabel = "";
+            // Exact limits remain optional text within the existing width budget.
             if (capacity && width >= 160 && boundary) {
                 const text = capacity.text + " " + boundary;
                 if (measure(text) - measure(capacity.text) <= width - used()) {
                     capacity.text = text;
-                    boundaryLabel = " " + boundary;
                 }
             }
-            const cells = contextMeterCells(context.percent, meterWidth);
+            const cells = contextMeterCells(context.percent, meterWidth, {context});
             const occupied = cells.filter(cell => cell.occupied).length;
-            const markers = new Map();
-            if (!boundaryLabel && context.autoCompact === true) {
-                for (const [value, styleCode] of [[context.speculationPercent, "4"], [context.thresholdPercent, "4;1"]]) {
-                    const limit = knownPercent(value);
-                    if (limit !== null) markers.set(Math.min(meterWidth - 1, Math.floor(meterWidth * limit / 100)), styleCode);
-                }
-            }
             const renderCapacity = frame => {
                 const moving = mode !== "none" && knownPercent(context.percent) !== null
                     && frame.working === true && frame.motion !== false;
@@ -321,10 +330,7 @@ export function createStatusLine(getPavewayState, ui, options = {}) {
                     const text = cell.occupied ? mode === "none" ? ascii ? "=" : "━" : " " : chevron;
                     const foreground = !cell.occupied && moving
                         ? chevronColor(index - occupied, cells.length - occupied, phase) : cell.foreground;
-                    // Boundary styling preserves the continuous Chevron glyphs.
-                    const marker = !cell.occupied && markers.get(index);
-                    return paint(marker && mode !== "none" ? `\x1b[${marker}m${text}\x1b[24m` : text,
-                        cell.background, foreground);
+                    return paint(text, cell.background, foreground);
                 }).join("");
                 return bubble(capacity, meter
                     + paint(meterWidth ? " " : "", capacity.background, capacity.foreground)

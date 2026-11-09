@@ -12,6 +12,7 @@ from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 
+from . import __version__
 from .config import ensure_private_directory
 from .customization import snapshot
 from .errors import RuntimeContractError
@@ -61,7 +62,7 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     from .proxy import synchronize
     synchronize(config_path)
-    config = replace(config, agent=replace(config.agent, executable=prepare_native_host(config.agent.executable)))
+    config = replace(config, agent=replace(config.agent, executable=prepare_native_host()))
     while True:
         conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
         if cancelled:
@@ -148,6 +149,7 @@ def _run_owned(config, config_path, workflow, lease, lock):
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
                 "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled,
                 "memory_enabled": workflow.memory_enabled,
+                "paveway_version": __version__,
                 "cli_prefix": [sys.executable, "-m", "oicoach_runtime"], "config_path": str(config_path),
                 "switch_path": str(switch_path), "statusline": {"cap_style": config.statusline.cap_style}}
     private = root / (launch_id + ".json")

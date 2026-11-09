@@ -104,7 +104,8 @@ class Terminal:
         self.case.assertIsNotNone(y, "\n".join(self.screen.display) +
                                   "\n" + self.raw.decode(errors="replace")[-1600:])
         return tuple((self.screen.buffer[y][x].data, self.screen.buffer[y][x].fg,
-                      self.screen.buffer[y][x].bg) for x in range(self.screen.columns))
+                      self.screen.buffer[y][x].bg, self.screen.buffer[y][x].underscore,
+                      self.screen.buffer[y][x].bold) for x in range(self.screen.columns))
 
     def capture(self, name):
         directory = os.environ.get("PAVEWAY_STATUSLINE_EVIDENCE")
@@ -260,6 +261,9 @@ class NativeStatusLineTests(NativeFixture):
             self.assertNotIn("Inbox", text)
             self.assertIn("probe", text)
             self.assertRegex(text, r"\d+% · 128K")
+            self.assert_context_rail(terminal.cells(), text, 128000, terminal=terminal)
+            if columns == 160:
+                self.assertIn("auto85% (spec74%)", text)
             terminal.capture(f"empty-{columns}")
         self.assertEqual(self.server.requests, [])
 
@@ -303,7 +307,7 @@ class NativeStatusLineTests(NativeFixture):
                             surface = "203f49" if color_mode == "truecolor" else "005f5f"
                             self.assertEqual(cells[opening][1:3], (surface, "default"))
                             self.assertEqual(cells[-1][1:3], (surface, "default"))
-                            self.assertTrue(all(cell[2] == surface for cell in meter if cell[0] == "\ue0b1"))
+                        self.assert_context_rail(cells, text, 128000, terminal=terminal)
                         terminal.capture(f"unicode-auto-{color_mode}-{columns}")
                 finally:
                     terminal.close()
@@ -468,9 +472,11 @@ class NativeStatusLineTests(NativeFixture):
         self.assertTrue(unused, "Working context must retain unused chevrons")
         for x in unused:
             self.assertEqual({frame[x][0] for frame in frames}, {"\ue0b1"})
-            self.assertEqual({frame[x][2] for frame in frames}, {"203f49"})
+            self.assertEqual({frame[x][2] for frame in frames}, {frames[0][x][2]})
         self.assertTrue(any(len({frame[x][1] for frame in frames}) > 1 for x in unused),
                         "Working chevron foregrounds must animate")
+        for frame in frames:
+            self.assert_context_rail(frame, "".join(cell[0] for cell in frame), 16000)
         terminal.send(b"\x1b")
         terminal.until(lambda: self.record()["status"] == "idle")
         release.set()
@@ -500,12 +506,70 @@ class NativeStatusLineTests(NativeFixture):
         label = re.search(r"\d+% · \d+K", text)
         if label is None:
             raise AssertionError(text)
-        caps = ("\ue0b6", "\ue0b4", "(", ")")
         opening = max(x for x, cell in enumerate(cells)
-                      if cell[0] in caps and x < label.start())
-        closing = next(x for x, cell in enumerate(cells)
-                       if x > opening and cell[0] in caps)
+                      if cell[0] in ("\ue0b6", "(") and x < label.start())
+        # Context is the final bubble; its Limit text may itself contain (...).
+        cap = "\ue0b4" if cells[opening][0] == "\ue0b6" else ")"
+        closing = max(x for x, cell in enumerate(cells)
+                      if x > opening and cell[0] == cap)
         return cells[opening + 2:label.start() - 1], opening, closing
+
+    def assert_context_rail(self, cells, text, window, *, auto_compact=True, terminal=None):
+        meter, opening, closing = self.context_meter(cells, text)
+        # Pinned OMP defaults, not invented 75%/85% fixture boundaries:
+        # reserve=max(15% window, 16384), recovering to 15% for tiny windows;
+        # speculation lead=clamp(floor(threshold/8), 8192, 32000).
+        # The text-only loopback model supports handoff speculation.
+        spec_percent, spec_starts = {
+            128000: (74.375, {4: 3, 8: 6, 16: 12}),
+            16000: (33.8, {4: 2, 8: 3, 16: 6}),
+            4000: (0, {4: 0, 8: 0, 16: 0}),
+        }[window]
+        auto_start = {4: 4, 8: 7, 16: 14}[len(meter)]
+        spec_start = spec_starts[len(meter)]
+        color_mode = getattr(self, "color_mode", "truecolor")
+        colors = {
+            "truecolor": ("203f49", "30545b", "574939", "67cbd0", "a6c9c2", "d5ab68"),
+            "256color": ("005f5f", "005f87", "5f5f00", "5fd7d7", "afd7d7", "d7af5f"),
+        }.get(color_mode)
+        context = cells[opening:closing + 1]
+        self.assertTrue(all(not cell[3] and not cell[4] for cell in context),
+                        "Context must have neither underscore nor bold: " + text)
+        if color_mode == "none":
+            self.assertTrue(all(cell[1:3] == ("default", "default") for cell in context), text)
+            if terminal is not None:
+                # OMP still uses terminal-control escapes elsewhere. The complete
+                # uncolored Context bubble itself must have no embedded ANSI.
+                self.assertIn(text[opening:closing + 1].encode(), terminal.raw)
+            return
+        normal, spec, auto, cyan, notice, warning = colors
+        for index, cell in enumerate(meter):
+            if cell[0] == " ":
+                self.assertEqual(cell[1:3], (cyan, cyan), text)
+            else:
+                self.assertEqual(cell[0], "\ue0b1", text)
+                expected = auto if auto_compact and index >= auto_start else (
+                    spec if auto_compact and index >= spec_start else normal)
+                self.assertEqual(cell[2], expected, f"Context rail cell {index}: {text}")
+        label = re.search(r"(\d+)% · \d+K", text)
+        reported = int(label.group(1))
+        # OMP reports an unrounded percentage, whereas its visible label rounds.
+        # Permit both adjacent label colors only inside that half-percent margin.
+        lower, upper = max(0, reported - .5), min(100, reported + .5)
+        allowed = {cyan}
+        if auto_compact:
+            allowed = set()
+            if lower < spec_percent:
+                allowed.add(cyan)
+            if upper >= spec_percent and lower < 85:
+                allowed.add(notice)
+            if upper >= 85:
+                allowed.add(warning)
+        self.assertTrue(all(cell[1] in allowed and cell[2] == normal
+                            for cell in cells[label.start():label.end()]), text)
+        if "auto" in text[label.end():closing]:
+            expected = f"auto85% (spec{round(spec_percent)}%)" if auto_compact else "auto off"
+            self.assertIn(expected, text[label.end():closing])
 
     def capture_chevron_frames(self, release, prefix, columns, window, color_mode, motion, prompt):
         self.configure(context_window=window, color_mode=color_mode, motion=motion, preset="unicode")
@@ -513,7 +577,7 @@ class NativeStatusLineTests(NativeFixture):
         terminal = Terminal(self, columns=columns)
         try:
             terminal.until(lambda: "Inbox ?" not in terminal.screen.display[terminal.status()])
-            if prefix == "chevron-4-truecolor":
+            if prefix.startswith("chevron-4-"):
                 # A distant wakeup keeps a static second bubble and squeezes the
                 # Context meter to four cells without changing during capture.
                 terminal.send("/wakeup in 23h CHEVRON4_SETUP\r")
@@ -530,9 +594,9 @@ class NativeStatusLineTests(NativeFixture):
             first_cells = terminal.cells()
             first_text = "".join(cell[0] for cell in first_cells)
             first_meter = self.context_meter(first_cells, first_text)[0]
-            animated = motion and sum(cell[0] == "\ue0b1" for cell in first_meter) > 2
+            animated = color_mode != "none" and motion and sum(cell[0] == "\ue0b1" for cell in first_meter) > 2
             frames = []
-            for index in range(17):
+            for index in range(2 if color_mode == "none" else 17):
                 if index and animated:
                     previous = frames[-1]
                     deadline = time.monotonic() + 1
@@ -542,6 +606,8 @@ class NativeStatusLineTests(NativeFixture):
                 elif index:
                     terminal.pump(.125)
                 frames.append(terminal.cells())
+                self.assert_context_rail(frames[-1], "".join(cell[0] for cell in frames[-1]),
+                                         window, terminal=terminal)
                 terminal.capture(f"{prefix}-{index}")
             text = terminal.screen.display[terminal.status()]
             release.set()
@@ -550,6 +616,7 @@ class NativeStatusLineTests(NativeFixture):
             idle = terminal.cells()
             terminal.pump(.35)
             self.assertEqual(terminal.cells(), idle)
+            self.assert_context_rail(idle, "".join(cell[0] for cell in idle), window, terminal=terminal)
             terminal.capture(f"{prefix}-idle")
             return frames, text, idle
         finally:
@@ -571,9 +638,13 @@ class NativeStatusLineTests(NativeFixture):
         scenarios = [
             ("chevron-8-truecolor", 120, 16000, "truecolor", True, "CHEVRON8 "),
             ("chevron-8-256", 120, 16000, "256color", True, "CHEVRON8 "),
+            ("chevron-8-none", 120, 16000, "none", True, "CHEVRON8 "),
             ("chevron-16-truecolor", 160, 16000, "truecolor", True, "CHEVRON16 "),
             ("chevron-16-256", 160, 16000, "256color", True, "CHEVRON16 "),
+            ("chevron-16-none", 160, 16000, "none", True, "CHEVRON16 "),
             ("chevron-4-truecolor", 64, 16000, "truecolor", True, "CHEVRON4 "),
+            ("chevron-4-256", 64, 16000, "256color", True, "CHEVRON4 "),
+            ("chevron-4-none", 64, 16000, "none", True, "CHEVRON4 "),
             ("chevron-mid-truecolor", 160, 4000, "truecolor", True, "word " * 600),
             ("chevron-high-truecolor", 160, 4000, "truecolor", True, "word " * 1400),
             ("chevron-motion-off", 120, 16000, "truecolor", False, "CHEVRON_STATIC "),
@@ -584,14 +655,14 @@ class NativeStatusLineTests(NativeFixture):
                     release, prefix, columns, window, color_mode, motion, prompt)
                 self.assertEqual(len({tuple(cell[0] for cell in frame) for frame in frames}), 1, text)
                 meter, opening, closing = self.context_meter(frames[0], text)
-                expected_size = 4 if prefix == "chevron-4-truecolor" else (
+                expected_size = 4 if prefix.startswith("chevron-4-") else (
                     16 if prefix.startswith(("chevron-16", "chevron-mid", "chevron-high")) else 8)
                 self.assertEqual(len(meter), expected_size, text)
                 idle_text = "".join(cell[0] for cell in idle)
                 idle_meter = self.context_meter(idle, idle_text)[0]
                 occupied_in_meter = 0
                 for cell in meter:
-                    if cell[0] != " " or cell[1] != cell[2]:
+                    if cell[0] not in (" ", "━"):
                         break
                     occupied_in_meter += 1
                 remaining = len(meter) - occupied_in_meter
@@ -599,24 +670,23 @@ class NativeStatusLineTests(NativeFixture):
                 # Check each observed state against its own rounded percentage,
                 # rather than assuming a fixture string is exactly half-full.
                 for observed, label in [(meter, text), (idle_meter, idle_text)]:
-                    filled = sum(cell[0] == " " and cell[1] == cell[2] for cell in observed)
+                    filled = sum(cell[0] in (" ", "━") for cell in observed)
                     reported = int(re.search(r"(\d+)%", label).group(1))
                     self.assertLessEqual(abs(filled * 100 / len(observed) - reported),
                                          100 / len(observed) + .5, label)
-                    self.assertTrue(all(cell[0] == "\ue0b1" and cell[1] != cell[2]
+                    self.assertTrue(all(cell[0] == "\ue0b1"
+                                        and (color_mode == "none" or cell[1] != cell[2])
                                         for cell in observed[filled:]), label)
                 unused = set(range(opening + 2 + occupied_in_meter, opening + 2 + len(meter)))
                 self.assertEqual(len(idle_meter), len(meter), text)
                 for index, cell in enumerate(meter):
                     if index < occupied_in_meter:
-                        self.assertEqual(cell[0], " ", text)
+                        self.assertEqual(cell[0], "━" if color_mode == "none" else " ", text)
                         self.assertEqual(cell[1], cell[2], text)
                         if color_mode == "truecolor":
                             self.assertEqual(cell[1:3], ("67cbd0", "67cbd0"), text)
                     else:
                         self.assertEqual(cell[0], "\ue0b1", text)
-                        if color_mode == "truecolor":
-                            self.assertEqual(cell[2], "203f49", text)
                 for frame in frames:
                     for index, cell in enumerate(frame):
                         self.assertEqual(cell[0], frames[0][index][0],
@@ -626,7 +696,7 @@ class NativeStatusLineTests(NativeFixture):
                         if index not in unused:
                             self.assertEqual(cell, frames[0][index],
                                              f"{prefix}: non-unused cell {index} changed")
-                if not motion or remaining <= 2:
+                if color_mode == "none" or not motion or remaining <= 2:
                     self.assertEqual(len(set(frames)), 1,
                                      "motion=false and very short tails must be static")
                 else:
@@ -665,6 +735,8 @@ class NativeStatusLineTests(NativeFixture):
         path.write_text(json.dumps(settings))
         terminal = Terminal(self)
         terminal.capture("low-context")
+        self.assert_context_rail(terminal.cells(), terminal.screen.display[terminal.status()],
+                                 4000, auto_compact=False, terminal=terminal)
         prompt = "CAPACITY_HEAD " + "word " * 2200 + " CAPACITY_TAIL"
         terminal.send("\x1b[200~" + prompt + "\x1b[201~\r")
         terminal.until(lambda: "M0_REPLY" in "\n".join(terminal.screen.display) and self.record()["status"] == "idle")
@@ -674,4 +746,5 @@ class NativeStatusLineTests(NativeFixture):
         self.assertIsNotNone(percent, status)
         self.assertGreaterEqual(int(percent.group(1)), 80)
         self.assertTrue(any(self.is_prompt_request(body, prompt) for body in self.server.requests))
+        self.assert_context_rail(terminal.cells(), status, 4000, auto_compact=False, terminal=terminal)
         terminal.capture("high-context")
