@@ -61,14 +61,29 @@ class Wakeup:
                    "intent": parameters["intent"], "conversation_id": record["conversation_id"],
                    "wakeup_when": semantic, "message": parameters["reason"]}
         fingerprint = hashlib.sha256(canonical_json([workflow, task, semantic, payload]).encode()).hexdigest()
-        event = self.store.enqueue(workflow, task, parameters["reason"], parameters["dedupe_key"], payload,
-                                   at=due, request_identity=fingerprint)
-        key = "native-wakeup-config:v1:" + event["event_id"]
-        if self.store.metadata(key) is None:
-            snapshot = self.store.metadata(record["config_key"])
+        with self.store.transaction() as db:
+            # Reauthenticate under the same write transaction as admission. A
+            # concurrent owner/config change must not leave half an event.
+            current = Frontend(self.store).authenticate(**owner)
+            if current["status"] not in ("active", "idle") or not alive(current.get("omp_pid"), current.get("omp_identity")):
+                raise ConflictError("Wakeup requires a live, attested native owner")
+            existing = db.execute("SELECT event_id FROM events WHERE workflow_id=? AND task_id=? AND dedupe_key=?",
+                                  (workflow, task, parameters["dedupe_key"])).fetchone()
+            event = self.store.enqueue(workflow, task, parameters["reason"], parameters["dedupe_key"], payload,
+                                       at=due, request_identity=fingerprint, _db=db)
+            key = "native-wakeup-config:v1:" + event["event_id"]
+            if existing:
+                if self.store.metadata(key) is None:
+                    from .errors import WakeupSnapshotError
+                    raise WakeupSnapshotError()
+                return event
+            snapshot = self.store.metadata(current["config_key"])
             if not snapshot:
-                raise ConflictError("Native launch snapshot is missing; inspect the queued event before retrying")
-            with self.store.transaction() as db:
-                self.store._set_metadata(db, key, {**snapshot,
-                    "binding_task_id": record["background_task_id"]})
+                raise ConflictError("Native launch snapshot is missing; no event was scheduled")
+            from .customization import validate
+            if not isinstance(snapshot, dict) or set(snapshot) != {"settings", "workflow_instructions", "workflow_revision"}:
+                raise ConflictError("Native launch snapshot is invalid; no event was scheduled")
+            validate(snapshot["settings"])
+            self.store._set_metadata(db, key, {**snapshot,
+                "binding_task_id": record["background_task_id"]})
         return event

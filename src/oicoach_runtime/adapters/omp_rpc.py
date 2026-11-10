@@ -122,6 +122,11 @@ class OmpRpc:
                 raise AgentError("Invalid agent RPC frame")
             if value["type"] == "rpc_frame_error":
                 raise AgentError("Agent reported a transport overflow")
+            if value["type"] == "paveway_memory_error":
+                code = value.get("code")
+                if value.get("contractVersion") != 1 or code not in ("memory_recall_failed", "memory_projection_failed"):
+                    raise AgentError("Invalid Runtime Memory diagnostic", code="agent_memory_diagnostic_invalid")
+                raise AgentError("Runtime Memory context unavailable; inspect Runtime before explicit recovery", code=code)
             if value["type"] == "extension_ui_request":
                 raise AgentError("Headless run requires human interaction")
             if value["type"] == "notice" and value.get("source") == "session-persistence" and value.get("level") == "error":

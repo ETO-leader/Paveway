@@ -711,3 +711,25 @@ Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显
 合并 origin/main 的 b809568（11 个提交）与本地 6ca3bd7，自动合并无冲突。保留远端 UI、独立 OMP Host 与记忆上下文更新，并保留归档创建／消息时间、系统时区显示及最近更新排序。未修改正式 Runtime、用户配置、私密 Skills 或 event.md。
 
 合并后 Python 全量 467 项，389 通过、78 条件跳过（121.340 秒）；Bun UI 118 通过、12 跳过。日志分别为 /tmp/paveway-sync-20261110-python.log 与 /tmp/paveway-sync-20261110-bun.log。原生 UI 单项尝试在固定 Bun 1.4.4 下载阶段超过夹具等待时间，尚未完成新 Host 的实机验收（/tmp/paveway-sync-20261110-native.log）；未放宽断言或修改安装版本。合并前本地归档单元 13 项及原生归档 1 项均通过。
+
+
+## 2026-11-10 — improve 工程改进与原生交接验收
+
+基于 4934897，按外部 improve 指令核对并完成 R1/R2/R3 与 M1/M2/M3 的本轮范围。Native 唤醒将 owner 复核、事件／审计、冻结配置纳入同一事务；失败零残留、重试保留首份快照，旧缺快照事件显式 blocked。Native Memory 写入接通 expires_at/source_event_id 并保留旧调用默认。Recall 区分 available/empty/expired，故障通过固定错误码区分派发前后；新增显式的当前 UI 无记忆模式及下一轮撤回。status 添加不含正文的按 binding 聚合诊断，并将未重新绑定的连带阻塞归回原 binding。未改变现有会话所有权、严格后台完成条件和恢复授权。
+
+CI 保留 Python 矩阵，新增锁定 OMP/Bun、前置条件、Bun 与本地 HTTP/PTY 原生作业。新增双题计划交接：CLI v1、Native task 工具 v2（来源／过期）、单次检查点、退出 UI、后台召回当前 v2、CLI 复盘 v3；另有真实 UI 无记忆 off/on 验收。跨设备笔记同步仍是独立任务，未把 Memory 导出至用户数据 Git。细节见 [工程说明](engineering-improvements.md)。
+
+最终全量 Python 477 项，397 通过、80 条件跳过（119.021 秒），/tmp/paveway-improve-python-final.log。锁定宿主原生聊天／管理／恢复／Memory／Skills 37 项通过（223.024 秒），/tmp/paveway-improve-native-full.log；最后诊断查询调整后，原生 off/on、训练交接、存活 owner 重启保护 3 项复验通过（15.359 秒），/tmp/paveway-improve-native-final.log。Bun 固定 1.4.4 与对应 OMP source 执行 131 项全部通过，/tmp/paveway-improve-bun-full.log。核心最后定向 42 项通过（2.845 秒）。CI YAML 解析有效；远端 GitHub CI 尚未触发，不能据本地结果声称远端已通过。
+
+锁定宿主安装成功，没有修改全局 OMP/Tijian 安装。在无活动 Run、无存活 owner 且会话锁均可取得时重启现有 Runtime，确认运行构建与源码一致、诊断接口可用，原 owner 记录与状态保留。未恢复或重放旧事件、未更改私人 Prompt/Skills、event.md、模型凭据或用户数据远端设置。
+
+
+## 2026-11-10 — 文件导入 Skill 与 GPT 分析草稿
+
+原生 `/paveway skills` 增加 Import from file · GPT analysis 与进程内草稿恢复入口。`skill_import.py` 和只读 `workflow customize skill-source` 读取明确选择的 UTF-8／Skill ZIP；包不落盘、不执行、不访问外部引用，保留文本与未读取资源的元数据。通过固定 OMP 公开模型 SDK，沿用当前模型、思考等级与认证，独立请求分析用途、触发、输入、步骤、输出、约束、依赖和注意事项，生成现有四字段草稿。源文件、聊天、Persona、Memory 不互相混入；分析过程不保存 Skill。
+
+草稿可分别预览／编辑，确认后复用现有 skill-put、revision/CAS、64 KiB 校验和启停语义。并发修改拒绝覆盖，保留草稿并可重新打开按新 revision 审核；无需重复调用模型。取消／超时／模型错误／截断／无效 JSON 不保存，provider 原始错误不回显。单文件 1 MiB、分析文本与包解压总量 256 KiB、64 条目；包资源不安装，要求模型整合必需的文本引用并说明依赖。使用与边界见 [自定义 Skill](customization.md#从文件导入并由-gpt-整理-skill)。
+
+全量 Python 496 项，407 通过、89 条件跳过（144.444 秒），/tmp/paveway-skill-import-python-full.log。固定 Bun/Host 全量 136 项通过，/tmp/paveway-skill-import-bun-full.log。真实原生管理 UI 19 项全部通过（109.182 秒），/tmp/paveway-skill-import-native-full.log，包含成功分析／预览／保存、无效分析不保存、并发修改保留草稿且不覆盖 Prompt；原手动创建 Skill 回归保留。另以超过 64 KiB 的完整源文件实测导入并核对末尾标记确实进入模型请求（4.474 秒），/tmp/paveway-skill-import-native-long-source.log。全部模型测试使用真实 OMP/PTY 与隔离本地 HTTP Provider，未调用私人付费模型；未声称对生成内容质量进行真实模型评估。
+
+未导入真实用户文件、未重启真实服务、未修改真实会话或远端设置。保留既有工作区修改，未 commit 或 push。新增 Native CI 验收选择器；远端 CI 未触发。加载代码需在正常退出 UI、后台空闲后重启 Runtime，再进入原生界面；导入后保存的 Skill 从下次原生启动加载。

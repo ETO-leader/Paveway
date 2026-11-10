@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -146,7 +146,7 @@ class Store:
         return [self.run(row[0]) for row in rows]
 
     def enqueue(self, workflow_id, task_id, reason, dedupe_key, payload=None, at=None,
-                after_turn=None, run_id=None, *, request_identity=None):
+                after_turn=None, run_id=None, *, request_identity=None, _db=None):
         validate_id(workflow_id)
         validate_id(task_id)
         bounded_text(reason, 4096, "reason")
@@ -175,7 +175,12 @@ class Store:
             if not isinstance(request_identity, str) or len(request_identity) != 64 or any(c not in "0123456789abcdef" for c in request_identity):
                 raise RuntimeContractError("Invalid internal semantic request identity")
             fingerprint = request_identity
-        with self.transaction() as db:
+        # Native admission shares this exact queue implementation with a wider
+        # transaction that also commits its frozen configuration. IPC callers
+        # cannot supply _db; ordinary enqueue retains its own transaction.
+        if _db is not None and (_db is not self.connection or not self.connection.in_transaction):
+            raise RuntimeContractError("Internal enqueue requires this Store's active transaction")
+        with (self.transaction() if _db is None else nullcontext(_db)) as db:
             existing = db.execute("SELECT event_id,request_fingerprint FROM events WHERE workflow_id=? AND task_id=? AND dedupe_key=?",
                                   (workflow_id, task_id, dedupe_key)).fetchone()
             if existing:
@@ -453,6 +458,7 @@ class Store:
         return job
 
     def status(self):
+        from .diagnostics import report
         counts = {status.value: 0 for status in EventStatus}
         counts.update(dict(self.connection.execute("SELECT status,count(*) FROM events GROUP BY status").fetchall()))
         last_success = self.connection.execute("SELECT max(completed_at) FROM runs WHERE status='succeeded'").fetchone()[0]
@@ -460,4 +466,5 @@ class Store:
         return {"counts": counts, "active_runs": [dict(r) for r in self.connection.execute("SELECT * FROM runs WHERE status IN ('leased','running')")],
                 "supervisor": self.policy.describe(self.supervisor_state(), self.clock()),
                 "last_restart": self.restart_job(self.metadata("last_restart_id")) if self.metadata("last_restart_id") else None,
-                "last_success_at": last_success, "recent_error_code": recent_error[0] if recent_error else None}
+                "last_success_at": last_success, "recent_error_code": recent_error[0] if recent_error else None,
+                "diagnostics": report(self)}

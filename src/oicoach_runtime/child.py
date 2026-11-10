@@ -24,16 +24,19 @@ def cleanup_group(group_id=None, exclude_pid=None):
             descriptor = None
             try:
                 fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                # A guardian is a dedicated subreaper: every child it adopts
+                # belongs to its OMP, even if a tool changed session/group.
+                # A shared launcher/daemon must retain the explicit group filter.
+                if group_id is not None and int(fields[2]) != group:
+                    continue
                 if fields[0] == "Z":
                     os.waitpid(pid, os.WNOHANG)
-                    continue
-                if int(fields[2]) != group:
                     continue
                 found = True
                 # pidfd pins the process identity, preventing PID-reuse kills.
                 descriptor = os.pidfd_open(pid)
                 fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-                if int(fields[2]) == group:
+                if int(fields[1]) == os.getpid() and (group_id is None or int(fields[2]) == group):
                     signal.pidfd_send_signal(descriptor, signal.SIGKILL)
             except (OSError, IndexError, ValueError):
                 pass
@@ -43,17 +46,18 @@ def cleanup_group(group_id=None, exclude_pid=None):
         if not found:
             return
         if time.monotonic() >= deadline:
-            if group == os.getpgrp():
-                os.killpg(group, signal.SIGKILL)
-            raise OSError("Owned process group did not stop")
+            raise OSError("Owned descendants did not stop")
         time.sleep(0.01)
 
 
 def main():
     expected_parent = int(sys.argv[1])
 
-    def terminate_group(*_):
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+    def terminate_group(signum, _frame):
+        # Parent death/termination must leave the subreaper alive long enough
+        # to collect tools that escaped the group, while it still holds locks.
+        cleanup_group()
+        raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, terminate_group)
     signal.signal(signal.SIGINT, terminate_group)
@@ -73,8 +77,14 @@ def main():
             # in the async daemon. Kill OMP if its guardian itself is killed.
             if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != guardian_pid:
                 os._exit(125)
-        lock_fds = tuple(int(fd) for fd in os.environ.get("OICOACH_LOCK_FDS", "").split(",") if fd)
-        process = subprocess.Popen(sys.argv[2:], preexec_fn=protect_child, pass_fds=lock_fds)
+        # Locks stop here. Only the native attestation channel crosses into OMP;
+        # worker/RPC children need no additional descriptors at all.
+        native_fd = os.environ.get("PAVEWAY_NATIVE_FD")
+        communication_fds = (int(native_fd),) if native_fd else ()
+        child_environment = dict(os.environ)
+        child_environment.pop("OICOACH_LOCK_FDS", None)
+        process = subprocess.Popen(sys.argv[2:], preexec_fn=protect_child,
+                                   pass_fds=communication_fds, env=child_environment)
         result = process.wait()
         cleanup_group()
         return result

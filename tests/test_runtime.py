@@ -20,6 +20,16 @@ from oicoach_runtime.models import utc_text
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_worker_memory_failure_after_intent_remains_uncertain_with_diagnostic(self):
+        event = self.wait_status(self.schedule(mode="memory-recall-error")["event_id"], ("uncertain",))
+        self.assertEqual(event["status"], "uncertain")
+        self.assertEqual(event["last_error_code"], "memory_recall_failed")
+        status = request(self.socket_path, "status")
+        evidence = status["diagnostics"]["binding_groups"][0]["events"][0]
+        self.assertTrue(evidence["dispatch_intent"])
+        self.assertTrue(evidence["outcome_unknown"])
+        self.assertFalse(evidence["automatic_replay"])
+
     def test_report_survives_a_later_assistant_postscript_without_hidden_content(self):
         done = self.wait_status(self.schedule(mode="report-then-postscript")["event_id"])
         output = request(self.socket_path, "runs.output", {"run_id": done["run_id"]})

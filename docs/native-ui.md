@@ -207,7 +207,7 @@ oicoach-runtime sync sessions --config /absolute/config.toml --json
 
 空闲界面的 Ctrl+D 和 `/exit` 走同一所有权收尾路径：按键透传给 OMP，等待 OMP 与 guardian 退出并回收子进程，关闭本次 `owner.lock` 描述符，再以最后一次已认证的 generation/token 提交 `frontend.finish`。Runtime 校验进程已退出、读取已落盘 Session 后，提交 `released` 与 `exit_code=0`。`session_shutdown` 只是观察记录，不能代替 finish；已释放记录在 Runtime 重启后仍可直接续接。
 
-如果收尾请求失败，入口报告 `native_finish_failed`，区分 `daemon_unavailable`、`conflict`、`internal_error` 等类别，并单独显示 OMP 的退出码（或 unknown）；不回显请求载荷、token 或 Session 正文。OMP 正常退出但释放未确认时，入口返回非零；原有非零退出码／启动异常优先保留，并额外报告收尾失败。归档校验未通过时也不宣称成功释放。
+如果收尾请求失败，入口报告 `native_finish_failed`，区分 `daemon_unavailable`、`conflict`、`internal_error` 及具体 `native_session_*`／锁错误，并单独显示 OMP 的退出码（或 unknown）；不回显请求载荷、token 或 Session 正文。OMP 正常退出但释放未确认时，入口返回非零；原有非零退出码／启动异常优先保留，并额外报告收尾失败。退出与恢复使用流式 Session 安全校验，完整文字导出的 16 MiB 上限不再阻止有效会话释放；物理锁未释放或文件安全校验失败仍 fail-closed。根因、确定性复现和保留边界见 [生命周期审查](native-lifecycle-review.md)。
 
 遇到此诊断，先用同一配置启动 Runtime，再用 `frontend show/list` 查看持久化状态。仅对 `uncertain` 且确认旧进程、锁和副作用安全的记录显式 `frontend recover`；也可 `--new` 保留旧历史继续。不会自动 recover、重试退出提交或重发模型请求。Runtime 失联时可能连 finish 都未提交，重启时仍按原有规则保留 `uncertain`，不从关闭事件或心跳推断成功。
 

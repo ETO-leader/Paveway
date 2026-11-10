@@ -5,6 +5,7 @@ import sys
 import time
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 from test_native_omp import NativeFixture
 from oicoach_runtime.config import config_text
@@ -13,6 +14,72 @@ from oicoach_runtime.errors import RuntimeContractError
 
 
 class NativeCapabilityTests(NativeFixture):
+    def test_training_checkpoint_reads_latest_task_note_after_native_exit(self):
+        self.enable_tools()
+        manifest = self.config.workflow_root / "native-test/workflow.toml"
+        manifest.write_text(manifest.read_text().replace("memory_enabled = false", "memory_enabled = true"))
+        note = {"plan_version": 1, "questions": ["fixture-A", "fixture-B"], "current": "fixture-A",
+                "reported_at": "2026-11-10T00:00:00Z", "source": "user_report",
+                "elapsed_seconds": 60, "hint_permission": "none", "hint_level_used": 0, "status": "in_progress"}
+        content = self.root / "training-note.txt"
+        content.write_text(json.dumps(note))
+        def cli_put(version):
+            result = subprocess.run([sys.executable, "-m", "oicoach_runtime", "memory", "put",
+                "--config", str(self.path), "--workflow", "native-test", "--task", "training",
+                "--key", "training.plan-one", "--title", "Fixture plan", "--content-file", str(content),
+                "--expected-version", str(version), "--json"], env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)["result"]
+        self.assertEqual(cli_put(0)["version"], 1)
+        expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        source = request(self.config.server.socket_path, "schedule", {"workflow_id": "native-test", "task_id": "training",
+            "reason": "Fixture user report source", "dedupe_key": "report-source", "at": expiry})
+        updated = {**note, "plan_version": 2, "elapsed_seconds": 120, "hint_permission": "one_hint"}
+        marker = "TRAINING_CHECKPOINT_ONE"
+        def tool(name, args, call):
+            return [({"role": "assistant", "tool_calls": [{"index": 0, "id": call, "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)}}]}, "tool_calls")]
+        def response(body):
+            if self.is_prompt_request(body, marker):
+                return tool("paveway_memory_put", {"scope": "task", "key": "training.plan-one", "title": "Fixture plan",
+                    "content": json.dumps(updated), "expected_version": 1,
+                    "source_event_id": source["event_id"], "expires_at": expiry}, "update-plan")
+            last = body.get("messages", [{}])[-1]
+            if last.get("role") == "tool" and '"version":2' in json.dumps(last.get("content")).replace(" ", "").replace('\\"', '"') and "training.plan-one" in json.dumps(last):
+                return tool("paveway_wakeup_schedule", {"when": {"kind": "after_now", "seconds": 2},
+                    "reason": "CHECKPOINT_PLAN_ONE; checkpoint=one; authorized=one_hint; re-read current plan",
+                    "dedupe_key": "checkpoint-one", "intent": "reminder", "authorized_by_user": True}, "schedule-checkpoint")
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+        self.server.response_factory = response
+        self.chat(marker)
+        deadline = time.monotonic() + 18
+        while time.monotonic() < deadline:
+            events = [event for event in request(self.config.server.socket_path, "events.list", {}) if event["event_id"] != source["event_id"]]
+            if events and events[0]["status"] in ("succeeded", "failed", "blocked", "uncertain"):
+                break
+            time.sleep(.05)
+        self.assertTrue(events, "checkpoint was not scheduled")
+        self.assertEqual(events[0]["status"], "succeeded", events[0])
+        background = [body for body in self.server.requests if "CHECKPOINT_PLAN_ONE" in json.dumps(body.get("messages")) and
+                      "Runtime wake event" in json.dumps(body.get("messages"))]
+        # The resumed background is a separate physical session with current
+        # logical-task Memory, never the obsolete v1 foreground snapshot.
+        if not background:
+            background = [body for body in self.server.requests if "CHECKPOINT_PLAN_ONE" in json.dumps(body.get("messages")) and
+                          "TRAINING_CHECKPOINT_ONE" not in json.dumps(body.get("messages"))]
+        self.assertTrue(background)
+        self.assertIn("one_hint", json.dumps(background[-1]["messages"]))
+        current = request(self.config.server.socket_path, "memory.show", {"workflow_id": "native-test", "task_id": "training", "key": "training.plan-one"})
+        self.assertEqual(current["source_event_id"], source["event_id"])
+        self.assertIsNotNone(current["expires_at"])
+        content.write_text(json.dumps({**updated, "status": "completed_by_user_report", "review": "fixture-A completed; fixture-B pending verification"}))
+        review = cli_put(2)
+        self.assertEqual(review["version"], 3)
+        self.assertIn("pending verification", review["content"])
+        inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test", "task_id": "training"})
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertTrue(all(row["state"] != "acknowledged" for row in inbox["messages"]))
+
     def enable_tools(self):
         self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
         self.path.write_text(config_text(self.config))

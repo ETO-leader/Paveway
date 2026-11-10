@@ -1,5 +1,7 @@
 # 记忆与历史检索（0.19.0）
 
+Native 写入新增来源／有效期，Recall 区分空、过期与故障，并提供显式无记忆续聊入口。见 [记忆交接与恢复诊断](engineering-improvements.md)。
+
 记忆分为三层，均在本机运行，不需要 embedding 服务或额外 MCP：
 
 | 层 | 实现 | 用途 |

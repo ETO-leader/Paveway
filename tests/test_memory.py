@@ -150,6 +150,23 @@ class MemoryTests(unittest.TestCase):
         self.store.finish(claimed["run_id"], "blocked", error="test_fixture")
         return path, binding
 
+    def test_diagnostics_groups_binding_failure_and_cascading_block_without_writing(self):
+        self.archive()
+        self.event(key="cascading-block")
+        event = self.store.claim_due("fixture")
+        with self.assertRaises(ConflictError):
+            self.store.bind(event, Workflow("coach", "1", self.root, "per_task", {}))
+        self.store.finish(event["run_id"], "blocked", error="session_blocked")
+        before = self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0]
+        result = self.store.status()["diagnostics"]
+        self.assertEqual(len(result["binding_groups"]), 1)
+        group = result["binding_groups"][0]
+        self.assertIsNotNone(group["binding_id"])
+        self.assertEqual(len(group["events"]), 2)
+        self.assertEqual({e["status"] for e in group["events"]}, {"blocked"})
+        self.assertNotIn("payload", json.dumps(result))
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0], before)
+
     def test_native_archive_read_only_all_branches_and_pagination(self):
         path, binding = self.archive()
         before = path.read_bytes()

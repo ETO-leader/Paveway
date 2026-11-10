@@ -12,12 +12,34 @@ class StorageError(RuntimeContractError):
     code = "storage_error"
 
 
+class WakeupSnapshotError(RuntimeContractError):
+    code = "native_wakeup_snapshot_missing"
+
+    def __init__(self):
+        super().__init__("Native wakeup snapshot is missing; no prompt was sent. Inspect the event, cancel it if still queued, and schedule a new explicitly authorized request. Mutable current settings cannot reconstruct its original snapshot.")
+
+
 class WorkflowError(RuntimeContractError):
     code = "invalid_workflow"
 
 
 class ConflictError(RuntimeContractError):
     code = "conflict"
+
+
+class NativeSessionError(ConflictError):
+    """Fixed session-integrity diagnostics, without filenames or contents."""
+    def __init__(self, code):
+        self.code = code
+        super().__init__({
+            "native_session_unsafe": "Native session file is not owned, regular or inside its assigned directory.",
+            "native_session_incomplete": "Native session ends with an incomplete JSONL entry.",
+            "native_session_entry_limit": "Native session has a JSONL entry over the supported 1 MiB validation limit.",
+            "native_session_changed": "Native session changed or was replaced during validation.",
+            "native_session_invalid": "Native session is not valid supported JSONL.",
+            "native_session_identity_mismatch": "Native session header does not match its recorded identity.",
+            "native_session_missing": "The persisted native session is missing; preserve ownership and restore the original file.",
+        }[code])
 
 
 class SessionConflictError(ConflictError):

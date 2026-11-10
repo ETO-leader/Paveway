@@ -394,6 +394,11 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
 
     def test_case_d_incompatible_build_id_rejects_and_does_not_modify_state(self):
         """Case D: Reject a mismatched client build without changing the live daemon or persisted state."""
+        # Freeze this isolated fixture's independent Git writer before taking a
+        # byte-for-byte snapshot; otherwise its first cycle races the assertion.
+        from oicoach_runtime import git_sync
+        git_sync.ensure_local(self.config)
+        git_sync.set_enabled(self.config, False)
         # Start daemon normally
         code1, _ = self._run_paveway()
         self.assertEqual(code1, 0)

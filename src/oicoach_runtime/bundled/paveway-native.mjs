@@ -59,9 +59,13 @@ export default async function paveway(pi) {
         registerMemoryContext(pi, {
             scope: {workflow_id: config.workflow_id, task_id: config.task_id},
             enabled: config.memory_enabled,
+            allowBypass: true,
             recall: known => runtimeRequest(config.socket_path, "native_memory.context",
                 {...bound(), parameters: {known}}),
-            fail: stop,
+            fail: (_error, diagnostic) => {
+                writeSync(2, JSON.stringify({component: "memory", ...diagnostic}) + "\n");
+                stop();
+            },
         });
         const sessionReady = async (_event, ctx) => {
             try {

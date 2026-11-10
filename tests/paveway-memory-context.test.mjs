@@ -78,6 +78,36 @@ test("recall failure cannot create delivery evidence", async () => {
     assert.deepEqual(memoryState(branch, scope), empty());
 });
 
+test("explicit memory bypass withdraws old facts; diagnostics exclude note bodies and failure details", async () => {
+    const handlers = {}, commands = {}, notices = [];
+    let branch = [entry(planMemory(snapshot(note()), empty(), scope))];
+    let calls = 0, failure;
+    const controller = registerMemoryContext({on: (name, fn) => handlers[name] = fn,
+        registerCommand: (name, definition) => commands[name] = definition}, {
+        scope, allowBypass: true, recall: async () => { calls++; throw new Error("PRIVATE_PROVIDER_DETAIL"); },
+        fail: (_error, diagnostic) => failure = diagnostic,
+    });
+    const ctx = {agent: {kind: "main"}, isIdle: () => true,
+        ui: {notify: text => notices.push(text)}, sessionManager: {getBranch: () => branch}};
+    await assert.rejects(handlers.before_agent_start({reason: "prompt"}, ctx));
+    assert.equal(failure.code, "memory_recall_failed");
+    assert.equal(failure.phase, "before_dispatch");
+    assert.ok(!JSON.stringify(failure).includes("PRIVATE_PROVIDER_DETAIL"));
+    await commands["paveway-memory-context"].handler("off", ctx);
+    const result = await handlers.before_agent_start({reason: "prompt"}, ctx);
+    assert.equal(calls, 1);
+    assert.equal(result.message.details.delta.withdrawals[0].reason, "memory_disabled");
+    assert.deepEqual(result.message.details.state.notes, []);
+    branch.push(entry(result.message, "disabled"));
+    assert.equal(await handlers.before_agent_start({reason: "prompt"}, ctx), undefined);
+    assert.equal(controller.status().status, "disabled");
+    await commands["paveway-memory-context"].handler("on", ctx);
+    await assert.rejects(handlers.before_agent_start({reason: "prompt"}, ctx));
+    assert.equal(calls, 2);
+    assert.ok(!notices.join(" ").includes("prefer hints"));
+    assert.ok(!notices.join(" ").includes("PRIVATE_PROVIDER_DETAIL"));
+});
+
 test("compaction restores missing selected data at a stable anchor without growing history", () => {
     const initial = planMemory(snapshot(note("a"), note("b")), empty(), scope);
     const entries = [entry(initial), compact(initial.details.state)];

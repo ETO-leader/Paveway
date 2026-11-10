@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import load_config
@@ -61,6 +62,72 @@ class WakeupTests(unittest.TestCase):
         with self.assertRaises(RuntimeContractError):
             self.schedule(when={"kind": "after_turn_settled", "seconds": 600})
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
+
+    def test_snapshot_failure_rolls_back_event_and_audit_then_retry_is_idempotent(self):
+        before = self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0]
+        original = self.store._set_metadata
+        def fail(db, key, value):
+            if key.startswith("native-wakeup-config:"):
+                raise OSError("injected snapshot write failure")
+            original(db, key, value)
+        with patch.object(self.store, "_set_metadata", side_effect=fail):
+            with self.assertRaises(OSError):
+                self.schedule()
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0], before)
+        event = self.schedule()
+        key = "native-wakeup-config:v1:" + event["event_id"]
+        snapshot = self.store.metadata(key)
+        record = Frontend(self.store).authenticate(**self.owner)
+        with self.store.transaction() as db:
+            self.store._set_metadata(db, record["config_key"], {"changed": True})
+        self.assertEqual(self.schedule()["event_id"], event["event_id"])
+        self.assertEqual(self.store.metadata(key), snapshot)
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
+        with self.store.transaction() as db:
+            db.execute("DELETE FROM runtime_metadata WHERE key=?", (key,))
+        with self.assertRaises(RuntimeContractError) as error:
+            self.schedule()
+        self.assertEqual(error.exception.code, "native_wakeup_snapshot_missing")
+        self.assertIsNone(self.store.metadata(key))
+
+    def test_invalid_launch_snapshot_never_leaves_an_event(self):
+        record = Frontend(self.store).authenticate(**self.owner)
+        before = self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0]
+        for snapshot in (None, {"invalid": True}):
+            with self.subTest(snapshot=snapshot):
+                with self.store.transaction() as db:
+                    self.store._set_metadata(db, record["config_key"], snapshot)
+                with self.assertRaises(RuntimeContractError):
+                    self.schedule()
+                self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+                self.assertEqual(self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0], before)
+
+    def test_bound_memory_expiry_source_and_background_logical_scope(self):
+        from oicoach_runtime.workflow_setup import create
+        from oicoach_runtime.scheduler import Runtime
+        from oicoach_runtime.memory import Memory
+        from oicoach_runtime.models import utc_text
+        create(self.config, "example", self.config.workflow_root.parent)
+        runtime = Runtime(self.config)
+        runtime.store = self.store
+        event = self.schedule()
+        values = {"scope": "task", "key": "training.plan-one", "title": "Checkpoint",
+                  "content": "question A; user reported progress; hints not authorized", "expected_version": 0,
+                  "source_event_id": event["event_id"], "expires_at": utc_text(self.now + timedelta(seconds=5))}
+        result = runtime.dispatch_api("native_memory.put", {**self.owner, "parameters": values})
+        self.assertEqual(result["task_id"], "training")
+        self.assertEqual(result["source_event_id"], event["event_id"])
+        recalled = runtime.dispatch_api("memory.recall", {"workflow_id": "example", "task_id": "training"})
+        self.assertEqual(recalled["notes"][0]["version"], 1)
+        foreign = self.store.enqueue("example", "another-task", "foreign", "foreign", at="now")
+        with self.assertRaises(ConflictError):
+            runtime.dispatch_api("native_memory.put", {**self.owner, "parameters": {**values,
+                "source_event_id": foreign["event_id"], "expected_version": 1}})
+        self.now += timedelta(seconds=6)
+        expired = Memory(self.store).context("example", "training", known=[{"task_id": "training", "key": values["key"]}])
+        self.assertEqual(expired["notes"], [])
+        self.assertEqual(expired["withdrawn"][0]["reason"], "expired")
 
     def test_scope_cas_opt_in_and_old_generation_are_enforced(self):
         with self.assertRaises(RuntimeContractError): self.schedule(authorized_by_user=False)

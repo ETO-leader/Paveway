@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -141,3 +142,31 @@ class PromptCacheContractTests(unittest.TestCase):
         self.assertIsNone(run["dispatch_intent_at"])
         self.assertFalse(run["acknowledged_at"])
         self.assertEqual(run["error_code"], "agent_rpc_ready_missing")
+
+    def test_memory_read_failure_blocks_before_dispatch_with_safe_diagnostics(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        create(self.config, "example", workspace, "coach")
+        self.store.enqueue("example", "training", "PRIVATE_REASON", "memory-failure", {}, at="now")
+        event = self.store.claim_due("fixture")
+        with patch.object(Memory, "context", side_effect=OSError("PRIVATE_DATABASE_DETAIL")):
+            asyncio.run(self.runtime.dispatch_event(event))
+        run = self.store.run(event["run_id"])
+        self.assertEqual(run["error_code"], "memory_recall_failed")
+        self.assertEqual(run["status"], "blocked")
+        self.assertIsNone(run["dispatch_intent_at"])
+        diagnostic = self.store.status()["diagnostics"]
+        evidence = diagnostic["binding_groups"][0]["events"][0]
+        self.assertEqual(evidence["stage"], "memory")
+        self.assertFalse(evidence["dispatch_intent"])
+        self.assertFalse(evidence["automatic_replay"])
+        self.assertNotIn("PRIVATE_", json.dumps(diagnostic))
+
+    def test_missing_native_snapshot_is_not_reconstructed_or_dispatched(self):
+        self.store.enqueue("example", "training", "legacy", "missing-snapshot", {"native_wakeup": True}, at="now")
+        event = self.store.claim_due("fixture")
+        asyncio.run(self.runtime.dispatch_event(event))
+        run = self.store.run(event["run_id"])
+        self.assertEqual(run["status"], "blocked")
+        self.assertEqual(run["error_code"], "native_wakeup_snapshot_missing")
+        self.assertIsNone(run["dispatch_intent_at"])

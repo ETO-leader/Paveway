@@ -29,7 +29,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
     channel, inherited = socket.socketpair()
     descriptor = inherited.fileno()
     inherited_fds = (descriptor, *lock_fds)
-    environment = dict(environment, PAVEWAY_NATIVE_FD=str(descriptor), OICOACH_LOCK_FDS=",".join(map(str, inherited_fds)))
+    environment = dict(environment, PAVEWAY_NATIVE_FD=str(descriptor), OICOACH_LOCK_FDS=",".join(map(str, lock_fds)))
     process = None
     original = termios.tcgetattr(0)
     previous_signals = {}
@@ -140,7 +140,10 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=10)
-            cleanup_group(process.pid)
+            # This native CLI is a dedicated subreaper (unlike the shared
+            # Runtime). After guardian death, its adopted tools are still our
+            # children even when they changed process group/session.
+            cleanup_group()
         channel.close()
         inherited.close()
         os.close(master)

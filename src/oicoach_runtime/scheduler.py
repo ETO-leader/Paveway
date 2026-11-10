@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import sqlite3
 import socket
 import stat
 import sys
@@ -90,7 +91,7 @@ class Runtime:
                 arguments(values, ("known",), ("known",))
                 return Memory(self.store).context(record["workflow_id"], record["task_id"], **values)
             contracts = {"list": (("scope", "query", "offset"), ()), "show": (("scope", "key"), ("key",)),
-                "put": (("scope", "key", "title", "content", "expected_version", "kind", "pinned"), ("key", "title", "content", "expected_version")),
+                "put": (("scope", "key", "title", "content", "expected_version", "kind", "pinned", "source_event_id", "expires_at"), ("key", "title", "content", "expected_version")),
                 "delete": (("scope", "key", "expected_version"), ("key", "expected_version"))}
             if operation not in contracts:
                 raise RuntimeContractError("Unknown native memory operation")
@@ -328,7 +329,8 @@ class Runtime:
         try:
             trusted = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
             if event["payload"].get("native_wakeup") and not trusted:
-                raise RuntimeContractError("Native wakeup configuration evidence is missing; no prompt was sent")
+                from .errors import WakeupSnapshotError
+                raise WakeupSnapshotError()
             # Validate the frozen event settings directly. Loading mutable user
             # settings first can block an authorized event after later edits,
             # even though those settings will never be used by this wakeup.
@@ -373,7 +375,10 @@ class Runtime:
                                      "commands": ["schedule", "events", "runs", "status"]}],
             }
             if workflow.memory_enabled:
-                binding["memory_context"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
+                try:
+                    binding["memory_context"] = Memory(self.store).context(event["workflow_id"], event["task_id"])
+                except (RuntimeContractError, OSError, sqlite3.Error):
+                    raise AgentError("Runtime Memory recall failed before dispatch", code="memory_recall_failed") from None
                 envelope["memory"] = {key: value for key, value in binding["memory_context"].items() if key != "notes"}
                 envelope["memory"]["location"] = "conversation.paveway-memory-context"
                 envelope["available_tools"][0]["commands"].extend(["memory", "history"])

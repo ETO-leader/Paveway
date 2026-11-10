@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__
 from .config import ensure_private_directory
 from .customization import snapshot
-from .errors import RuntimeContractError
+from .errors import ConflictError, RuntimeContractError
 from .ipc import request
 from .models import validate_id
 from .native_host import prepare_native_host
@@ -88,15 +88,33 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
-    lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
-                    "conversation_id": conversation_id, "new": new})
-    root = Path(lease["session_dir"])
-    lock = None
+    from .frontend import session_directory
+    if new:
+        conversation_id = None
+    elif conversation_id is None:
+        rows = request(config.server.socket_path, "frontend.list", {"workflow_id": workflow_id, "task_id": task_id})
+        conversation_id = rows[0]["conversation_id"] if rows else None
+    conversation_id = conversation_id or str(uuid.uuid4())
+    validate_id(conversation_id)
+    root = session_directory(config, workflow_id, task_id, conversation_id)
+    ensure_private_directory(root)
+    try:
+        lock = InstanceLock(root / "owner.lock")
+    except RuntimeContractError:
+        failure = ConflictError("Native owner.lock is unavailable; no owner generation was created. Check the previous process and lock holder; do not delete the lock file.")
+        failure.code = "native_owner_lock_unavailable"
+        raise failure from None
+    # Admission is serialized by the actual session lock, not by a compensating
+    # finish(None) after a failed acquisition. Begin still provides token/CAS fencing.
+    try:
+        lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
+                        "conversation_id": conversation_id, "new": False})
+    except BaseException:
+        lock.close()
+        raise
     code = None
     primary_failed = False
     try:
-        ensure_private_directory(root)
-        lock = InstanceLock(root / "owner.lock")
         from .prompt_composer import settings_digest
         if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
             workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
@@ -117,12 +135,12 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
                 "owner_token": lease["owner_token"], "exit_code": code})
             if code == 0 and finished["status"] != "released":
-                error = RuntimeContractError("Native archive could not be validated")
-                error.code = "native_archive_failed"
+                error = RuntimeContractError("Native session release safety checks failed")
+                error.code = finished.get("release_diagnostic", "native_session_validation_failed")
                 raise error
         except RuntimeContractError as error:
             # Never print remote payloads or replace the original process failure.
-            category = error.code if error.code in (
+            category = error.code if error.code.startswith("native_") or error.code in (
                 "daemon_unavailable", "conflict", "internal_error", "native_archive_failed"
             ) else "runtime_error"
             outcome = f"OMP exit_code={code}" if code is not None else "OMP exit_code=unknown"

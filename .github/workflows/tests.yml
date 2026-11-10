@@ -14,3 +14,52 @@ jobs:
       - run: python -m pip install '.[test]'
       - run: python -m unittest discover -s tests -v
       - run: oicoach-runtime --help
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[test]'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/paveway/omp
+          key: paveway-native-linux-${{ hashFiles('src/oicoach_runtime/bundled/omp/**') }}
+      - name: Install pinned native host (installation failures fail this step)
+        run: |
+          python packaging/omp/install.py
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          runtime = json.loads((Path.home() / '.cache/paveway/omp/18.16.0/runtime.json').read_text())
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write('PAVEWAY_OMP_SOURCE=' + runtime['source'] + '\n')
+              f.write('PAVEWAY_PINNED_BUN=' + runtime['bun'] + '\n')
+          with open(os.environ['GITHUB_PATH'], 'a') as f:
+              f.write(str(Path.cwd() / 'packaging/omp') + '\n')
+          PY
+      - name: Check native prerequisites (no silent skip)
+        run: |
+          python -c 'import pyte; from shutil import which; assert which("omp")'
+          omp --version
+          "$PAVEWAY_PINNED_BUN" --version
+      - name: Bun UI regressions
+        run: '"$PAVEWAY_PINNED_BUN" test tests/*.test.mjs'
+      - name: Real native host with local provider and PTY (no external model)
+        env:
+          PAVEWAY_TEST_NATIVE: '1'
+          PYTHONPATH: src:tests
+        run: |
+          python -m unittest -v \
+            test_native_omp \
+            test_native_management.NativeManagementTests.test_skill_dialog_preserves_category_and_body_without_chat_submission \
+            test_native_management.NativeManagementTests.test_skill_file_import_analyzes_reviews_and_saves_without_chat_history \
+            test_native_management.NativeManagementTests.test_skill_import_invalid_analysis_does_not_save \
+            test_native_management.NativeManagementTests.test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings \
+            test_native_management.NativeManagementTests.test_memory_context_explicit_off_and_on_changes_next_model_request \
+            test_system_prompt_template.RealOmpTemplateSmokeTests.test_skills_indexed_and_content_readable_without_full_injection \
+            test_native_recovery \
+            test_native_capabilities.NativeCapabilityTests.test_native_memory_tool_persists_scoped_fact_and_reports_version \
+            test_native_capabilities.NativeCapabilityTests.test_training_checkpoint_reads_latest_task_note_after_native_exit

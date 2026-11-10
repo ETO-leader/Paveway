@@ -3,9 +3,11 @@ import {randomUUID} from "node:crypto";
 import {writeFileSync, unlinkSync} from "node:fs";
 import {dirname, join} from "node:path";
 import {loadNativeTui, openSettings} from "./paveway-settings.mjs";
+import {analyzeSkillSource, reviewSkillImport} from "./paveway-skill-import.mjs";
 
 export function registerManagement(pi, config, requestSwitch) {
     const drafts = new Map();
+    let importDraft;
     const cli = async args => {
         const result = await pi.exec(config.cli_prefix[0], [...config.cli_prefix.slice(1), ...args,
             "--config", config.config_path, "--json"], {timeout: 30000});
@@ -92,8 +94,33 @@ export function registerManagement(pi, config, requestSwitch) {
     actions.skills = async ctx => {
         const raw = await settings();
         const labels = raw.skills.map(skill => `${skill.name} · ${skill.category || "personal-skill"} · ${skill.enabled ? "on" : "off"}`);
-        const picked = await ctx.ui.select("User Skills", ["Create Skill", ...labels]);
+        const picked = await ctx.ui.select("User Skills", ["Create Skill", "Import from file · GPT analysis",
+            ...(importDraft ? ["Review import draft"] : []), ...labels]);
         if (!picked) return;
+        if (picked === "Import from file · GPT analysis" || picked === "Review import draft") {
+            if (!ctx.isIdle() || ctx.agent?.kind !== "main") return show(ctx, "请等待当前 GPT 活动结束，再导入 Skill。");
+            if (picked !== "Review import draft") {
+                const path = await ctx.ui.input("Skill 文件路径 · 原文将发送给当前模型分析（UTF-8 或 .skill ZIP）");
+                if (!path) return;
+                const source = (await cli(["workflow", "customize", "skill-source", config.workflow_id, "--file", path])).source;
+                const proposal = await analyzeSkillSource(pi, ctx, source);
+                if (!proposal) return show(ctx, "已取消分析，尚未保存 Skill。");
+                importDraft = proposal;
+            }
+            const result = await reviewSkillImport(ctx, importDraft, raw.skills, async draft => {
+                importDraft = structuredClone(draft);
+                await privateInput(draft.content, body => privateInput(draft.description, description =>
+                    cli(["workflow", "customize", "skill-put", config.workflow_id, "--name", draft.name,
+                        "--category", draft.category, "--description-file", description, "--content-file", body,
+                        "--expected-revision", String(raw.revision)])));
+            });
+            importDraft = result.saved ? undefined : result.draft;
+            if (result.saved) {
+                drafts.delete("skill:" + result.draft.name);
+                changed(ctx);
+            }
+            return;
+        }
         const existing = raw.skills[labels.indexOf(picked)];
         let operation = existing ? await ctx.ui.select(existing.name, ["edit", "show", "toggle", "delete"]) : "edit";
         if (!operation) return;

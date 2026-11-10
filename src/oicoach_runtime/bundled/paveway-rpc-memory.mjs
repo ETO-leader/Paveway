@@ -3,7 +3,9 @@ import {registerMemoryContext} from "./paveway-memory-context.mjs";
 import {runtimeRequest} from "./paveway-runtime.mjs";
 
 export default function memoryContext(pi) {
-    const fail = () => {
+    const fail = (_error, diagnostic) => {
+        writeSync(1, JSON.stringify({type: "paveway_memory_error", contractVersion: 1,
+            code: diagnostic?.code || "memory_recall_failed", phase: diagnostic?.phase || "before_dispatch"}) + "\n");
         writeSync(2, "paveway_memory_failed: required Runtime Memory context unavailable\n");
         process.kill(process.pid, "SIGKILL");
     };
@@ -16,6 +18,7 @@ export default function memoryContext(pi) {
         registerMemoryContext(pi, {
             scope: config.scope,
             enabled: config.enabled,
+            recallPhase: "after_dispatch",
             recall: known => config.socket_path
                 ? runtimeRequest(config.socket_path, "memory.recall", {...config.scope, known})
                 : JSON.parse(readFileSync(path, "utf8")).snapshot,

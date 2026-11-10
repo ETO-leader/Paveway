@@ -9,6 +9,7 @@ import subprocess
 import sys
 import termios
 import time
+import threading
 
 from test_native_omp import NativeFixture
 from oicoach_runtime import coaches, customization
@@ -24,6 +25,27 @@ except ImportError:
 
 
 class NativeManagementTests(NativeFixture):
+    def test_memory_context_explicit_off_and_on_changes_next_model_request(self):
+        manifest = self.config.workflow_root / "native-test/workflow.toml"
+        manifest.write_text(manifest.read_text().replace("memory_enabled = false", "memory_enabled = true"))
+        request(self.config.server.socket_path, "memory.put", {"workflow_id": "native-test", "task_id": "training",
+            "key": "bypass-fixture", "title": "Fixture", "content": "MEMORY_EXPLICIT_BYPASS_PROBE"})
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway-memory-context off\r")
+        until('"bypass":true')
+        send("NO_MEMORY_TURN\r")
+        until("M0_REPLY", lambda: bool(self.prompt_requests("NO_MEMORY_TURN")))
+        self.assertNotIn("MEMORY_EXPLICIT_BYPASS_PROBE", json.dumps(self.prompt_requests("NO_MEMORY_TURN")[-1]["messages"]))
+        until("M0_REPLY", lambda: request(self.config.server.socket_path, "frontend.list", {"workflow_id": "native-test"})[0]["status"] == "idle")
+        send("/paveway-memory-context on\r")
+        until('"bypass":false')
+        send("WITH_MEMORY_TURN\r")
+        until("M0_REPLY", lambda: bool(self.prompt_requests("WITH_MEMORY_TURN")))
+        self.assertIn("MEMORY_EXPLICIT_BYPASS_PROBE", json.dumps(self.prompt_requests("WITH_MEMORY_TURN")[-1]["messages"]))
+        until("M0_REPLY", lambda: request(self.config.server.socket_path, "frontend.list", {"workflow_id": "native-test"})[0]["status"] == "idle")
+        exit_ui()
+        self.assertEqual(request(self.config.server.socket_path, "memory.show", {"workflow_id": "native-test", "task_id": "training", "key": "bypass-fixture"})["version"], 1)
+
     def open_ui(self, launcher=False, recover=False, *, columns=120, screen=None, args=()):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, columns, 0, 0))
@@ -541,6 +563,116 @@ class NativeManagementTests(NativeFixture):
         self.assertEqual(self.server.requests, [])
         for path in (self.config.state_dir / "native").rglob("*.jsonl"):
             self.assertNotIn("PRIVATE_SKILL_UI_BODY", path.read_text())
+
+    def skill_import_fixture(self, response=None):
+        path = self.root / "import-source.skill"
+        path.write_text("---\nname: original-skill\n---\nPRIVATE_IMPORT_SOURCE_MARKER\nKeep verified facts separate from hypotheses.")
+        draft = {"name": "imported-fixture", "description": "Use when reviewing fixture facts", "category": "user-information",
+                 "content": "# Imported fixture\nPRIVATE_IMPORTED_BODY\nSeparate facts and hypotheses.",
+                 "analysis": {key: "IMPORT_ANALYSIS_" + key.upper() for key in
+                    ("purpose", "triggers", "inputs", "workflow", "outputs", "constraints", "dependencies", "warnings")}}
+        def factory(body):
+            if "PRIVATE_IMPORT_SOURCE_MARKER" in json.dumps(body.get("messages")):
+                return [({"role": "assistant", "content": response if response is not None else json.dumps(draft)}, "stop")]
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+        self.server.response_factory = factory
+        return path, draft
+
+    def test_skill_file_import_analyzes_reviews_and_saves_without_chat_history(self):
+        path, draft = self.skill_import_fixture()
+        path.write_text(path.read_text() + "\n" + "参考资料，用于摘要。\n" * 4000 + "SKILL_IMPORT_SOURCE_END")
+        self.assertGreater(path.stat().st_size, 65536)
+        original = path.read_bytes()
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r")
+        until("Import from file")
+        send(b"\x1b[B\r")
+        until("Skill 文件路径")
+        send(str(path) + "\r")
+        until("Skill 导入草稿", lambda: len(self.server.requests) == 1)
+        self.assertEqual(customization.show(self.config, "native-test")["settings"]["skills"], [])
+        send("\r")
+        until("GPT 分析摘要")
+        until("IMPORT_ANALYSIS_PURPOSE")
+        raw.clear()
+        send(b"\x11")
+        until("Skill 导入草稿")
+        send(b"\x1b[B" * 5 + b"\r")
+        until("保存导入 Skill")
+        send("\r")
+        until("Saved.", lambda: customization.show(self.config, "native-test")["settings"]["revision"] == 1)
+        stored = customization.show(self.config, "native-test")["settings"]["skills"][0]
+        self.assertEqual({key: stored[key] for key in ("name", "description", "category", "content")},
+                         {key: draft[key] for key in ("name", "description", "category", "content")})
+        self.assertTrue(stored["enabled"])
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertFalse(self.server.requests[0].get("tools"))
+        self.assertEqual(len(self.server.requests[0]["messages"]), 2)
+        self.assertIn("SKILL_IMPORT_SOURCE_END", json.dumps(self.server.requests[0]["messages"]))
+        exit_ui()
+        for session in (self.config.state_dir / "native").rglob("*.jsonl"):
+            self.assertNotIn("PRIVATE_IMPORT_SOURCE_MARKER", session.read_text())
+            self.assertNotIn("PRIVATE_IMPORTED_BODY", session.read_text())
+
+    def test_skill_import_invalid_analysis_does_not_save(self):
+        path, draft = self.skill_import_fixture(response="not a valid Skill proposal")
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r")
+        until("Import from file")
+        send(b"\x1b[B\r")
+        until("Skill 文件路径")
+        send(str(path) + "\r")
+        until("不是有效 JSON")
+        self.assertEqual(customization.show(self.config, "native-test")["settings"]["skills"], [])
+        self.assertEqual(len(self.server.requests), 1)
+        exit_ui()
+
+    def test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings(self):
+        path, draft = self.skill_import_fixture()
+        response = self.server.response_factory
+        release = threading.Event()
+        self.addCleanup(release.set)
+        def delayed(body):
+            if "PRIVATE_IMPORT_SOURCE_MARKER" in json.dumps(body.get("messages")):
+                release.wait(15)
+            return response(body)
+        self.server.response_factory = delayed
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r")
+        until("Import from file")
+        send(b"\x1b[B\r")
+        until("Skill 文件路径")
+        send(str(path) + "\r")
+        until("正在分析 Skill", lambda: len(self.server.requests) == 1)
+        customization.update(self.config, "native-test", 0, "prompt", content="CONCURRENT_IMPORT_PROMPT")
+        release.set()
+        until("Skill 导入草稿")
+        send(b"\x1b[B" * 5 + b"\r")
+        until("保存导入 Skill")
+        send("\r")
+        until("Customization changed")
+        saved = customization.show(self.config, "native-test")["settings"]
+        self.assertEqual(saved["skills"], [])
+        self.assertEqual(saved["system_prompt"]["text"], "CONCURRENT_IMPORT_PROMPT")
+        send(b"\x1b")
+        for _ in range(3): pump(.05)
+        raw.clear()
+        send("/paveway skills\r")
+        until("Review import draft")
+        raw.clear()
+        send(b"\x1b[B\x1b[B\r")
+        until("Skill 导入草稿")
+        raw.clear()
+        send(b"\x1b[B" * 5 + b"\r")
+        until("保存导入 Skill")
+        send("\r")
+        until("Saved.", lambda: customization.show(self.config, "native-test")["settings"]["revision"] == 2)
+        saved = customization.show(self.config, "native-test")["settings"]
+        self.assertEqual(saved["skills"][0]["content"], draft["content"])
+        self.assertEqual(saved["system_prompt"]["text"], "CONCURRENT_IMPORT_PROMPT")
+        self.assertEqual(len(self.server.requests), 1)
+        exit_ui()
 
     def test_profile_switch_releases_old_process_before_new_scope(self):
         profile = coaches.create(self.config, "beta", "native-test", "BETA_MANAGEMENT_PERSONA")

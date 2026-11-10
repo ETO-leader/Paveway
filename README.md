@@ -1,5 +1,7 @@
 # Paveway
 
+唤醒原子提交、恢复诊断、Memory 有效期／来源与显式降级，以及原生发布验收，见 [工程改进与运行说明](docs/engineering-improvements.md)。
+
 **Paveway is An adVanced Efficient Workflow for informAtics olYmpiads.**
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
@@ -78,6 +80,8 @@ oicoach-runtime native --coach alpha --new --config "$PAVEWAY_CONFIG"
 前台和后台共用 Prompt Composer，按 Paveway Core、可选 base 角色策略、用户 Prompt、Persona 与记忆生成私密不可变快照，记录版本和摘要；通过原生 `--system-prompt-template` 展开工具、Skill 与 Rule 能力。旧 append/replace 文本及模式保留，不继承默认 Coding Assistant 身份。Workflow 提供事件数据，旧 event.md 前缀不再自动混入系统指令；用户文件原文保留。GPT 使用 GPT 或第一人称自称。
 
 Skills 分为 **OI Introduce、user information、personal skill**，三类同时参与发现。上下文先包含索引与描述，正文由 OMP 按需读取；没有把所有正文固定塞入每一轮。每条 Prompt／Skill 正文上限为 64KiB，区别于已经取消的 token 预算。新 Prompt／Skill 快照在下次原生启动加载；**Persona 改动要求新的 Paveway Conversation**，原生 `/new` 仅创建当前快照下的另一个 OMP Session。
+
+从文件导入可用 `/paveway skills` → **Import from file · GPT analysis**：当前模型分析文本或 `.skill` ZIP，整理名称、描述、分类、正文及各项内容摘要，预览编辑后确认保存。支持冲突时保留草稿；详细格式、隐私与限额见 [文件导入说明](docs/customization.md#从文件导入并由-gpt-整理-skill)。
 
 配置编辑采用 revision/CAS；并发修改会拒绝旧版本，不静默覆盖。CLI 入口见 `workflow customize --help`。
 

@@ -2,6 +2,20 @@
 
 在已选择 workflow 的 UI 中输入 `/prompt` 或 `/skills`，用方向键和 Enter 操作。设置保存在 `workflow_root/<ID>/customization.json`，权限 0600，与记忆、coach 模板和 OMP 全局配置分别管理。关闭 UI 或重启 daemon 后仍然保留；同一个 workflow 下所有 task 共用，其他 workflow 不受影响。
 
+## 从文件导入并由 GPT 整理 Skill
+
+原生界面输入 `/paveway skills`，选择 **Import from file · GPT analysis**，填写文件路径，例如 `/mnt/d/Downloads/example.skill` 或 `~/skills/SKILL.md`。支持 UTF-8 文本、Markdown、文本格式 `.skill`，以及包含一个 `SKILL.md` 的 `.skill`/ZIP 包。路径可包含空格，支持 `~`；WSL 已挂载的盘符路径也可使用。
+
+导入会使用当前选中模型和思考等级发起独立分析请求，选中文件的内容会发送给该模型。GPT 分析用途、触发条件、输入、步骤、输出、约束、依赖和注意事项，生成名称、描述、分类与 Markdown 正文草稿。该请求不附带现有对话、Persona 或 Memory，不提供工具权限，也不执行源文件中的指令或脚本；原文和分析结果不写入聊天 Session。
+
+**草稿不会自动保存。** 可先查看 GPT 分析，再分别编辑名称、三类分类、描述和正文，最后选择“保存 Skill”。与已有名称相同时会明确确认替换，保留原启停状态；新 Skill 保存后启用。分析摘要用于预览，最终保存的是现有 Skill 字段，不扩展配置 schema。新内容在下次原生启动加载，并沿用按需读取。
+
+分析过程中 Esc 取消；网络、认证、无效输出、输出截断都不保存。分析最多等待 180 秒。保存仍执行现有 revision/CAS：其他设备或窗口在分析期间修改配置，会提示冲突并保留草稿。选择“返回（保留草稿）”，重新打开 `/paveway skills` → **Review import draft**，按当前设置重新审核保存，不需要重新分析。草稿仅保留在当前 UI 进程内，退出界面后不保留。
+
+单个选中文件最多 1 MiB；参与分析的文本最多 256 KiB。ZIP 最多 64 个条目、解压总量最多 256 KiB，仅在内存读取，不解压到磁盘。拒绝重复条目、路径穿越、符号链接和加密包；未读取的二进制资源会告知模型并列入依赖／注意事项。导入保存单篇正文，不安装包内资源；要求 GPT 将必需文本引用整合进正文，缺失依赖须明确说明。最终描述与正文仍分别受 64 KiB 限制，不会静默截断超限内容。
+
+原文件保持不变。保存后的 Skill 沿用现有独立用户数据 Git 同步设置；不会把原文件或 ZIP 放进 Paveway 源码仓库。未保存的草稿不参与同步。此入口使用锁定 OMP 的公开模型 SDK，不替换模型认证或修改全局 OMP 配置。
+
 ## 模型与思考等级
 
 `/select-model` 打开本机 OMP 模型目录，输入文字筛选、方向键和 Enter 选择；`/select-thinking-hardness` 按当前明确模型的元数据展示支持的等级。两者均标记当前 workflow 的选择。直接输入也支持 `/select-model provider/model` 和 `/select-thinking-hardness high`；参数 `default` 清除覆盖，继承本机 Runtime/OMP 默认。选择明确模型时同时把思考等级设为 auto，恢复默认模型时同时清除等级覆盖。

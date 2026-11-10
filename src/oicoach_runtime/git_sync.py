@@ -436,51 +436,78 @@ def archive_timestamp(value):
         return None
 
 
-def export_session(config, binding, device, *, root=None):
+def _read_session(binding, root, consume, *, maximum=None):
+    """Stream integrity validation independently of bounded text collection."""
+    from .errors import NativeSessionError
     path = Path(binding["session_file"])
-    root = root or config.state_dir / "sessions" / binding["binding_id"]
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-        raise ConflictError("Native archive escaped its assigned task")
-    messages = []
+        raise NativeSessionError("native_session_unsafe")
     header = False
-    created_at = None
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_size > 16 * 1024 * 1024:
-            raise RuntimeContractError("Native archive must be owned and at most 16 MiB")
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid():
+            raise NativeSessionError("native_session_unsafe")
+        if maximum is not None and before.st_size > maximum:
+            raise RuntimeContractError("Native text export exceeds 16 MiB; the session remains available for native resume")
         while line := stream.readline(1048577):
-            if len(line) > 1048576 or not line.endswith(b"\n"):
-                raise ConflictError("Native archive is incomplete or changing")
+            if len(line) > 1048576:
+                raise NativeSessionError("native_session_entry_limit")
+            if not line.endswith(b"\n"):
+                raise NativeSessionError("native_session_incomplete")
             try:
                 entry = json.loads(line)
-            except (ValueError, UnicodeError):
-                raise RuntimeContractError("Native archive is not supported JSONL") from None
+            except (ValueError, UnicodeError, RecursionError):
+                raise NativeSessionError("native_session_invalid") from None
             if not isinstance(entry, dict):
-                raise RuntimeContractError("Invalid native archive entry")
+                raise NativeSessionError("native_session_invalid")
             if entry.get("type") == "session":
                 if header or entry.get("id") != binding["session_id"] or entry.get("cwd") != binding["workspace"] or type(entry.get("version", 1)) is not int or entry.get("version", 1) not in (1, 2, 3):
-                    raise RuntimeContractError("Native archive identity mismatch")
+                    raise NativeSessionError("native_session_identity_mismatch")
                 header = True
-                created_at = archive_timestamp(entry.get("timestamp"))
-                continue
-            message = entry.get("message")
-            if entry.get("type") != "message" or not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
-                continue
-            if not header:
-                raise RuntimeContractError("Native archive header is missing")
-            content = message.get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
-            if not isinstance(content, str) or not content:
-                continue
-            if any(value is not None and (not isinstance(value, str) or len(value) > 128) for value in (entry.get("id"), entry.get("parentId"))):
-                raise RuntimeContractError("Invalid native message identity")
+            elif entry.get("type") == "message":
+                if not header:
+                    raise NativeSessionError("native_session_identity_mismatch")
+                if any(value is not None and (not isinstance(value, str) or len(value) > 128)
+                       for value in (entry.get("id"), entry.get("parentId"))):
+                    raise NativeSessionError("native_session_invalid")
+            consume(entry)
+        after = os.fstat(stream.fileno())
+        current = path.stat(follow_symlinks=False)
+        if not header:
+            raise NativeSessionError("native_session_identity_mismatch")
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) or
+                (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino)):
+            raise NativeSessionError("native_session_changed")
+    return before.st_size
+
+
+def validate_session(config, binding, *, root=None):
+    """Bounded-memory validation for release/resume; no aggregate export limit."""
+    root = root or config.state_dir / "sessions" / binding["binding_id"]
+    return _read_session(binding, root, lambda _entry: None)
+
+
+def export_session(config, binding, device, *, root=None):
+    root = root or config.state_dir / "sessions" / binding["binding_id"]
+    messages = []
+    created_at = None
+    def collect(entry):
+        nonlocal created_at
+        if entry.get("type") == "session":
+            created_at = archive_timestamp(entry.get("timestamp"))
+            return
+        message = entry.get("message")
+        if entry.get("type") != "message" or not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+            return
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
+        if isinstance(content, str) and content:
             messages.append({"role": message["role"], "text": content,
                              "id": entry.get("id"), "parent_id": entry.get("parentId"),
                              "timestamp": archive_timestamp(entry.get("timestamp")) or archive_timestamp(message.get("timestamp"))})
-        after = os.fstat(stream.fileno())
-        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or not header:
-            raise ConflictError("Native archive changed during export")
+    _read_session(binding, root, collect, maximum=16 * 1024 * 1024)
     times = [m["timestamp"] for m in messages if m["timestamp"]]
     return {"device_id": device, "binding_id": binding["binding_id"], "workflow_id": binding["workflow_id"],
             "created_at": created_at or (min(times) if times else None),

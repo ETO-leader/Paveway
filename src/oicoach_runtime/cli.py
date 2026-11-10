@@ -193,10 +193,13 @@ def parser() -> argparse.ArgumentParser:
             continue
         if name == "customize":
             actions = child.add_subparsers(dest="customize_operation", required=True)
-            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable"):
+            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable", "skill-source"):
                 operation = actions.add_parser(action)
                 common(operation)
                 operation.add_argument("identifier")
+                if action == "skill-source":
+                    operation.add_argument("--file", type=Path, required=True)
+                    continue
                 if action != "show":
                     operation.add_argument("--expected-revision", type=int, required=True)
                 if action == "prompt":
@@ -697,6 +700,10 @@ def main(argv: list[str] | None = None) -> int:
                 from . import customization
                 if args.customize_operation == "show":
                     report = customization.show(config, args.identifier)
+                elif args.customize_operation == "skill-source":
+                    from .skill_import import read_source
+                    customization.directory_for(config, args.identifier)
+                    report = {"api_version": 1, "source": read_source(args.file)}
                 else:
                     values = {}
                     if args.customize_operation in ("prompt", "skill-put"):

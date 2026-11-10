@@ -11,12 +11,17 @@ from pathlib import Path
 import secrets
 import uuid
 
-from .errors import ConflictError, NotFoundError, RuntimeContractError
+from .errors import ConflictError, NativeSessionError, NotFoundError, RuntimeContractError
 from .models import validate_id
 from .processes import InstanceLock, process_identity
 from .store import canonical_json
 
 PREFIX = "frontend:v1:"
+
+
+def session_directory(config, workflow_id, task_id, conversation_id):
+    key = hashlib.sha256(canonical_json([workflow_id, task_id, conversation_id]).encode()).hexdigest()
+    return config.state_dir / "native" / key
 
 
 def alive(pid, identity):
@@ -98,12 +103,13 @@ class Frontend:
             if old and old.get("session_file") and (
                     old.get("composer_version") != VERSION or old.get("role_base") != role_base):
                 raise ConflictError("Prompt architecture/role changed; start --new. Legacy sessions and history are preserved")
-            key = hashlib.sha256(canonical_json([workflow_id, task_id, conversation_id]).encode()).hexdigest()
-            directory = self.store.config.state_dir / "native" / key
+            directory = session_directory(self.store.config, workflow_id, task_id, conversation_id)
+            key = directory.name
             record = {"contract_version": 1, "conversation_id": conversation_id, "workflow_id": workflow_id,
                 "coach_id": settings.get("coach", {}).get("id", workflow_id), "task_id": task_id, "workspace": str(workspace), "binding_id": key,
                 "session_dir": str(directory), "session_id": old.get("session_id") if old else None,
                 "session_file": old.get("session_file") if old else None,
+                "session_required": bool(old and old.get("session_file")),
                 "session_files": old.get("session_files", []) if old else [],
                 "generation": old["generation"] + 1 if old else 1, "status": "starting",
                 "token_hash": hashlib.sha256(owner_token.encode()).hexdigest(),
@@ -149,6 +155,9 @@ class Frontend:
                 raise ConflictError("Native session escaped its assigned directory")
             if record["session_id"] is not None and record["session_id"] != session_id:
                 record["generation"] += 1
+                record["session_required"] = False
+                record.pop("frontend_turn_id", None)
+            record["session_required"] = record.get("session_required", False) or path.exists()
             record.update(session_id=session_id, session_file=str(path), status="idle", omp_pid=omp_pid,
                           omp_identity=process_identity(omp_pid), last_heartbeat_at=self.store.timestamp())
             if not any(item["session_id"] == session_id for item in record["session_files"]):
@@ -202,16 +211,35 @@ class Frontend:
             if living:
                 raise ConflictError("Native owner is still alive; refusing release")
             valid = exit_code == 0
-            if valid and record["session_file"]:
-                if Path(record["session_file"]).exists():
-                    try:
-                        self.archive(record)
-                    except (OSError, RuntimeContractError):
-                        valid = False
-                else:
-                    record.update(session_file=None, session_id=None)
+            diagnostic = "clean_exit" if valid else ("native_exit_unknown" if exit_code is None else "native_exit_nonzero")
+            if valid:
+                from .config import ensure_private_directory
+                lock = None
+                try:
+                    directory = Path(record["session_dir"])
+                    if not directory.exists():
+                        # A direct begin/finish before any launch has no lock or
+                        # history to release. Do not create filesystem state for
+                        # that metadata-only case. A launched session is different.
+                        if record.get("guardian_pid") or record.get("omp_pid") or record["session_file"]:
+                            raise NativeSessionError("native_session_missing")
+                    else:
+                        ensure_private_directory(directory)
+                        try:
+                            lock = InstanceLock(directory / "owner.lock")
+                        except ConflictError:
+                            valid, diagnostic = False, "native_owner_lock_unavailable"
+                    if lock:
+                        self.validate_session(record, allow_unwritten=True)
+                except (OSError, RuntimeContractError) as error:
+                    valid = False
+                    diagnostic = error.code if isinstance(error, NativeSessionError) else "native_session_validation_failed"
+                finally:
+                    if lock:
+                        lock.close()
             record["status"] = "released" if valid else "uncertain"
             record["exit_code"] = exit_code
+            record["release_diagnostic"] = diagnostic
             self.save(db, record)
         return self.public(record)
 
@@ -224,15 +252,15 @@ class Frontend:
                 raise ConflictError("Native process is still alive; heartbeat loss does not permit takeover")
         lock = InstanceLock(Path(record["session_dir"]) / "owner.lock")
         try:
-            if record["session_file"]:
-                if not Path(record["session_file"]).is_file():
-                    raise ConflictError("Native Session was not persisted or is missing; preserve this record and start --new")
-                self.archive(record)
+            self.validate_session(record)
             with self.store.transaction() as db:
                 fresh = self.get(conversation_id)
                 if fresh["generation"] != record["generation"] or fresh["status"] != "uncertain":
                     raise ConflictError("Native owner changed during recovery")
                 fresh["status"] = "released"
+                fresh["release_diagnostic"] = "explicit_recovery_validated"
+                if "history_export" in record:
+                    fresh["history_export"] = record["history_export"]
                 self.save(db, fresh)
         finally:
             lock.close()
@@ -241,6 +269,25 @@ class Frontend:
     def archive(self, record):
         from .git_sync import export_session
         return export_session(self.store.config, record, "local", root=Path(record["session_dir"]))
+
+    def validate_session(self, record, *, allow_unwritten=False):
+        """Release/resume needs integrity, not a full text-history allocation."""
+        if not record["session_file"]:
+            return
+        path = Path(record["session_file"])
+        if path.is_symlink():
+            raise NativeSessionError("native_session_unsafe")
+        if not path.exists():
+            # OMP names a new Session before the first prompt persists it. A
+            # resumed or used Session must never be silently replaced this way.
+            if allow_unwritten and not record.get("session_required") and not record.get("frontend_turn_id"):
+                record.update(session_file=None, session_id=None)
+                return
+            raise NativeSessionError("native_session_missing")
+        from .git_sync import validate_session
+        size = validate_session(self.store.config, record, root=Path(record["session_dir"]))
+        record["history_export"] = {"status": "size_limit" if size > 16 * 1024 * 1024 else "eligible",
+                                    "byte_limit": 16 * 1024 * 1024}
 
     def messages(self, conversation_id, query="", offset=0):
         from .memory import clip, text

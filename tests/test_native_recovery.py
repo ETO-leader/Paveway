@@ -2,24 +2,176 @@
 from contextlib import closing
 import json
 import os
+import pty
 from pathlib import Path
+import select
+import shlex
 import signal
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 
 from test_native_omp import NativeFixture
 import test_native_management
 from oicoach_runtime.errors import RuntimeContractError
+from oicoach_runtime.config import config_text
 from oicoach_runtime.frontend import alive
 from oicoach_runtime.ipc import request
-from oicoach_runtime.processes import InstanceLock
+from oicoach_runtime.processes import InstanceLock, enable_subreaper
 
 
 class NativeRecoveryTests(NativeFixture):
     open_ui = test_native_management.NativeManagementTests.open_ui
+
+    def test_real_omp_does_not_inherit_session_lock(self):
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        owner = request(self.config.server.socket_path, "frontend.list")[0]
+        lock = Path(owner["session_dir"]) / "owner.lock"
+        target = lock.stat()
+        def holds(pid):
+            for fd in Path(f"/proc/{pid}/fd").iterdir():
+                try:
+                    info = fd.stat()
+                    if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino): return True
+                except FileNotFoundError:
+                    continue
+            return False
+        self.assertTrue(holds(owner["guardian_pid"]))
+        self.assertFalse(holds(owner["omp_pid"]), "OMP inherited owner.lock from its guardian")
+        exit_ui()
+
+    def test_locked_launcher_preserves_released_session_then_resumes_it(self):
+        saved = self.chat("LOCK_CONFLICT_PRESERVE_SOURCE")
+        before = self.persisted_owner(saved["conversation_id"])
+        lock = InstanceLock(Path(saved["session_dir"]) / "owner.lock")
+        master, slave = pty.openpty()
+        try:
+            launcher = Path(__file__).resolve().parents[1] / "paveway.sh"
+            process = subprocess.Popen([str(launcher), "--config", str(self.path), "--workflow", "native-test"],
+                stdin=slave, stdout=slave, stderr=slave, env={**self.env, "PAVEWAY_PYTHON": sys.executable})
+            os.close(slave)
+            self.assertNotEqual(process.wait(timeout=12), 0)
+            output = bytearray()
+            while select.select([master], [], [], .05)[0]:
+                try: chunk = os.read(master, 65536)
+                except OSError: break
+                if not chunk: break
+                output.extend(chunk)
+            self.assertIn(b"native_owner_lock_unavailable", output)
+            self.assertEqual(self.persisted_owner(saved["conversation_id"]), before)
+        finally:
+            lock.close()
+            os.close(master)
+        process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+        current = request(self.config.server.socket_path, "frontend.list")[0]
+        self.assertEqual(current["session_id"], saved["session_id"])
+        self.assertEqual(current["conversation_id"], saved["conversation_id"])
+        self.assertEqual(len(self.prompt_requests("LOCK_CONFLICT_PRESERVE_SOURCE")), 1)
+        exit_ui()
+
+    def test_large_valid_session_ctrl_d_and_launcher_resume_preserve_identity(self):
+        saved = self.chat("LARGE_NATIVE_SESSION_SOURCE")
+        path = Path(saved["session_file"])
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        parent = entries[-1]["id"]
+        with path.open("a") as stream:
+            for index in range(260):
+                identity = "large-fixture-" + str(index)
+                stream.write(json.dumps({"type": "custom", "id": identity, "parentId": parent,
+                    "timestamp": "2026-11-10T00:00:00Z", "customType": "lifecycle-fixture",
+                    "data": "x" * 65536}) + "\n")
+                parent = identity
+        self.assertGreater(path.stat().st_size, 16 * 1024 * 1024)
+        for _ in range(2):
+            process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+            current = request(self.config.server.socket_path, "frontend.list")[0]
+            self.assertEqual(current["conversation_id"], saved["conversation_id"])
+            self.assertEqual(current["session_id"], saved["session_id"])
+            send(b"\x04")
+            output = self.wait_for_ui_exit(process, raw, pump)
+            self.assertEqual(process.returncode, 0, output[-2500:])
+            released = self.assert_persisted_release(current)
+            self.assertEqual(released["history_export"]["status"], "size_limit")
+        process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+        current = request(self.config.server.socket_path, "frontend.list")[0]
+        os.kill(current["omp_pid"], signal.SIGKILL)
+        self.wait_for_ui_exit(process, raw, pump)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(self.persisted_owner(current["conversation_id"])["status"], "uncertain")
+        recovered = request(self.config.server.socket_path, "frontend.recover", {"conversation_id": current["conversation_id"]})
+        self.assertEqual(recovered["status"], "released")
+        process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+        restored = request(self.config.server.socket_path, "frontend.list")[0]
+        self.assertEqual(restored["session_id"], saved["session_id"])
+        self.assertEqual(restored["conversation_id"], saved["conversation_id"])
+        exit_ui()
+        self.assertEqual(len(self.prompt_requests("LARGE_NATIVE_SESSION_SOURCE")), 1)
+
+    def detached_tool_exit(self, *, kill_guardian, kill_launcher=False):
+        enable_subreaper()
+        self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
+        self.path.write_text(config_text(self.config))
+        marker = "NATIVE_DETACHED_TOOL"
+        pidfile = self.root / "detached-tool.pid"
+        script = ("import subprocess,sys;from pathlib import Path;"
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True,"
+            "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+            f"Path({str(pidfile)!r}).write_text(str(p.pid));print('DETACHED_TOOL_READY')")
+        command = shlex.join([sys.executable, "-c", script])
+        def response(body):
+            if self.is_prompt_request(body, marker):
+                return [({"role": "assistant", "tool_calls": [{"index": 0, "id": "detached-tool", "type": "function",
+                    "function": {"name": "bash", "arguments": json.dumps({"command": command})}}]}, "tool_calls")]
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+        self.server.response_factory = response
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"])
+        detached = None
+        try:
+            process, raw, send, until, pump, exit_ui = self.open_ui(launcher=True)
+            send(marker + "\r")
+            until("M0_REPLY", lambda: pidfile.exists() and request(self.config.server.socket_path, "frontend.list")[0]["status"] == "idle")
+            detached = int(pidfile.read_text())
+            owner = request(self.config.server.socket_path, "frontend.list")[0]
+            self.assertNotEqual(os.getpgid(detached), owner["guardian_pid"])
+            if kill_launcher:
+                process.kill()
+            elif kill_guardian:
+                os.kill(owner["guardian_pid"], signal.SIGKILL)
+            else:
+                send(b"\x04")
+            output = self.wait_for_ui_exit(process, raw, pump)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and (Path(f"/proc/{detached}").exists() or
+                    any(alive(owner.get(k + "_pid"), owner.get(k + "_identity")) for k in ("guardian", "omp"))):
+                time.sleep(.02)
+            if kill_launcher:
+                try: os.waitpid(owner["guardian_pid"], os.WNOHANG)
+                except ChildProcessError: pass
+                self.restart_daemon()
+            self.assertFalse(Path(f"/proc/{detached}").exists(), "setsid tool survived native cleanup")
+            self.assertIsNone(unrelated.poll(), "unrelated process was killed")
+            self.assert_owner_stopped(owner)
+            final = self.persisted_owner(owner["conversation_id"])
+            self.assertEqual(final["status"], "uncertain" if kill_guardian or kill_launcher else "released")
+            self.assertEqual(len(self.prompt_requests(marker)), 1)
+        finally:
+            if detached and Path(f"/proc/{detached}").exists():
+                try: os.kill(detached, signal.SIGKILL)
+                except ProcessLookupError: pass
+            unrelated.terminate()
+            unrelated.wait()
+
+    def test_real_omp_setsid_tool_is_reaped_on_ctrl_d(self):
+        self.detached_tool_exit(kill_guardian=False)
+
+    def test_real_omp_setsid_tool_is_reaped_after_guardian_sigkill(self):
+        self.detached_tool_exit(kill_guardian=True)
+
+    def test_real_omp_setsid_tool_is_reaped_after_launcher_sigkill(self):
+        self.detached_tool_exit(kill_guardian=False, kill_launcher=True)
 
     def test_startup_recovery_dialog_resumes_without_replaying_a_prompt(self):
         saved = self.chat("PRESERVE_RECOVERY_DIALOG_SOURCE")

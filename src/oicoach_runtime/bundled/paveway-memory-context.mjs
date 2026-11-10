@@ -116,20 +116,45 @@ function projectMemoryForModel(messages) {
     return result;
 }
 
-export function registerMemoryContext(pi, {scope, recall, fail, enabled = true}) {
+export function registerMemoryContext(pi, {scope, recall, fail, enabled = true, allowBypass = false, recallPhase = "before_dispatch"}) {
     const main = ctx => ctx.agent?.kind === "main";
+    let bypass = false;
+    let reportedStatus;
+    let diagnostic = {scope, phase: "before_dispatch", status: enabled ? "not_loaded" : "disabled", note_count: 0};
+    if (allowBypass) pi.registerCommand("paveway-memory-context", {
+        description: "status | off | on — explicitly continue without Runtime Memory for this UI process",
+        handler: async (args, ctx) => {
+            if (!main(ctx) || !ctx.isIdle()) return ctx.ui.notify("Wait for the main GPT to be idle", "warning");
+            const action = args.trim() || "status";
+            if (!["status", "off", "on"].includes(action)) return ctx.ui.notify("Use /paveway-memory-context status|off|on", "warning");
+            if (action !== "status") bypass = action === "off";
+            ctx.ui.notify(JSON.stringify({...diagnostic, bypass,
+                next: bypass ? "Next turn withdraws prior Memory context. Supply your current state; stored notes are retained." : "Memory will be recalled before the next turn."}), "info");
+        },
+    });
+    const failed = (error, phase, ctx) => {
+        diagnostic = {scope, phase: phase === "before_dispatch" ? recallPhase : phase, status: "unavailable", code: phase === "before_dispatch" ? "memory_recall_failed" : "memory_projection_failed"};
+        ctx.ui?.notify?.(`${diagnostic.code}: Runtime Memory unavailable; this is not an empty memory. Inspect Runtime, or restart UI and explicitly use /paveway-memory-context off.`, "error");
+        fail(error, diagnostic);
+    };
     pi.on("before_agent_start", async (event, ctx) => {
         if (!main(ctx) || event.reason === "revive") return;
         try {
             const previous = memoryState(ctx.sessionManager.getBranch(), scope);
             const known = previous.notes.map(note => ({task_id: note.task_id || "", key: note.key}));
-            const snapshot = enabled ? await recall(known) : {
+            const snapshot = enabled && !bypass ? await recall(known) : {
                 notes: [], truncated: false,
                 withdrawn: known.map(note => ({...scope, ...note, reason: "memory_disabled"})),
             };
+            diagnostic = {scope, phase: "before_dispatch", status: !enabled || bypass ? "disabled" :
+                (snapshot.availability || (snapshot.notes?.length ? "available" : "empty")),
+                note_count: snapshot.notes?.length || 0, expired_count: snapshot.expired_count || 0};
+            if (["empty", "expired"].includes(diagnostic.status) && reportedStatus !== diagnostic.status)
+                ctx.ui?.notify?.(diagnostic.status === "expired" ? "Runtime Memory: 当前作用域的笔记已过期。" : "Runtime Memory: 当前作用域没有有效笔记。", "info");
+            reportedStatus = diagnostic.status;
             const message = planMemory(snapshot, previous, scope);
             return message ? {message} : undefined;
-        } catch (error) { fail(error); throw error; }
+        } catch (error) { failed(error, "before_dispatch", ctx); throw error; }
     });
     pi.on("session.compacting", (_event, ctx) => {
         if (!main(ctx)) return;
@@ -144,6 +169,7 @@ export function registerMemoryContext(pi, {scope, recall, fail, enabled = true})
             // Neither persisted history nor an already-emitted prefix changes.
             return {messages: projectMemoryForModel(restored)};
         }
-        catch (error) { fail(error); throw error; }
+        catch (error) { failed(error, "after_dispatch", ctx); throw error; }
     });
+    return {status: () => ({...diagnostic, bypass})};
 }

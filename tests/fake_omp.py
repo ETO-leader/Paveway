@@ -133,6 +133,10 @@ def main():
             session["prompts"].append(envelope)
             session_file.write_text(json.dumps(session))
             mode = envelope["payload"].get("fake_mode", startup_mode)
+            if mode == "memory-recall-error":
+                emit({"type": "paveway_memory_error", "contractVersion": 1,
+                      "code": "memory_recall_failed", "phase": "after_dispatch"})
+                continue
             if mode == "persistence-error":
                 exit_code = 15
             if mode == "persistence-notice":

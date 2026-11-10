@@ -142,6 +142,8 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 | `wakeup.cancel` | event_id、expected_version |
 | `wakeup.reschedule` | event_id、expected_version、at |
 | `native_memory.list/show/put/delete` | 与原 Memory 数据接口相同；scope 为 profile/task，workflow/task 从 owner 推导 |
+
+Native `put` 同样接受可选 `expires_at` 和 `source_event_id`，执行现有有效期和作用域校验。`memory.recall`／`native_memory.context` 新增 `availability`（available/empty/expired）和 `expired_count`；读取失败走错误路径，不返回伪造空列表。`status.diagnostics` 提供按 binding 聚合的有界失败证据和显式恢复指引，不携带正文。更多见 [唤醒与记忆工程改进](engineering-improvements.md)。
 | `native_history.search` | source=native/background、可选 query/offset |
 | `inbox.bound-list/show/acknowledge` | 分别为 offset、delivery_id、delivery_id+expected_version |
 
