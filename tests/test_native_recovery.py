@@ -26,6 +26,38 @@ from oicoach_runtime.processes import InstanceLock, enable_subreaper
 class NativeRecoveryTests(NativeFixture):
     open_ui = test_native_management.NativeManagementTests.open_ui
 
+    def test_completed_read_reminder_can_be_rescheduled_as_new_unread_occurrence(self):
+        from datetime import datetime, timedelta, timezone
+        self.chat("RESCHEDULE_OCCURRENCE_FIXTURE", wakeup=True)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            events = request(self.config.server.socket_path, "events.list", {})
+            if events and events[0]["status"] == "succeeded": break
+            time.sleep(.05)
+        self.assertEqual(events[0]["status"], "succeeded")
+        event = events[0]
+        self.assertIsNone(event["run_id"])
+        inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test", "task_id": "training"})
+        first = next(row for row in inbox["messages"] if row["kind"] == "reminder")
+        request(self.config.server.socket_path, "inbox.acknowledge", {"workflow_id": "native-test", "task_id": "training",
+            "delivery_id": first["delivery_id"], "expected_version": first["version"]})
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        due = (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat()
+        send(f'/reminder reschedule {event["event_id"]} {event["version"]} {due}\r')
+        until("", lambda: request(self.config.server.socket_path, "events.show", {"event_id": event["event_id"]})["version"] > event["version"])
+        deadline = time.monotonic() + 10
+        rows = []
+        while time.monotonic() < deadline:
+            pump(.05)
+            inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test", "task_id": "training"})
+            rows = [row for row in inbox["messages"] if row["kind"] == "reminder"]
+            if len(rows) == 2: break
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(next(row for row in rows if row["delivery_id"] == first["delivery_id"])["state"], "acknowledged")
+        self.assertNotEqual(next(row for row in rows if row["delivery_id"] != first["delivery_id"])["state"], "acknowledged")
+        self.assertIsNone(request(self.config.server.socket_path, "events.show", {"event_id": event["event_id"]})["run_id"])
+        exit_ui()
+
     def test_real_omp_does_not_inherit_session_lock(self):
         process, raw, send, until, pump, exit_ui = self.open_ui()
         owner = request(self.config.server.socket_path, "frontend.list")[0]

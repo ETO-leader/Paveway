@@ -25,6 +25,61 @@ except ImportError:
 
 
 class NativeManagementTests(NativeFixture):
+    def test_sync_status_shows_incomplete_history_without_model_request(self):
+        from oicoach_runtime import git_sync
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        git_sync.set_enabled(self.config, False)
+        git_sync.write_json(git_sync.local_root(self.config) / "status.json", {"state": "ok", "remote_synced": True,
+            "session_archives": {"exported": 2, "skipped": 2, "deferred": 1, "attention": 1,
+                "reasons": {"size_limit": 1, "active": 1}}})
+        send("/paveway sync\r"); until("Private user-data Git")
+        send("\r")
+        until("本次历史备份不完整")
+        until("size_limit")
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
+
+    def test_local_multi_skill_zip_selects_two_with_conflict_and_no_model_request(self):
+        from multi_skill_fixture import write_eight_skills
+        path = self.root / "Paveway-missing-skills.zip"
+        bodies = write_eight_skills(path)
+        customization.update(self.config, "native-test", 0, "skill-put", name="missing-skill-0", description="Old", content="Old body")
+        customization.update(self.config, "native-test", 1, "skill-disable", name="missing-skill-0")
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r")
+        until("Import standard")
+        send(b"\x1b[B\x1b[B\r")
+        until("本地 Skill 文件路径")
+        send(str(path) + "\r")
+        until("本地直导")
+        until("替换同名")
+        raw.clear(); send("\r"); until("1/8")
+        raw.clear(); send(b"\x1b[B\r"); until("2/8")
+        raw.clear(); send(b"\x1b[B" * 12 + b"\r"); until("确认原子导入")
+        send("\r")
+        until("Saved.", lambda: customization.show(self.config, "native-test")["settings"]["revision"] == 3)
+        skills = customization.show(self.config, "native-test")["settings"]["skills"]
+        self.assertEqual({s["name"] for s in skills}, {"missing-skill-0", "missing-skill-1"})
+        for s in skills: self.assertEqual(s["content"], bodies[s["name"]])
+        self.assertFalse(next(s for s in skills if s["name"] == "missing-skill-0")["enabled"])
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
+
+    def test_local_multi_skill_zip_select_all_then_cancel_writes_nothing(self):
+        from multi_skill_fixture import write_eight_skills
+        path = self.root / "Paveway-missing-skills.zip"
+        write_eight_skills(path)
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r"); until("Import standard")
+        send(b"\x1b[B\x1b[B\r"); until("本地 Skill 文件路径")
+        send(str(path) + "\r"); until("本地直导")
+        raw.clear(); send(b"\x1b[B" * 8 + b"\r"); until("8/8")
+        send(b"\x1b")
+        for _ in range(3): pump(.05)
+        self.assertEqual(customization.show(self.config, "native-test")["settings"]["revision"], 0)
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
+
     def test_memory_context_explicit_off_and_on_changes_next_model_request(self):
         manifest = self.config.workflow_root / "native-test/workflow.toml"
         manifest.write_text(manifest.read_text().replace("memory_enabled = false", "memory_enabled = true"))
@@ -461,7 +516,7 @@ class NativeManagementTests(NativeFixture):
         until("native_wakeup")
         draft = "UNSENT_DRAFT_MUST_SURVIVE_NOTICE"
         send(draft)
-        until("新的唤醒消息", lambda: len(request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]) >= 2)
+        until("新的唤醒消息", lambda: len(request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]) >= 1)
         until("BACKGROUND_UI_REPLY_SENTINEL")
         self.assertIn("GPT · 后台定时任务回复".encode(), raw)
         self.assertFalse(any(draft in json.dumps(body["messages"]) for body in self.server.requests))
@@ -480,7 +535,7 @@ class NativeManagementTests(NativeFixture):
         for _ in range(3): pump(.1)
         exit_ui()
         rows = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})["messages"]
-        self.assertEqual({row["kind"] for row in rows}, {"reminder", "result"})
+        self.assertEqual({row["kind"] for row in rows}, {"result"})
         self.assertTrue(all(row["state"] != "acknowledged" for row in rows))
         process, raw, send, until, pump, exit_ui = self.open_ui()
         for _ in range(3): pump(.1)
@@ -493,8 +548,11 @@ class NativeManagementTests(NativeFixture):
         configure(self.config, True, backend="linux")
         binary = self.root / "bin/notify-send"
         binary.parent.mkdir()
-        binary.write_text("#!/bin/sh\nexit 2\n")
+        binary.write_text("#!/bin/sh\necho org.freedesktop.Notifications.Rejected >&2\nexit 2\n")
         binary.chmod(0o700)
+        probe = binary.with_name("gdbus")
+        probe.write_text("#!/bin/sh\necho '(true,)'\n")
+        probe.chmod(0o700)
         self.env["PATH"] = str(binary.parent) + os.pathsep + self.env["PATH"]
         process, raw, send, until, pump, exit_ui = self.open_ui()
         send("/paveway notifications\r")

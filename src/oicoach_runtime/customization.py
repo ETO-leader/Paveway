@@ -143,6 +143,18 @@ def update(config, workflow_id, expected_revision, operation, **values):
                     raw[key] = incoming[key]
                 else:
                     raw.pop(key, None)
+        elif operation == "skills-import":
+            incoming, replacements = values.get("skills"), values.get("replace")
+            if not isinstance(incoming, list) or not incoming or not isinstance(replacements, list) or any(not isinstance(name, str) for name in replacements):
+                raise WorkflowError("Select at least one Skill and explicitly confirm replacements")
+            validate({"schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": incoming})
+            names = {s["name"] for s in incoming}
+            current = {s["name"]: s for s in raw["skills"]}
+            if set(replacements) != names & current.keys():
+                raise ConflictError("Every conflicting Skill requires explicit replacement confirmation")
+            for skill in incoming:
+                if skill["name"] in current: current[skill["name"]].update(skill)
+                else: raw["skills"].append(dict(skill))
         elif operation == "inference":
             if not values or set(values) - {"model", "thinking"}:
                 raise WorkflowError("Provide model and/or thinking")

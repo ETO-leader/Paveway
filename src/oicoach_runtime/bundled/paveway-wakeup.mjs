@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 export function registerWakeups(pi, config, bound, request, captureInference, publishStatus) {
     const call = async (operation, parameters, ctx) => {
-        if (operation === "schedule" && ctx) await captureInference(ctx);
+        if (operation === "schedule" && parameters.intent === "agent_wake" && ctx) await captureInference(ctx);
         return request(config.socket_path, "wakeup." + operation, {...bound(), parameters});
     };
     const inboxCall = (operation, parameters = {}) => request(config.socket_path, "inbox.bound-" + operation, {...bound(), parameters});
@@ -14,15 +14,15 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
     const definitions = {
         schedule: z.object({when, reason: z.string().min(1).max(4096), dedupe_key: z.string().min(1).max(256),
             intent: z.enum(["reminder", "agent_wake"]), authorized_by_user: z.boolean()}),
-        list: z.object({}),
-        cancel: z.object({event_id: z.string(), expected_version: z.number().int().min(1)}),
-        reschedule: z.object({event_id: z.string(), expected_version: z.number().int().min(1), at: z.string()}),
+        list: z.object({intent: z.enum(["reminder", "agent_wake"]).optional()}),
+        cancel: z.object({event_id: z.string(), expected_version: z.number().int().min(1), intent: z.enum(["reminder", "agent_wake"]).optional()}),
+        reschedule: z.object({event_id: z.string(), expected_version: z.number().int().min(1), at: z.string(), intent: z.enum(["reminder", "agent_wake"]).optional()}),
     };
     if (config.tools_enabled) for (const [operation, parameters] of Object.entries(definitions)) {
         pi.registerTool({name: "paveway_wakeup_" + operation, label: "Paveway wakeup " + operation,
             description: operation === "schedule" ?
-                "Schedule only an explicit user reminder or existing opt-in. after_now starts at Runtime receipt; native after_turn_settled is unavailable. Never create an autonomous loop. Reuse the same dedupe_key for an uncertain identical request; inspect list before retrying. Scheduling is not delivery or user-seen evidence." :
-                "Manage current bound workflow/task wakeups; mutations require the event CAS version. Do not supply another scope.",
+                "Choose intent=reminder for 'remind me': durable Inbox and optional desktop notification, no model or Agent start. Choose agent_wake only when the user explicitly wants future AI work/checks/decisions or has opted in; it runs a background Agent and saves its result to Inbox, without a reminder popup. after_now starts at Runtime receipt; native after_turn_settled is unavailable. Never create an autonomous loop. Reuse the same dedupe_key for an uncertain identical request; inspect list before retrying. Scheduling is not delivery or user-seen evidence." :
+                "Manage current bound workflow/task events; filter intent to distinguish reminder from agent_wake. Mutations require the event CAS version; pass intent to prevent changing another type. Do not supply another scope.",
             parameters, approval: operation === "list" ? "read" : "write", loadMode: "essential",
             async execute(_id, args, _signal, _update, ctx) {
                 if (ctx?.agent?.kind !== "main") return {content: [{type: "text", text: "Only the main GPT may use its managed wakeup capability"}], isError: true};
@@ -104,16 +104,17 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
         clock = undefined;
         context = undefined;
     });
-    pi.registerCommand("wakeup", {description: "in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME",
+    for (const [command, intent] of [["reminder", "reminder"], ["wakeup", "agent_wake"]]) pi.registerCommand(command, {
+        description: (intent === "reminder" ? "纯提醒，不调用模型；" : "唤醒后台 GPT 执行任务；") + "in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME",
         handler: async (args, ctx) => {
             try {
                 let result;
                 const parts = args.trim().split(/\s+/);
                 const [operation, value] = parts;
-                if (operation === "list" || !args.trim()) result = await call("list", {});
-                else if (operation === "cancel") result = await call("cancel", {event_id: value, expected_version: Number(parts[2])});
+                if (operation === "list" || !args.trim()) result = await call("list", {intent});
+                else if (operation === "cancel") result = await call("cancel", {event_id: value, expected_version: Number(parts[2]), intent});
                 else if (operation === "reschedule") result = await call("reschedule", {event_id: value,
-                    expected_version: Number(parts[2]), at: parseAt(parts[3] || "")});
+                    expected_version: Number(parts[2]), at: parseAt(parts[3] || ""), intent});
                 else if (operation === "in" || operation === "at") {
                     let timing;
                     if (operation === "in") {
@@ -122,8 +123,8 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
                         timing = {kind: "after_now", seconds: Number(duration[1]) * {s: 1, m: 60, h: 3600, d: 86400}[duration[2]]};
                     } else timing = {kind: "at", at: parseAt(value || "")};
                     result = await call("schedule", {when: timing, reason: parts.slice(2).join(" "),
-                        dedupe_key: "native-user-" + randomUUID(), intent: "reminder", authorized_by_user: true}, ctx);
-                } else throw new Error("/wakeup in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME");
+                        dedupe_key: "native-user-" + randomUUID(), intent, authorized_by_user: true}, ctx);
+                } else throw new Error(`/${command} in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME`);
                 ctx.ui.notify(JSON.stringify(result, null, 2), "info");
                 await refresh(ctx);
             } catch (error) { ctx.ui.notify(error.message, "error"); }

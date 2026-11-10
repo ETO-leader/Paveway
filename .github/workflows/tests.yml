@@ -12,6 +12,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install '.[test]'
+      - name: Install private D-Bus notification test dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus-daemon libnotify-bin libglib2.0-bin python3-gi
       - run: python -m unittest discover -s tests -v
       - run: oicoach-runtime --help
   native:
@@ -56,6 +58,9 @@ jobs:
             test_native_omp \
             test_native_management.NativeManagementTests.test_skill_dialog_preserves_category_and_body_without_chat_submission \
             test_native_management.NativeManagementTests.test_skill_file_import_analyzes_reviews_and_saves_without_chat_history \
+            test_native_management.NativeManagementTests.test_local_multi_skill_zip_selects_two_with_conflict_and_no_model_request \
+            test_native_management.NativeManagementTests.test_local_multi_skill_zip_select_all_then_cancel_writes_nothing \
+            test_native_management.NativeManagementTests.test_sync_status_shows_incomplete_history_without_model_request \
             test_native_management.NativeManagementTests.test_skill_import_invalid_analysis_does_not_save \
             test_native_management.NativeManagementTests.test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings \
             test_native_management.NativeManagementTests.test_memory_context_explicit_off_and_on_changes_next_model_request \

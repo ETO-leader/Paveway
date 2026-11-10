@@ -193,12 +193,16 @@ def parser() -> argparse.ArgumentParser:
             continue
         if name == "customize":
             actions = child.add_subparsers(dest="customize_operation", required=True)
-            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable", "skill-source"):
+            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable", "skill-source", "skill-local-preview", "skills-import"):
                 operation = actions.add_parser(action)
                 common(operation)
                 operation.add_argument("identifier")
-                if action == "skill-source":
+                if action in ("skill-source", "skill-local-preview"):
                     operation.add_argument("--file", type=Path, required=True)
+                    continue
+                if action == "skills-import":
+                    operation.add_argument("--expected-revision", type=int, required=True)
+                    operation.add_argument("--content-file", type=Path, required=True)
                     continue
                 if action != "show":
                     operation.add_argument("--expected-revision", type=int, required=True)
@@ -704,6 +708,16 @@ def main(argv: list[str] | None = None) -> int:
                     from .skill_import import read_source
                     customization.directory_for(config, args.identifier)
                     report = {"api_version": 1, "source": read_source(args.file)}
+                elif args.customize_operation == "skill-local-preview":
+                    from .skill_import import local_skills
+                    report = local_skills(args.file, customization.show(config, args.identifier)["settings"])
+                elif args.customize_operation == "skills-import":
+                    with args.content_file.open("rb") as stream: data = stream.read(customization.MAX_SETTINGS + 1)
+                    if len(data) > customization.MAX_SETTINGS: raise RuntimeContractError("Skill import batch exceeds 256 KiB")
+                    try: values = json.loads(data)
+                    except (ValueError, UnicodeError, RecursionError): raise RuntimeContractError("Invalid Skill import JSON") from None
+                    if not isinstance(values, dict) or set(values) != {"skills", "replace"}: raise RuntimeContractError("Skill import requires skills and replace lists")
+                    report = customization.update(config, args.identifier, args.expected_revision, "skills-import", **values)
                 else:
                     values = {}
                     if args.customize_operation in ("prompt", "skill-put"):

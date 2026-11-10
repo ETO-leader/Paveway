@@ -20,6 +20,59 @@ from oicoach_runtime.models import utc_text
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_intent_without_native_flag_keeps_ordinary_agent_schedule_contract(self):
+        event = request(self.socket_path, "schedule", {"workflow_id": "echo", "task_id": "ordinary",
+            "reason": "ordinary task", "dedupe_key": "ordinary-intent", "at": "now",
+            "payload": {"intent": "reminder", "message": "ORDINARY_AGENT_REQUEST"}})
+        done = self.wait_status(event["event_id"])
+        self.assertIsNotNone(done["run_id"])
+        self.assertEqual(len((self.root / "fake-starts.jsonl").read_text().splitlines()), 1)
+        self.assertEqual(request(self.socket_path, "inbox.list", {"workflow_id": "echo"})["messages"], [])
+
+    def test_pure_reminder_completes_without_any_agent_start_and_survives_restart(self):
+        from oicoach_runtime import notifications
+        notifications.configure(self.config, False)
+        arguments = {"workflow_id": "echo", "task_id": "reminder", "reason": "pure reminder",
+            "dedupe_key": "pure-no-model", "at": "now", "payload": {"native_wakeup": True,
+                "intent": "reminder", "message": "PURE_REMINDER_BODY"}}
+        event = request(self.socket_path, "schedule", arguments)
+        self.assertEqual(request(self.socket_path, "schedule", arguments)["event_id"], event["event_id"])
+        done = self.wait_status(event["event_id"], ("succeeded",), timeout=2)
+        self.assertIsNone(done["run_id"])
+        self.assertFalse((self.root / "fake-starts.jsonl").exists())
+        inbox = request(self.socket_path, "inbox.list", {"workflow_id": "echo"})
+        self.assertEqual([r["text"] for r in inbox["messages"]], ["PURE_REMINDER_BODY"])
+        self.stop(); self.start()
+        self.assertEqual(self.event(event["event_id"])["status"], "succeeded")
+        self.assertEqual(len(request(self.socket_path, "inbox.list", {"workflow_id": "echo"})["messages"]), 1)
+        self.assertFalse((self.root / "fake-starts.jsonl").exists())
+
+    def test_inbox_due_projection_does_not_wait_for_busy_model_or_desktop(self):
+        from oicoach_runtime import notifications
+        self.stop()
+        self.config = replace(self.config, agent=replace(self.config.agent, turn_timeout_seconds=8))
+        self.config_path.write_text(config_text(self.config))
+        notifications.configure(self.config, False)
+        self.start()
+        busy = self.schedule(key="busy", mode="hold")
+        self.wait_status(busy["event_id"], ("running",))
+        event = request(self.socket_path, "schedule", {"workflow_id": "echo", "task_id": "reminder",
+            "reason": "busy reminder", "dedupe_key": "due-independent", "at": utc_text(datetime.now(timezone.utc)),
+            "payload": {"native_wakeup": True, "intent": "reminder", "message": "DUE_WITHOUT_DESKTOP"}})
+        deadline = time.monotonic() + 2
+        rows = []
+        while time.monotonic() < deadline:
+            rows = request(self.socket_path, "inbox.list", {"workflow_id": "echo", "task_id": "reminder"})["messages"]
+            if rows: break
+            time.sleep(.02)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "created")
+        self.assertIsNone(self.event(event["event_id"])["run_id"])
+        self.assertEqual(self.event(event["event_id"])["status"], "succeeded")
+        self.assertEqual(self.event(busy["event_id"])["status"], "running")
+        again = request(self.socket_path, "inbox.list", {"workflow_id": "echo", "task_id": "reminder"})
+        self.assertEqual([r["delivery_id"] for r in again["messages"]], [rows[0]["delivery_id"]])
+
     def test_worker_memory_failure_after_intent_remains_uncertain_with_diagnostic(self):
         event = self.wait_status(self.schedule(mode="memory-recall-error")["event_id"], ("uncertain",))
         self.assertEqual(event["status"], "uncertain")

@@ -16,6 +16,40 @@ from oicoach_runtime.workflow_setup import create
 
 
 class SkillImportSourceTests(unittest.TestCase):
+    def test_local_eight_skill_cli_import_is_atomic_preserves_body_and_fences_conflicts(self):
+        from multi_skill_fixture import write_eight_skills
+        from oicoach_runtime import customization
+        config_path = self.root / "config.toml"
+        initialize(config_path, str(self.root / "state"), str(self.root / "workflows"))
+        config = load_config(config_path)
+        create(config, "sample", self.root)
+        package = self.root / "Paveway-missing-skills.zip"
+        bodies = write_eight_skills(package)
+        def cli(*args):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["workflow", "customize", *args, "--config", str(config_path), "--json"])
+            return code, json.loads(out.getvalue() or err.getvalue())
+        code, preview = cli("skill-local-preview", "sample", "--file", str(package))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(preview["skills"]), 8)
+        self.assertEqual(customization.show(config, "sample")["settings"]["revision"], 0)
+        selected = [{k: v for k, v in item.items() if k not in ("source", "conflict")} for item in preview["skills"]]
+        batch = self.root / "batch.json"
+        batch.write_text(json.dumps({"skills": selected, "replace": []}))
+        code, _ = cli("skills-import", "sample", "--expected-revision", "0", "--content-file", str(batch))
+        self.assertEqual(code, 0)
+        settings = customization.show(config, "sample")["settings"]
+        self.assertEqual(settings["revision"], 1)
+        self.assertEqual({s["name"]: s["content"] for s in settings["skills"]}, bodies)
+        code, _ = cli("skills-import", "sample", "--expected-revision", "1", "--content-file", str(batch))
+        self.assertNotEqual(code, 0, "same-name replacements require explicit confirmation")
+        self.assertEqual(customization.show(config, "sample")["settings"], settings)
+        batch.write_text(json.dumps({"skills": selected, "replace": list(bodies)}))
+        code, _ = cli("skills-import", "sample", "--expected-revision", "0", "--content-file", str(batch))
+        self.assertNotEqual(code, 0)
+        self.assertEqual(customization.show(config, "sample")["settings"], settings)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-skill-import-")
         self.addCleanup(self.temp.cleanup)

@@ -17,6 +17,7 @@ function fixture() {
         requests.push({operation, args});
         if (failure) throw failure;
         if (operation === "wakeup.list") return rows;
+        if (["wakeup.schedule", "wakeup.cancel", "wakeup.reschedule"].includes(operation)) return args.parameters;
         if (operation === "inbox.bound-list") return inbox;
         if (operation === "inbox.bound-show") return inbox.messages.find(row => row.delivery_id === args.parameters.delivery_id);
         if (operation === "inbox.bound-acknowledge") { inbox = {...inbox, unacknowledged: inbox.unacknowledged - 1}; return {}; }
@@ -31,6 +32,34 @@ function fixture() {
 }
 
 describe("Runtime-owned status publication", () => {
+    test("reminder and wakeup share parsing but create distinct intents and filter all mutations", async () => {
+        const f = fixture();
+        try {
+            for (const [command, intent] of [["reminder", "reminder"], ["wakeup", "agent_wake"]]) {
+                const handler = f.commands.get(command).handler;
+                expect(f.commands.get(command).description).toContain(command === "reminder" ? "不调用模型" : "后台 GPT");
+                await handler("in 2.5m Explicit task", f.ctx);
+                let scheduled = f.requests.filter(row => row.operation === "wakeup.schedule").at(-1).args.parameters;
+                expect(scheduled.intent).toBe(intent);
+                expect(scheduled.when).toEqual({kind: "after_now", seconds: 150});
+                expect(scheduled.authorized_by_user).toBe(true);
+                await handler("at 2099-01-01T21:00:00+08:00 Explicit task", f.ctx);
+                scheduled = f.requests.filter(row => row.operation === "wakeup.schedule").at(-1).args.parameters;
+                expect(scheduled.intent).toBe(intent);
+                expect(scheduled.when).toEqual({kind: "at", at: "2099-01-01T13:00:00.000Z"});
+                await handler("at 21:00 Local clock", f.ctx);
+                scheduled = f.requests.filter(row => row.operation === "wakeup.schedule").at(-1).args.parameters;
+                expect(new Date(scheduled.when.at).getHours()).toBe(21);
+                await handler("list", f.ctx);
+                expect(f.requests.some(row => row.operation === "wakeup.list" && row.args.parameters.intent === intent)).toBe(true);
+                await handler("cancel event-id 3", f.ctx);
+                expect(f.requests.filter(row => row.operation === "wakeup.cancel").at(-1).args.parameters)
+                    .toEqual({event_id: "event-id", expected_version: 3, intent});
+                await handler("reschedule event-id 3 2099-01-01T00:00:00Z", f.ctx);
+                expect(f.requests.filter(row => row.operation === "wakeup.reschedule").at(-1).args.parameters.intent).toBe(intent);
+            }
+        } finally {f.close();}
+    });
     test("unavailable usage is unknown, not an empty inbox; recovery publishes real unread state", async () => {
         const f = fixture();
         try {

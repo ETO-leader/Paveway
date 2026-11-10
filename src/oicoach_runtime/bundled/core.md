@@ -32,3 +32,4 @@
 - 前台定时唤醒：当原生 paveway_wakeup_* 工具可用时，优先使用原生唤醒能力；after_now 延迟从 Runtime 接收起算。
 - 后台排程：仅在拥有 Runtime 提供的真实后台 run_id 时，才可使用 schedule --after-turn 进行排程；绝不使用前台对话/会话 ID 或编造的 run ID。
 - 用户明确的一次性请求才授权排程。不创建无限自主唤醒链。提醒与结果持久化保存于 /inbox，不承诺自动插入当前会话。
+- 用户说“提醒我”默认使用 intent=reminder（/reminder）：到期本地写 Inbox，可选桌面通知，绝不调用模型。只有明确要求未来让 AI 工作、检查进度或决策，才使用 intent=agent_wake（/wakeup）：后台 Agent 执行，结果进 Inbox，不弹普通提醒。两种类型共用 paveway_wakeup_schedule，不将普通提醒升级为 Agent 任务。

@@ -63,6 +63,14 @@ class WakeupTests(unittest.TestCase):
             self.schedule(when={"kind": "after_turn_settled", "seconds": 600})
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
 
+    def test_absolute_time_is_persisted_for_each_intent_with_timezone(self):
+        for intent in ("reminder", "agent_wake"):
+            event = self.schedule(intent=intent, dedupe_key="absolute-" + intent,
+                when={"kind": "at", "at": "2026-11-11T21:00:00+08:00"})
+            self.assertEqual(event["payload"]["intent"], intent)
+            self.assertEqual(event["not_before_utc"], "2026-11-11T13:00:00.000000Z")
+            self.assertEqual(event["schedule_mode"], "at")
+
     def test_snapshot_failure_rolls_back_event_and_audit_then_retry_is_idempotent(self):
         before = self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0]
         original = self.store._set_metadata
@@ -72,22 +80,22 @@ class WakeupTests(unittest.TestCase):
             original(db, key, value)
         with patch.object(self.store, "_set_metadata", side_effect=fail):
             with self.assertRaises(OSError):
-                self.schedule()
+                self.schedule(intent="agent_wake")
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 0)
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0], before)
-        event = self.schedule()
+        event = self.schedule(intent="agent_wake")
         key = "native-wakeup-config:v1:" + event["event_id"]
         snapshot = self.store.metadata(key)
         record = Frontend(self.store).authenticate(**self.owner)
         with self.store.transaction() as db:
             self.store._set_metadata(db, record["config_key"], {"changed": True})
-        self.assertEqual(self.schedule()["event_id"], event["event_id"])
+        self.assertEqual(self.schedule(intent="agent_wake")["event_id"], event["event_id"])
         self.assertEqual(self.store.metadata(key), snapshot)
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
         with self.store.transaction() as db:
             db.execute("DELETE FROM runtime_metadata WHERE key=?", (key,))
         with self.assertRaises(RuntimeContractError) as error:
-            self.schedule()
+            self.schedule(intent="agent_wake")
         self.assertEqual(error.exception.code, "native_wakeup_snapshot_missing")
         self.assertIsNone(self.store.metadata(key))
 
@@ -99,7 +107,7 @@ class WakeupTests(unittest.TestCase):
                 with self.store.transaction() as db:
                     self.store._set_metadata(db, record["config_key"], snapshot)
                 with self.assertRaises(RuntimeContractError):
-                    self.schedule()
+                    self.schedule(intent="agent_wake")
                 self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 0)
                 self.assertEqual(self.store.connection.execute("SELECT count(*) FROM audit_log").fetchone()[0], before)
 
@@ -142,6 +150,35 @@ class WakeupTests(unittest.TestCase):
         done = self.wakeup.call("cancel", self.owner, {"event_id": event["event_id"], "expected_version": event["version"]})
         self.assertEqual(done["status"], "cancelled")
 
+    def test_intent_filters_and_mutations_reject_wrong_type_and_stale_revision(self):
+        reminder = self.schedule()
+        agent = self.schedule(intent="agent_wake", dedupe_key="ai-work")
+        for intent, expected in (("reminder", reminder), ("agent_wake", agent)):
+            rows = self.wakeup.call("list", self.owner, {"intent": intent})
+            self.assertEqual([row["event_id"] for row in rows], [expected["event_id"]])
+            self.assertEqual(rows[0]["version"], expected["version"])
+            self.assertEqual(rows[0]["intent"], intent)
+        with self.assertRaises(ConflictError):
+            self.wakeup.call("cancel", self.owner, {"event_id": reminder["event_id"], "expected_version": reminder["version"], "intent": "agent_wake"})
+        with self.assertRaises(ConflictError):
+            self.wakeup.call("reschedule", self.owner, {"event_id": agent["event_id"], "expected_version": agent["version"], "intent": "reminder", "at": agent["not_before_utc"]})
+        changed = self.wakeup.call("reschedule", self.owner, {"event_id": reminder["event_id"], "expected_version": reminder["version"], "intent": "reminder", "at": "2026-11-01T12:00:00Z"})
+        with self.assertRaises(ConflictError):
+            self.wakeup.call("cancel", self.owner, {"event_id": reminder["event_id"], "expected_version": reminder["version"], "intent": "reminder"})
+        self.assertEqual(self.store.event(reminder["event_id"])["version"], changed["version"])
+
+    def test_reminder_delivery_and_completion_roll_back_together(self):
+        event = self.schedule(when={"kind": "after_now", "seconds": 0})
+        with patch.object(self.store, "complete_reminder", side_effect=OSError("injected commit boundary")):
+            with self.assertRaises(OSError): Inbox(self.store).project_due(complete=True)
+        self.assertEqual(self.store.event(event["event_id"])["status"], "queued")
+        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
+        Inbox(self.store).project_due(complete=True)
+        Inbox(self.store).project_due(complete=True)
+        self.assertEqual(self.store.event(event["event_id"])["status"], "succeeded")
+        self.assertIsNone(self.store.event(event["event_id"])["run_id"])
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
+
     def test_reminder_persists_before_model_and_offer_is_not_completion(self):
         event = self.schedule()
         inbox = Inbox(self.store)
@@ -170,6 +207,9 @@ class WakeupTests(unittest.TestCase):
         inbox = Inbox(self.store)
         for intent in ("agent_wake", "reminder"):
             event = self.schedule(intent=intent, dedupe_key=intent, when={"kind": "after_now", "seconds": 0})
+            if intent == "reminder":
+                inbox.project_due(complete=True)
+                continue
             claimed = self.store.claim_due("fixture")
             inbox.due(event)
             self.store.bind(claimed, WorkflowProvider(self.config.workflow_root).describe("example"))
@@ -180,5 +220,5 @@ class WakeupTests(unittest.TestCase):
             inbox.collect()
         rows = inbox.list("example")["messages"]
         self.assertEqual({row["event_id"] for row in rows}, {event["event_id"]})
-        self.assertEqual({row["kind"] for row in rows}, {"reminder", "result"})
+        self.assertEqual({row["kind"] for row in rows}, {"reminder"})
         self.assertTrue(all(row["state"] == "created" for row in rows))

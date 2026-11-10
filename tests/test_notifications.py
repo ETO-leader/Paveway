@@ -20,6 +20,82 @@ from oicoach_runtime.store import Store
 
 
 class NotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_delivery_and_desktop_attempt_upgrade_without_duplicate(self):
+        import hashlib
+        from oicoach_runtime.store import canonical_json
+        notifications.configure(self.config, True)
+        event = self.event()
+        old_id = hashlib.sha256(canonical_json([event["event_id"], "reminder", None]).encode()).hexdigest()
+        legacy = {"delivery_id": old_id, "event_id": event["event_id"], "run_id": None, "workflow_id": "example", "task_id": "training",
+            "kind": "reminder", "text": "Old reminder", "state": "acknowledged", "version": 2, "created_at": self.store.timestamp()}
+        with self.store.transaction() as db:
+            self.store._set_metadata(db, "delivery:v1:" + old_id, legacy)
+            self.store._set_metadata(db, notifications.PREFIX + event["event_id"], {"event_id": event["event_id"],
+                "not_before_utc": event["not_before_utc"], "delivery_id": old_id, "status": "accepted", "attempted_at": self.store.timestamp()})
+        await self.watcher.tick()
+        self.sender.assert_not_awaited()
+        rows = Inbox(self.store).list("example")["messages"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["delivery_id"], old_id)
+        self.assertEqual(rows[0]["state"], "acknowledged")
+        self.now += timedelta(seconds=2)
+        self.store.modify(event["event_id"], event["version"], at=utc_text(self.now))
+        await self.watcher.tick()
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 2)
+        self.sender.assert_awaited_once()
+
+    async def test_legacy_inbox_only_unchanged_schedule_is_not_reprojected(self):
+        import hashlib
+        from oicoach_runtime.store import canonical_json
+        event = self.event()
+        old_id = hashlib.sha256(canonical_json([event["event_id"], "reminder", None]).encode()).hexdigest()
+        with self.store.transaction() as db:
+            self.store._set_metadata(db, "delivery:v1:" + old_id, {"delivery_id": old_id, "event_id": event["event_id"], "run_id": None,
+                "workflow_id": "example", "task_id": "training", "kind": "reminder", "text": "Old", "state": "created", "version": 1,
+                "created_at": self.store.timestamp()})
+        Inbox(self.store).project_due()
+        Inbox(self.store).project_due()
+        rows = Inbox(self.store).list("example")["messages"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["delivery_id"], old_id)
+
+    async def test_legacy_history_only_deduplicates_when_rescheduled_back_to_old_due(self):
+        import hashlib
+        notifications.configure(self.config, True)
+        event = self.event()
+        original_due = event["not_before_utc"]
+        legacy_history = "desktop-history:v1:" + hashlib.sha256((event["event_id"] + original_due).encode()).hexdigest()
+        with self.store.transaction() as db:
+            self.store._set_metadata(db, legacy_history, {"event_id": event["event_id"], "not_before_utc": original_due,
+                "status": "accepted", "attempted_at": self.store.timestamp()})
+        event = self.store.modify(event["event_id"], event["version"], at=utc_text(self.now + timedelta(seconds=2)))
+        self.now += timedelta(seconds=3)
+        await self.watcher.tick()
+        self.sender.assert_awaited_once()
+        self.store.modify(event["event_id"], event["version"], at=original_due)
+        await notifications.Watcher(self.store, self.sender).tick()
+        await self.watcher.tick()
+        self.sender.assert_awaited_once()
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 2)
+
+    async def test_acknowledged_occurrence_reschedule_creates_new_unread_inbox_delivery(self):
+        notifications.configure(self.config, True)
+        event = self.event()
+        await self.watcher.tick()
+        inbox = Inbox(self.store)
+        first = inbox.list("example")["messages"][0]
+        inbox.acknowledge("example", first["delivery_id"], first["version"])
+        self.now += timedelta(seconds=2)
+        self.store.modify(event["event_id"], event["version"], at=utc_text(self.now))
+        await self.watcher.tick()
+        rows = inbox.list("example")["messages"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["state"] for r in rows}, {"created", "acknowledged"})
+        self.assertEqual(len({r["delivery_id"] for r in rows}), 2)
+        await notifications.Watcher(self.store, self.sender).tick()
+        self.assertEqual(len(inbox.list("example")["messages"]), 2)
+        self.assertEqual(self.sender.await_count, 2)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-notification-")
         self.addCleanup(self.temp.cleanup)
@@ -42,11 +118,13 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         notifications.configure(self.config, True)
         event = self.event()
         # A leased background Run blocks the normal dispatcher, but not the popup.
+        busy = self.store.enqueue("example", "busy", "busy Agent", "busy", at=utc_text(self.now))
         claimed = self.store.claim_due("busy-model-fixture")
-        self.assertEqual(claimed["event_id"], event["event_id"])
+        self.assertEqual(claimed["event_id"], busy["event_id"])
         await self.watcher.tick()
         self.sender.assert_awaited_once()
-        self.assertEqual(self.store.event(event["event_id"])["status"], "leased")
+        self.assertEqual(self.store.event(busy["event_id"])["status"], "leased")
+        self.assertEqual(self.store.event(event["event_id"])["status"], "queued")
         self.assertIsNone(self.store.run(claimed["run_id"])["dispatch_intent_at"])
         self.assertEqual(Inbox(self.store).list("example")["messages"][0]["state"], "created")
         await self.watcher.tick()
@@ -64,11 +142,11 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         notifications.configure(self.config, True)
         self.store.modify(event["event_id"], event["version"], cancel=True)
         self.event("future", delay=60)
-        self.event("old", delay=-86400)
+        old = self.event("old", delay=-86400)
         self.event("silent", intent="agent_wake")
         await self.watcher.tick()
         self.sender.assert_not_awaited()
-        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
+        self.assertEqual({r["event_id"] for r in Inbox(self.store).list("example")["messages"]}, {event["event_id"], old["event_id"]})
 
     async def test_rescheduled_event_uses_new_due_and_hidden_body(self):
         notifications.configure(self.config, True, show_body=False)
@@ -117,6 +195,10 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
         attempt = self.store.metadata(notifications.PREFIX + event["event_id"])
         self.assertNotIn("PRIVATE_FIXTURE_REMINDER", json.dumps(attempt))
+        Inbox(self.store).project_due(complete=True)
+        self.assertEqual(self.store.event(event["event_id"])["status"], "succeeded")
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
 
     def test_private_settings_and_separate_service_keep_model_secrets_out(self):
         notifications.configure(self.config, True, backend="windows")
@@ -145,7 +227,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ubuntu_uses_notify_send_without_shell_and_escapes_markup(self):
         p = self.process()
-        with patch.object(notifications, "is_wsl", return_value=False), patch.object(notifications.shutil, "which", return_value="/fixture/notify-send"), patch.object(notifications.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=p) as spawn:
+        with patch.object(notifications, "linux_readiness", new_callable=AsyncMock, return_value=None), patch.object(notifications, "is_wsl", return_value=False), patch.object(notifications.shutil, "which", return_value="/fixture/notify-send"), patch.object(notifications.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=p) as spawn:
             result = await notifications.send(body='<b>"; $(touch /tmp/never)</b>')
             self.assertEqual(result["status"], "accepted")
             self.assertIn("--", spawn.call_args.args)
@@ -167,7 +249,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await notifications.send("linux"))["code"], "command_missing")
         p = self.process(code=None)
         p.communicate.side_effect = TimeoutError()
-        with patch.object(notifications.shutil, "which", return_value="/fixture/notify-send"), patch.object(notifications.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=p):
+        with patch.object(notifications, "linux_readiness", new_callable=AsyncMock, return_value=None), patch.object(notifications.shutil, "which", return_value="/fixture/notify-send"), patch.object(notifications.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=p):
             self.assertEqual((await notifications.send("linux"))["status"], "unknown")
             p.kill.assert_called_once()
 
@@ -185,6 +267,9 @@ class WatcherProcessTests(unittest.TestCase):
             binary.parent.mkdir()
             binary.write_text('#!' + sys.executable + '\nimport json,sys\nfrom pathlib import Path\np=Path(' + repr(str(capture)) + ')\nwith p.open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n')
             binary.chmod(0o700)
+            probe = binary.parent / "gdbus"
+            probe.write_text("#!/bin/sh\nprintf '(true,)\\n'\n")
+            probe.chmod(0o700)
             store = Store(config)
             try:
                 event = store.enqueue("example", "training", "Process fixture", "process-fixture",
@@ -210,5 +295,28 @@ class WatcherProcessTests(unittest.TestCase):
                 self.assertEqual(store.event(event["event_id"])["status"], "queued")
                 self.assertEqual(store.connection.execute("select count(*) from runs").fetchone()[0], 0)
                 self.assertEqual(Inbox(store).list("example")["messages"][0]["state"], "created")
+                # A real Runtime later settles the already-notified event. The
+                # worker runs concurrently for the next event; neither owns a
+                # model Run, and they share one durable delivery per occurrence.
+                second = store.enqueue("example", "training", "Concurrent fixture", "concurrent-fixture",
+                    {"native_wakeup": True, "intent": "reminder", "message": "CONCURRENT_BODY"},
+                    at=utc_text(datetime.now(timezone.utc) + timedelta(seconds=1)))
+                with (root / "concurrent.log").open("w") as log:
+                    daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)], env=environment, stdout=log, stderr=log)
+                    worker = subprocess.Popen(argv, env=environment, stdout=log, stderr=log)
+                    try:
+                        deadline = time.monotonic() + 8
+                        while time.monotonic() < deadline:
+                            if (store.event(second["event_id"])["status"] == "succeeded" and capture.exists() and
+                                    len(capture.read_text().splitlines()) == 2): break
+                            time.sleep(.05)
+                        self.assertEqual(store.event(event["event_id"])["status"], "succeeded")
+                        self.assertEqual(store.event(second["event_id"])["status"], "succeeded")
+                        self.assertEqual(len(capture.read_text().splitlines()), 2)
+                        self.assertEqual(len(Inbox(store).list("example")["messages"]), 2)
+                        self.assertEqual(store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+                    finally:
+                        worker.terminate(); daemon.terminate()
+                        worker.wait(timeout=5); daemon.wait(timeout=8)
             finally:
                 store.close()

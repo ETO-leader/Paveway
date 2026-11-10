@@ -3,7 +3,7 @@ import {randomUUID} from "node:crypto";
 import {writeFileSync, unlinkSync} from "node:fs";
 import {dirname, join} from "node:path";
 import {loadNativeTui, openSettings} from "./paveway-settings.mjs";
-import {analyzeSkillSource, reviewSkillImport} from "./paveway-skill-import.mjs";
+import {analyzeSkillSource, reviewSkillImport, selectLocalSkills} from "./paveway-skill-import.mjs";
 
 export function registerManagement(pi, config, requestSwitch) {
     const drafts = new Map();
@@ -20,6 +20,10 @@ export function registerManagement(pi, config, requestSwitch) {
                         message = ({command_missing: report.backend === "linux" ? "未找到 notify-send，请安装 libnotify-bin" : "未找到 powershell.exe，请检查 WSL Windows 互操作",
                             desktop_rejected: "系统未接受桌面通知，请检查桌面会话和通知权限",
                             desktop_unreachable: "无法启动桌面通知程序，请检查运行环境",
+                            session_bus_unreachable: "会话 D-Bus 不可达；未发送通知，请检查桌面会话",
+                            notification_service_not_ready: "通知服务尚未就绪；未发送通知，请稍后测试",
+                            notification_probe_missing: "未找到 gdbus，请安装 libglib2.0-bin",
+                            notification_transport_unknown: "通知传输结果未知；不会自动重发，请查看 Inbox",
                             notification_timeout: "桌面通知结果未知，请查看通知中心"})[report.code] || message;
                     }
                 } catch {}
@@ -95,8 +99,17 @@ export function registerManagement(pi, config, requestSwitch) {
         const raw = await settings();
         const labels = raw.skills.map(skill => `${skill.name} · ${skill.category || "personal-skill"} · ${skill.enabled ? "on" : "off"}`);
         const picked = await ctx.ui.select("User Skills", ["Create Skill", "Import from file · GPT analysis",
-            ...(importDraft ? ["Review import draft"] : []), ...labels]);
+            ...(importDraft ? ["Review import draft"] : []), "Import standard SKILL.md / ZIP · local", ...labels]);
         if (!picked) return;
+        if (picked === "Import standard SKILL.md / ZIP · local") {
+            const path = await ctx.ui.input("本地 Skill 文件路径（不调用模型；支持多项 ZIP）");
+            if (!path) return;
+            const preview = await cli(["workflow", "customize", "skill-local-preview", config.workflow_id, "--file", path]);
+            if (await selectLocalSkills(ctx, preview, data => privateInput(JSON.stringify(data), file =>
+                cli(["workflow", "customize", "skills-import", config.workflow_id,
+                    "--expected-revision", String(preview.revision), "--content-file", file])))) changed(ctx);
+            return;
+        }
         if (picked === "Import from file · GPT analysis" || picked === "Review import draft") {
             if (!ctx.isIdle() || ctx.agent?.kind !== "main") return show(ctx, "请等待当前 GPT 活动结束，再导入 Skill。");
             if (picked !== "Review import draft") {
@@ -270,7 +283,13 @@ export function registerManagement(pi, config, requestSwitch) {
                     if (query !== undefined) show(ctx, await cli(["sync", "messages", "--device", row.device_id, "--session", row.session, "--query", query]));
                 }
             }
-        } else show(ctx, await cli(["sync", action]));
+        } else {
+            const report = await cli(["sync", action]);
+            const archives = (report.last || report).session_archives;
+            const summary = archives ? `Session 归档：成功 ${archives.exported}，暂缓 ${archives.deferred}，需关注 ${archives.attention}。` +
+                (archives.skipped ? "本次历史备份不完整；原因与数量见 session_archives.reasons。" : "") + "\n" : "";
+            show(ctx, summary + JSON.stringify(report, null, 2));
+        }
     };
     actions.vjudge = async ctx => {
         const action = await ctx.ui.select("VJudge login", ["status", "test", "login", "cookie", "clear"]);

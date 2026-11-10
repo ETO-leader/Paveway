@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import inspect
 import os
 import socket
 import stat
@@ -79,7 +80,10 @@ async def handle_connection(reader, writer, dispatch, accepting):
         value = json.loads(line, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
         validate_request(value)
         request_id = value["id"]
-        response = {"api_version": 1, "id": request_id, "result": dispatch(value["command"], value["arguments"])}
+        result = dispatch(value["command"], value["arguments"])
+        if inspect.isawaitable(result):
+            result = await result
+        response = {"api_version": 1, "id": request_id, "result": result}
         if len((canonical_json(response) + "\n").encode()) > MAX_RESPONSE:
             raise RuntimeContractError("Response exceeds 128 KiB; narrow the query")
     except asyncio.CancelledError:

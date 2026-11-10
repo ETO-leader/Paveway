@@ -236,9 +236,12 @@ def profile_content(raw):
 
 
 def read_profiles(repo):
+    return validate_profiles((path, read_json(path, maximum=524288)) for path in sorted((repo / "profiles").glob("*/*.json")))
+
+
+def validate_profiles(entries):
     records = {}
-    for path in sorted((repo / "profiles").glob("*/*.json")):
-        record = read_json(path, maximum=524288)
+    for path, record in entries:
         if not isinstance(record, dict) or set(record) != {"workflow_id", "parents", "content", "device_id", "created_at"} or digest(record) != path.stem:
             raise RuntimeContractError("Invalid content-addressed profile record")
         validate_id(record["workflow_id"])
@@ -351,6 +354,36 @@ def validate_tree(git, ref):
         if fields[0] != b"100644" or not allowed or int(fields[3]) > MAX_FILE:
             raise RuntimeContractError("Remote tree contains unexpected paths, modes or oversized files; nothing was applied")
 
+    # Read blobs by object ID; nothing has been checked out or merged yet.
+    import json
+    from pathlib import PurePosixPath
+    candidates = []
+    format_seen = False
+    for entry in listing.split(b"\0"):
+        if not entry: continue
+        meta, encoded_path = entry.split(b"\t", 1)
+        path = PurePosixPath(encoded_path.decode("utf-8"))
+        if str(path) != "format.json" and path.parts[0] != "profiles": continue
+        maximum = 65536 if str(path) == "format.json" else 524288
+        if int(meta.split()[3]) > maximum:
+            raise RuntimeContractError("Remote configuration record exceeds its size limit; HEAD unchanged")
+        try:
+            value = json.loads(git.run("cat-file", "blob", meta.split()[2].decode()).stdout)
+        except (ValueError, UnicodeError, RecursionError):
+            raise RuntimeContractError("Remote configuration contains invalid JSON; HEAD unchanged") from None
+        if str(path) == "format.json":
+            format_seen = True
+            if not isinstance(value, dict) or value != FORMAT or type(value.get("version")) is not int:
+                raise RuntimeContractError("Remote format.json is incompatible; expected paveway-user-data version 1; HEAD unchanged")
+        else:
+            candidates.append((path, value))
+    if not format_seen:
+        raise RuntimeContractError("Remote format.json is missing; HEAD unchanged")
+    try:
+        validate_profiles(candidates)
+    except RuntimeContractError as error:
+        raise RuntimeContractError("Remote profile validation failed: " + str(error) + "; HEAD unchanged") from None
+
 
 def pull(git, values):
     if not values["remote"]:
@@ -367,8 +400,18 @@ def pull(git, values):
 
 
 def export_history(config, repo, device):
+    sessions = {"exported": 0, "skipped": 0, "deferred": 0, "attention": 0, "reasons": {}}
+    report = {"exported_runs": 0, "session_archives": sessions}
+    def skip(reason):
+        sessions["skipped"] += 1
+        sessions["deferred" if reason in ("active", "changed") else "attention"] += 1
+        sessions["reasons"][reason] = sessions["reasons"].get(reason, 0) + 1
+    def failed(error):
+        reason = {"native_session_export_limit": "size_limit", "native_session_changed": "changed",
+                  "native_session_unsafe": "unsafe", "native_session_entry_limit": "entry_limit"}.get(getattr(error, "code", None))
+        skip(reason or ("missing" if isinstance(error, FileNotFoundError) else "unavailable" if isinstance(error, OSError) else "invalid_or_unsupported"))
     if not config.database_path.exists():
-        return 0
+        return report
     with sqlite3.connect(config.database_path.as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         db.execute("BEGIN")
@@ -386,38 +429,53 @@ def export_history(config, repo, device):
             write_json(repo / "devices" / device / "runs" / (item["run_id"] + ".json"), item)
         for binding in db.execute("SELECT * FROM session_bindings WHERE session_file IS NOT NULL"):
             if db.execute("SELECT 1 FROM runs WHERE binding_id=? AND status IN ('leased','running')", (binding["binding_id"],)).fetchone():
+                skip("active")
                 continue
+            export_error = None
             try:
                 archive = export_session(config, binding, device)
-            except (OSError, RuntimeContractError):
-                continue  # Busy/unsupported native archive never replaces an earlier valid export.
+            except (OSError, RuntimeContractError) as error:
+                export_error = error
             # The export transaction may predate a newly leased turn. Recheck outside
             # that snapshot after reading the file so an in-flight prefix stays local.
             with sqlite3.connect(config.database_path.as_uri() + "?mode=ro", uri=True) as fresh:
                 if fresh.execute("SELECT 1 FROM runs WHERE binding_id=? AND status IN ('leased','running')", (binding["binding_id"],)).fetchone():
+                    skip("active")
                     continue
+            if export_error:
+                failed(export_error)
+                continue  # Never replace an earlier valid export with a busy/unsupported archive.
             write_json(repo / "devices" / device / "sessions" / (binding["binding_id"] + ".json"), archive)
+            sessions["exported"] += 1
         # Only read text from attested native sessions after the owner exits.
         # Never archive capability tokens, private launch JSON or raw tool logs.
         for row in db.execute("SELECT value FROM runtime_metadata WHERE key LIKE 'frontend:v1:%'"):
             record = json.loads(row[0])
-            if record["status"] != "released":
-                continue
             for source in record.get("session_files", []):
+                if record["status"] != "released":
+                    skip("active" if record["status"] in ("starting", "idle", "active") else "owner_unreleased")
+                    continue
                 binding = {**record, **source, "binding_id": hashlib.sha256(
                     canonical([record["conversation_id"], source["session_id"]])).hexdigest()}
+                export_error = None
                 try:
                     archive = export_session(config, binding, device, root=Path(record["session_dir"]))
-                except (OSError, RuntimeContractError):
-                    continue
+                except (OSError, RuntimeContractError) as error:
+                    export_error = error
                 with sqlite3.connect(config.database_path.as_uri() + "?mode=ro", uri=True) as fresh:
                     current = fresh.execute("SELECT value FROM runtime_metadata WHERE key=?",
                         ("frontend:v1:" + record["conversation_id"],)).fetchone()
                     if not current or json.loads(current[0])["status"] != "released" or json.loads(current[0])["generation"] != record["generation"]:
+                        skip("changed")
                         continue
+                if export_error:
+                    failed(export_error)
+                    continue
                 archive.update(source="omp_native_session", conversation_id=record["conversation_id"])
                 write_json(repo / "devices" / device / "sessions" / (binding["binding_id"] + ".json"), archive)
-    return len(rows)
+                sessions["exported"] += 1
+    report["exported_runs"] = len(rows)
+    return report
 
 
 def archive_timestamp(value):
@@ -448,7 +506,7 @@ def _read_session(binding, root, consume, *, maximum=None):
         if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid():
             raise NativeSessionError("native_session_unsafe")
         if maximum is not None and before.st_size > maximum:
-            raise RuntimeContractError("Native text export exceeds 16 MiB; the session remains available for native resume")
+            raise NativeSessionError("native_session_export_limit")
         while line := stream.readline(1048577):
             if len(line) > 1048576:
                 raise NativeSessionError("native_session_entry_limit")
@@ -545,6 +603,7 @@ def cycle(config):
             return {"state": "paused", "completed_at": stamp()}
         previous = read_json(root / "status.json", {})
         write_json(root / "status.json", {**previous, "state": "syncing", "started_at": stamp()})
+        archive_report = None
         try:
             repo = owned_repository(config, values)
             git = Git(repo)
@@ -562,7 +621,7 @@ def cycle(config):
             commit(git)
             # Offline work is committed locally even when the following fetch fails.
             reconcile_profiles(config, repo, values, local)
-            count = export_history(config, repo, values["device_id"])
+            archive_report = export_history(config, repo, values["device_id"])
             write_json(root / "local.json", local)
             commit(git)
             pull(git, values)
@@ -587,10 +646,12 @@ def cycle(config):
                     pull(git, values)
                     reconcile_profiles(config, repo, values, local)
                     commit(git)
-            result = {"state": "ok", "completed_at": stamp(), "exported_runs": count,
+            result = {"state": "ok", "completed_at": stamp(), **archive_report,
                       "remote_synced": bool(values["remote"]), "conflict_count": len(conflicts(config))}
         except Exception as error:
             result = {"state": "error", "completed_at": stamp(), "error": str(error) if isinstance(error, RuntimeContractError) else "Sync filesystem/database operation failed"}
+            if archive_report is not None:
+                result.update(archive_report)
         write_json(root / "status.json", result)
         return result
 

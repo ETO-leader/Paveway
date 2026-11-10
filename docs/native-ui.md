@@ -123,6 +123,16 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 ## 原生菜单
 
+`/paveway skills` 的 **Import standard SKILL.md / ZIP · local** 直接解析标准 YAML frontmatter（name、description）及 Markdown 正文，不调用模型。多 Skill ZIP 展示每项名称、同名冲突和启停状态；可多选、全选、查看正文、切换启停，最后确认整批导入。已有同名项默认保留原启停状态。一次 revision CAS 原子写入所选项；并发修改会拒绝整批，需要重新预览。取消不会写入，正文及换行保持原样。包内 references、脚本等资源不会安装，确认界面会提示；需要整理引用或总结非标准输入时继续使用 **Import from file · GPT analysis**。
+
+CLI 预览入口：
+
+```bash
+oicoach-runtime workflow customize skill-local-preview WORKFLOW --file /path/to/package.zip --config /absolute/config.toml --json
+```
+
+预览只读。批量保存使用 `workflow customize skills-import WORKFLOW --expected-revision N --content-file /private/batch.json`，batch 为 `{ "skills": [已选择的完整 Skill 记录], "replace": [已确认替换的同名名称] }`。每项包含 name、description、content、category、enabled；不要包含预览的 source/conflict 字段。输入限额沿用既有导入机制：源文件 1 MiB、解包 64 项／256 KiB，每项正文及描述各 64 KiB，所有 Skills 最多 32 项。ZIP 不解压到磁盘，不执行任何内容。
+
 输入 `/paveway` 用方向键选择；也可 `/paveway prompt` 等直接打开。以下均为用户操作界面，编辑正文不发送给模型。
 
 | 菜单 | 功能 |
@@ -168,8 +178,13 @@ Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
 ## 唤醒与收件箱
 
 ```text
+/reminder in 10m 休息一下
+/reminder at 21:00 该睡觉了
+/reminder list
+/reminder cancel EVENT_ID VERSION
+/reminder reschedule EVENT_ID VERSION 2026-11-11T21:00:00+08:00
 /wakeup in 10m 检查训练进度
-/wakeup at 21:00 晚间提醒
+/wakeup at 21:00 总结今天的训练
 /wakeup list
 /wakeup cancel EVENT_ID VERSION
 /wakeup reschedule EVENT_ID VERSION 2026-11-01T21:00:00+08:00
@@ -181,11 +196,13 @@ Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
 
 Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当前 owner/generation 和作用域，用户不能通过参数指向另一 Profile。默认维持 opt-in，不创建无限自主跟进。前台 `after_turn_settled` 明确不提供，旧后台 `schedule --after-turn --run-id` 继续原样使用，二者不会混淆。
 
-原生前台优先使用这些工具；旧流程中 `schedule --after-turn` 只能绑定 Runtime 提供的真实后台 run_id，不能拿原生 Session/Conversation ID 代替。Composer v3 明确覆盖这项运行边界，不改写旧 event.md。已排程的原生事件直接校验固定设置快照，不先加载后来编辑的用户设置；Workflow manifest、模板与 revision 仍会正常校验。
+原生前台优先使用这些工具；旧流程中 `schedule --after-turn` 只能绑定 Runtime 提供的真实后台 run_id，不能拿原生 Session/Conversation ID 代替。Composer v3 明确覆盖这项运行边界，不改写旧 event.md。已排程的 Agent Wake 直接校验固定设置快照，不先加载后来编辑的用户设置；Workflow manifest、模板与 revision 仍会正常校验。纯 reminder 不需要模型快照。
 
 更新代码后仍运行的旧 daemon 不会自动重载 Python。保存草稿并退出原生 UI 后，在空闲时重启 Runtime 再进入界面；`invalid_workflow` 等 blocked 事件需要核查并明确重新安排，不因服务升级自动重发。
 
-明确提醒在到期时先持久化，后台 GPT 执行结果另存一条消息。created、offered、用户明确 acknowledged 分开；模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；可用 `/paveway notifications` 启用 [Ubuntu／WSL 桌面弹窗](desktop-notifications.md)，目前没有手机推送，也不自动把消息重注入 Agent。
+`/reminder` 到期本地持久化 Inbox 正文并结算事件，不创建 Run、不启动 OMP RPC、不调用模型；没有桌面服务也能完成，不占用正在执行的 Agent 槽位。`/wakeup` 仅为 agent_wake，继续使用固定配置、Workflow、Memory 与后台 RPC，结果进入 Inbox，不弹普通提醒。没有旧提醒别名。两种命令的 list 只列各自类型，cancel/reschedule 校验类型、作用域与 CAS；已结算 reminder 可改期，Agent Wake 的既有终态编辑限制保持不变。
+
+created、offered、用户明确 acknowledged 分开；事件结算、模型执行成功、工具返回或菜单通知不冒充用户已读。UI 关闭时仍保存，重新打开 `/inbox` 查看；可用 `/paveway notifications` 启用 [Ubuntu／WSL 桌面弹窗](desktop-notifications.md)，目前没有手机推送，也不自动把消息重注入 Agent。Agent 工具仍共用 paveway_wakeup_schedule：用户说“提醒我”默认 reminder，明确未来 AI 工作才用 agent_wake，必须有用户授权或既有 opt-in。
 
 UI 在线时轮询到新的提醒／结果，会直接显示提醒正文及“GPT · 后台定时任务回复／执行状态”，并保留 `/inbox` 查看与确认入口。超过预览长度时明确标记“节选”，完整内容在收件箱中；正文过滤终端控制字符。显示不会触发模型、确认已读或清空输入草稿；重新打开 UI 只显示已有未确认数，不重播旧通知。前后台 Session 仍分离，UI 展示不代表内容已加入当前模型上下文。后台刷新间隔约 10 秒，后台执行结果可能晚于到期提醒。更新这部分扩展后，保存草稿并重新进入原生 UI 生效，不必为此重启 daemon 或重新排程已有任务。
 

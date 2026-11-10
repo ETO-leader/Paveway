@@ -35,6 +35,7 @@ class NativeSessionError(ConflictError):
             "native_session_unsafe": "Native session file is not owned, regular or inside its assigned directory.",
             "native_session_incomplete": "Native session ends with an incomplete JSONL entry.",
             "native_session_entry_limit": "Native session has a JSONL entry over the supported 1 MiB validation limit.",
+            "native_session_export_limit": "Native text export exceeds 16 MiB; the session remains available for native resume.",
             "native_session_changed": "Native session changed or was replaced during validation.",
             "native_session_invalid": "Native session is not valid supported JSONL.",
             "native_session_identity_mismatch": "Native session header does not match its recorded identity.",

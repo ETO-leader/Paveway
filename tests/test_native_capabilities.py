@@ -48,7 +48,7 @@ class NativeCapabilityTests(NativeFixture):
             if last.get("role") == "tool" and '"version":2' in json.dumps(last.get("content")).replace(" ", "").replace('\\"', '"') and "training.plan-one" in json.dumps(last):
                 return tool("paveway_wakeup_schedule", {"when": {"kind": "after_now", "seconds": 2},
                     "reason": "CHECKPOINT_PLAN_ONE; checkpoint=one; authorized=one_hint; re-read current plan",
-                    "dedupe_key": "checkpoint-one", "intent": "reminder", "authorized_by_user": True}, "schedule-checkpoint")
+                    "dedupe_key": "checkpoint-one", "intent": "agent_wake", "authorized_by_user": True}, "schedule-checkpoint")
             return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
         self.server.response_factory = response
         self.chat(marker)
@@ -77,7 +77,7 @@ class NativeCapabilityTests(NativeFixture):
         self.assertEqual(review["version"], 3)
         self.assertIn("pending verification", review["content"])
         inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test", "task_id": "training"})
-        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"result"})
         self.assertTrue(all(row["state"] != "acknowledged" for row in inbox["messages"]))
 
     def enable_tools(self):

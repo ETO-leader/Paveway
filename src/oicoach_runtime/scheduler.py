@@ -472,6 +472,7 @@ class Runtime:
     async def schedule_loop(self):
         while not self.stop_event.is_set():
             from .inbox import Inbox
+            Inbox(self.store).project_due(complete=True)
             Inbox(self.store).collect()
             self.changed.clear()
             if self.pending_restart:
@@ -485,6 +486,9 @@ class Runtime:
                 self.active_scope = (event["workflow_id"], native["binding_task_id"] if native else event["task_id"])
                 self.active_dispatch = asyncio.create_task(self.dispatch_event(event))
                 try:
+                    while not self.active_dispatch.done():
+                        Inbox(self.store).project_due(complete=True)
+                        await asyncio.wait((self.active_dispatch,), timeout=self.config.server.poll_interval_seconds)
                     await asyncio.shield(self.active_dispatch)
                 except asyncio.CancelledError:
                     if self.stop_event.is_set():
@@ -548,6 +552,20 @@ class Runtime:
                 self.store.update_restart(job["restart_id"], status, error)
                 self.agent_health = "idle" if status == "succeeded" else "degraded"
 
+    async def dispatch_control(self, command, raw):
+        if command in ("frontend.finish", "frontend.recover"):
+            fields = ("conversation_id", "generation", "owner_token", "exit_code") if command == "frontend.finish" else ("conversation_id",)
+            arguments(raw, fields, fields)
+            def release():
+                from .frontend import Frontend
+                store = Store(self.config, clock=self.store.clock)
+                try:
+                    return getattr(Frontend(store), command.split(".")[1])(**raw)
+                finally:
+                    store.close()
+            return await asyncio.to_thread(release)
+        return self.dispatch_api(command, raw)
+
     async def connection(self, reader, writer):
         task = asyncio.current_task()
         if len(self.clients) >= 64:
@@ -556,7 +574,7 @@ class Runtime:
             return
         self.clients.add(task)
         try:
-            await handle_connection(reader, writer, self.dispatch_api, lambda: not self.stop_event.is_set())
+            await handle_connection(reader, writer, self.dispatch_control, lambda: not self.stop_event.is_set())
         finally:
             self.clients.discard(task)
             writer.close()

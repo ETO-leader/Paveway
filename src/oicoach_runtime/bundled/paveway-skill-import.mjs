@@ -139,3 +139,35 @@ export async function reviewSkillImport(ctx, initial, existingSkills, save) {
         }
     }
 }
+
+export async function selectLocalSkills(ctx, preview, save) {
+    const items = structuredClone(preview.skills);
+    const selected = new Set();
+    while (true) {
+        const labels = items.map((item, index) => `${selected.has(index) ? "☑" : "☐"} ${item.name} · ${item.conflict ? "替换同名" : "新增"} · ${item.enabled ? "启用" : "停用"}`);
+        const action = await ctx.ui.select(`本地直导 · ${selected.size}/${items.length} 已选 · revision ${preview.revision}`, [
+            ...labels, "全选", "清空选择", "查看正文", "切换启停", "导入所选项", "取消"]);
+        if (!action || action === "取消") return false;
+        const index = labels.indexOf(action);
+        if (index >= 0) {
+            if (selected.has(index)) selected.delete(index); else selected.add(index);
+        } else if (action === "全选") items.forEach((_item, i) => selected.add(i));
+        else if (action === "清空选择") selected.clear();
+        else if (action === "查看正文" || action === "切换启停") {
+            const picked = await ctx.ui.select(action, items.map(item => item.name));
+            const item = items.find(item => item.name === picked);
+            if (!item) continue;
+            if (action === "查看正文") await ctx.ui.editor(`${item.name} · ${item.source}（只读预览）`, item.content);
+            else item.enabled = !item.enabled;
+        } else if (action === "导入所选项") {
+            const chosen = items.filter((_item, i) => selected.has(i));
+            if (!chosen.length) { ctx.ui.notify("请先选择要导入的 Skill。", "warning"); continue; }
+            const replace = chosen.filter(item => item.conflict).map(item => item.name);
+            const summary = chosen.map(item => `${item.name}: ${item.conflict ? "替换" : "新增"} / ${item.enabled ? "启用" : "停用"}`).join("\n");
+            if (!await ctx.ui.confirm(`确认原子导入 ${chosen.length} 项？`, summary +
+                (preview.resources_not_installed.length ? "\n包内额外资源不会安装，正文保持原样。" : ""))) continue;
+            await save({skills: chosen.map(({source, conflict, ...skill}) => skill), replace});
+            return true;
+        }
+    }
+}

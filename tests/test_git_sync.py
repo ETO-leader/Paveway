@@ -3,6 +3,9 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import os
+import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +20,153 @@ from oicoach_runtime.workflows import WorkflowProvider
 
 
 class GitSyncTests(unittest.TestCase):
+    def test_large_native_export_reports_skip_preserves_backup_and_allows_release_resume(self):
+        from oicoach_runtime.frontend import Frontend
+        store = Store(self.a)
+        try:
+            frontend = Frontend(store)
+            lease = frontend.begin("coach", "training", self.root / "a")
+            owner = {k: lease[k] for k in ("conversation_id", "generation", "owner_token")}
+            directory = Path(lease["session_dir"]); directory.mkdir(parents=True, mode=0o700)
+            path = directory / "native.jsonl"
+            path.write_text(json.dumps({"type": "session", "version": 3, "id": "native", "cwd": str(self.root / "a")}) + "\n")
+            record = frontend.get(lease["conversation_id"])
+            record.update(session_file=str(path), session_id="native", session_files=[{"session_file": str(path), "session_id": "native"}])
+            with store.transaction() as db: frontend.save(db, record)
+            frontend.finish(**owner, exit_code=0)
+            first = self.cycle(self.a)
+            self.assertEqual(first["session_archives"]["exported"], 1)
+            repo = Path(git_sync.settings(self.a)["repository"])
+            archive = next((repo / "devices").glob("*/sessions/*.json")); original = archive.read_bytes()
+            with path.open("a") as stream:
+                for _ in range(270): stream.write(json.dumps({"type": "custom", "data": "x" * 65536}) + "\n")
+            self.assertGreater(path.stat().st_size, 16 * 1024 * 1024)
+            resumed = frontend.begin("coach", "training", self.root / "a", lease["conversation_id"])
+            owner = {k: resumed[k] for k in owner}
+            frontend.finish(**owner, exit_code=0)
+            self.edit(self.a, "OTHER_DATA_STILL_SYNCS")
+            result = self.cycle(self.a)
+            self.assertTrue(result["remote_synced"])
+            self.assertEqual(result["session_archives"], {"exported": 0, "skipped": 1, "deferred": 0, "attention": 1, "reasons": {"size_limit": 1}})
+            self.assertEqual(git_sync.status(self.a)["last"]["session_archives"], result["session_archives"])
+            self.assertEqual(archive.read_bytes(), original)
+            self.assertNotIn(str(path), json.dumps(result))
+            self.cycle(self.b); self.assertEqual(self.prompt(self.b), "OTHER_DATA_STILL_SYNCS")
+            active = frontend.begin("coach", "training", self.root / "a", lease["conversation_id"])
+            result = self.cycle(self.a)
+            self.assertEqual(result["session_archives"]["reasons"], {"active": 1})
+            self.assertEqual(result["session_archives"]["attention"], 0)
+            frontend.finish(**{k: active[k] for k in owner}, exit_code=1)
+            self.assertEqual(frontend.recover(lease["conversation_id"])["status"], "released")
+            header = {"type": "session", "version": 999, "id": "native", "cwd": str(self.root / "a")}
+            path.write_text(json.dumps(header) + "\n")
+            result = self.cycle(self.a)
+            self.assertEqual(result["session_archives"]["reasons"], {"invalid_or_unsupported": 1})
+            self.assertEqual(archive.read_bytes(), original)
+            header["version"] = 3
+            path.write_text(json.dumps(header) + "\n")
+            timestamp = git_sync.archive_timestamp
+            changed = False
+            def append_during_scan(value):
+                nonlocal changed
+                if not changed:
+                    changed = True
+                    with path.open("a") as stream: stream.write('{"type":"custom"}\n')
+                return timestamp(value)
+            with patch.object(git_sync, "archive_timestamp", side_effect=append_during_scan):
+                result = self.cycle(self.a)
+            self.assertEqual(result["session_archives"]["reasons"], {"changed": 1})
+            self.assertEqual(result["session_archives"]["attention"], 0)
+            self.assertEqual(archive.read_bytes(), original)
+        finally: store.close()
+
+    def test_daemon_auto_sync_rejects_bad_tip_then_recovers_after_remote_fix(self):
+        self.cycle(self.a)
+        repo = Path(git_sync.settings(self.a)["repository"])
+        original = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"])
+        editor = self.root / "automatic-publisher"
+        subprocess.run(["git", "clone", str(self.remote), str(editor)], capture_output=True, check=True)
+        def publish(version):
+            (editor / "format.json").write_text(json.dumps({"format": "paveway-user-data", "version": version}))
+            for args in (("add", "format.json"), ("-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "publish format"), ("push",)):
+                subprocess.run(["git", "-C", str(editor), *args], capture_output=True, check=True)
+        publish(999)
+        config_path = self.root / "a/config.toml"
+        home = self.root / "isolated-home"
+        home.mkdir()
+        log = (self.root / "sync-daemon.log").open("w")
+        process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(config_path)],
+            env={**os.environ, "HOME": str(home)}, stdout=log, stderr=log)
+        def wait(state, timeout):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                report = git_sync.read_json(git_sync.local_root(self.a) / "status.json", {})
+                if report.get("state") == state: return report
+                time.sleep(.03)
+            self.fail("automatic Git sync did not reach " + state)
+        try:
+            wait("error", 6)
+            self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]), original)
+            publish(1)
+            wait("ok", 15)  # No sync.request: the next configured 10s cycle recovers.
+            subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", original.decode().strip(), "HEAD"], check=True)
+        finally:
+            process.terminate(); process.wait(timeout=8); log.close()
+
+    def test_remote_bad_profile_preserves_local_work_and_next_fixed_tip_syncs(self):
+        self.edit(self.a, "BASE_PROFILE")
+        self.cycle(self.a)
+        repo = Path(git_sync.settings(self.a)["repository"])
+        editor = self.root / "profile-publisher"
+        subprocess.run(["git", "clone", str(self.remote), str(editor)], check=True, capture_output=True)
+        def publish():
+            subprocess.run(["git", "-C", str(editor), "add", "--all"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(editor), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "publish profile"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(editor), "push"], check=True, capture_output=True)
+        record = json.loads(next((editor / "profiles/coach").glob("*.json")).read_text())
+        record["content"]["skills"] = [{"name": "bad", "description": None, "content": "SECRET_BAD_PROFILE_CONTENT", "enabled": True}]
+        bad = editor / "profiles/coach" / (git_sync.digest(record) + ".json")
+        bad.write_text(json.dumps(record))
+        publish()
+        self.edit(self.a, "LOCAL_UNPUSHED_CONFIGURATION")
+        result = git_sync.cycle(self.a)
+        self.assertEqual(result["state"], "error")
+        self.assertIn("Remote profile validation failed", result["error"])
+        self.assertNotIn("SECRET_BAD_PROFILE_CONTENT", result["error"])
+        local_head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]).decode().strip()
+        self.assertEqual(git_sync.cycle(self.a)["state"], "error")
+        self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]).decode().strip(), local_head)
+        self.assertFalse((repo / bad.relative_to(editor)).exists())
+        bad.unlink(); publish()
+        self.cycle(self.a)
+        self.assertEqual(self.prompt(self.a), "LOCAL_UNPUSHED_CONFIGURATION")
+        subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", local_head, "HEAD"], check=True)
+
+    def test_incompatible_remote_tip_is_rejected_before_head_update_and_recovers(self):
+        self.cycle(self.a)
+        repo = Path(git_sync.settings(self.a)["repository"])
+        old = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"])
+        editor = self.root / "publisher"
+        subprocess.run(["git", "clone", str(self.remote), str(editor)], check=True, capture_output=True)
+        def publish(format):
+            (editor / "format.json").write_text(json.dumps(format))
+            subprocess.run(["git", "-C", str(editor), "add", "format.json"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(editor), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "publish format"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(editor), "push"], check=True, capture_output=True)
+        publish({"format": "paveway-user-data", "version": 999})
+        result = git_sync.cycle(self.a)
+        self.assertEqual(result["state"], "error")
+        self.assertIn("format", result["error"])
+        self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]), old)
+        self.assertEqual(json.loads((repo / "format.json").read_text()), git_sync.FORMAT)
+        publish({"format": "paveway-user-data", "version": True})
+        result = git_sync.cycle(self.a)
+        self.assertEqual(result["state"], "error")
+        self.assertEqual(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"]), old)
+        publish(git_sync.FORMAT)
+        self.cycle(self.a)
+        subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", old.decode().strip(), "HEAD"], check=True)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-git-sync-")
         self.addCleanup(self.temp.cleanup)

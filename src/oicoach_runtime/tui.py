@@ -830,7 +830,8 @@ class TerminalUI:
             raise RuntimeContractError("用法：/sync [remote|setup|now|status|pause|resume|conflicts|history|bind ID]")
         def loaded(report):
             if action == "status":
-                self.info("Git 同步状态", pretty(report))
+                archives = report.get("last", {}).get("session_archives", {})
+                self.info("Git 同步状态" + (" · 历史备份不完整" if archives.get("skipped") else ""), pretty(report))
             elif action == "remote":
                 self.info("配置用户数据 remote", "全部GPT对话共用一个独立 Git 仓库。remote 留空只维护本地 Git；填写后按同步开关自动 pull/push。")
                 def save_remote(values):
@@ -881,6 +882,8 @@ class TerminalUI:
             elif last.get("state") != "syncing" and last.get("completed_at") != self.sync_pending["previous"]:
                 self.sync_pending = None
                 title = "Git 同步完成" if last.get("state") == "ok" else "Git 同步未完成"
+                if last.get("session_archives", {}).get("skipped"):
+                    title += " · 历史备份不完整（含暂缓）"
                 if last.get("conflict_count"):
                     title += " · 配置需选择版本"
                 self.info(title, pretty(last) + ("\n/sync conflicts 处理冲突或绑定本机 workspace。" if last.get("conflict_count") else ""))

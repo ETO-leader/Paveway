@@ -56,7 +56,7 @@ omp --version
 | `/paveway service`、`agent` | systemd 服务及后台 worker 管理 |
 | `/paveway legacy` | 进入原管理 UI；退出后恢复原生对话 |
 | `/paveway status`、`/coach` | Runtime 状态、绑定 Profile 与 Session |
-| `/wakeup`、`/inbox` | 排程与持久消息，见下文 |
+| `/reminder`、`/wakeup`、`/inbox` | 纯提醒、后台 Agent 任务与持久消息，见下文 |
 | `/paveway notifications` | Ubuntu／WSL 桌面到期弹窗的启停、状态和测试 |
 
 Paveway 不覆盖 OMP 原生 `/memory`、`/skills` 等命令。OMP 原生 Memory 和 Paveway 笔记是不同存储。当前只精确加载随包的 trusted extension，不自动发现其他用户 Extension；原生工具、Workspace MCP、Skills 和 Rules 继续受配置权限控制。
@@ -105,11 +105,20 @@ OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀�
 
 只读归档沿用有界文件校验：单文件最多 16MiB、单行最多 1MiB；超过边界时拒绝归档并保留原文件，不能声称已同步。该限制不裁剪模型上下文，也不删除历史；可新建 Conversation 并保留旧来源。
 
+Sync Status 的 `last.session_archives` 分别报告成功导出、跳过、正常暂缓与需关注的数量及固定原因码。Git push 成功只表示提交同步成功：活动／变化中的 Session 暂缓，超过导出上限等问题明确列出，不覆盖旧的有效备份。大型有效 Session 仍可正常退出、恢复和续聊。
+
+两类定时任务与归档统计的根因、事务边界和回归证据见 [补充审计](docs/verification/archive-reminder-audit.md)。
+
 ## 定时任务与收件箱
 
 ```text
+/reminder in 10m 休息一下
+/reminder at 21:00 该睡觉了
+/reminder list
+/reminder cancel EVENT_ID VERSION
+/reminder reschedule EVENT_ID VERSION 2026-11-11T21:00:00+08:00
 /wakeup in 10m 检查训练进度
-/wakeup at 21:00 晚间提醒
+/wakeup at 21:00 总结今天的训练
 /wakeup list
 /wakeup cancel EVENT_ID VERSION
 /wakeup reschedule EVENT_ID VERSION 2026-11-01T21:00:00+08:00
@@ -119,7 +128,9 @@ OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀�
 
 `in` 从 Runtime 提交请求时起算；`at HH:mm` 使用**系统时区**的下一次该时刻，完整 RFC3339 必须带时区。状态栏显示触发时间、秒级倒计时和未确认消息数。倒数到零不等于执行成功，实际状态来自 Runtime。
 
-原生 AgentTool `paveway_wakeup_schedule/list/cancel/reschedule` 与上述命令使用同一持久队列，绑定当前 owner/generation 与作用域。仅按用户明确要求或现有 opt-in 排程，不自行建立无限跟进。已排程事件固定当时配置及模型快照；UI 退出不取消事件。
+`/reminder` 是纯用户提醒：到期原子写入 Inbox 并结算，不启动 OMP RPC、不调用模型、不创建 Run；桌面 Worker 可选，UI 退出不丢消息。`/wakeup` 只表示后台 Agent 工作，使用固定配置／模型快照、Workflow 与 Memory，结果进入 Inbox，不弹普通提醒。旧 `/wakeup` 普通提醒别名已移除；旧队列按实际 intent 执行，已完成事件不重放。
+
+原生 AgentTool `paveway_wakeup_schedule/list/cancel/reschedule` 与上述命令共用队列、owner/generation、作用域、CAS 与去重；不新增另一套工具。用户说“提醒我”默认 intent=reminder，明确要求未来 AI 工作、检查进度或决策才选 agent_wake。两种命令的 list/cancel/reschedule 按类型过滤／校验，避免误操作。仅按用户明确要求或现有 opt-in 排程，不自行建立无限跟进。
 
 **前台没有严格 `after_turn_settled` 锚点**，不会将 `agent_end` 当作 settled；原有后台 CLI 的 `schedule --after-turn SECONDS --run-id RUN_ID` 保持严格 RPC 完成契约。
 
@@ -241,5 +252,7 @@ PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest \
 ```
 
 原生测试使用实际 OMP／PTY／工具、本地 HTTP provider 和 stdio MCP fixture，不使用私人模型认证或付费请求；Browser 测试需要本机 Chrome，缺失时明确跳过。旧 `verify-omp --with-model` 是另一个显式 opt-in，会调用你配置的真实模型。
+
+提醒独立到期投递、Ubuntu 通知就绪重试、Git 候选预校验、Session 短事务释放，以及多 Skill ZIP 本地直导的改动、复现命令和验收边界见 [四组改进验收记录](docs/verification/four-groups-lifecycle.md)。
 
 源码只保存工程实现、模板、项目 Skill 和文档。运行配置、自定义 Skill 正文、会话、代理值和凭据应留在私密数据目录，不能提交到源码仓库；专用用户 Git 是独立机制。历史 Guard／M0 探针作为调查材料保留，不进入默认运行路径，也不表示仍实施 10k 限制。

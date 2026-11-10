@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from datetime import timedelta
 import re
 import shutil
 import signal
@@ -17,7 +18,7 @@ from importlib.resources import files
 
 from .config import ensure_private_directory
 from .errors import RuntimeContractError
-from .inbox import Inbox
+from .inbox import Inbox, occurrence_id
 from .models import parse_timestamp, utc_text
 from .processes import InstanceLock, process_identity
 from .store import Store
@@ -100,11 +101,45 @@ def clean(value, maximum):
     return re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", value)[:maximum]
 
 
+async def linux_readiness(env):
+    """No Notify call is made here: temporary failures are provably unsent."""
+    probe = shutil.which("gdbus", path=env.get("PATH", os.defpath))
+    if not probe:
+        return {"status": "unavailable", "backend": "linux", "code": "notification_probe_missing", "retryable": False}
+    process = None
+    try:
+        base = [probe, "call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method"]
+        process = await asyncio.create_subprocess_exec(*base, "org.freedesktop.DBus.NameHasOwner", "org.freedesktop.Notifications",
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
+        output, _ = await asyncio.wait_for(process.communicate(), 2)
+        if process.returncode:
+            return {"status": "unavailable", "backend": "linux", "code": "session_bus_unreachable", "retryable": True}
+        if output.strip() == b"(true,)":
+            return None
+        process = await asyncio.create_subprocess_exec(*base, "org.freedesktop.DBus.StartServiceByName", "org.freedesktop.Notifications", "0",
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
+        await asyncio.wait_for(process.communicate(), 2)
+        if process.returncode == 0:
+            return None
+        return {"status": "unavailable", "backend": "linux", "code": "notification_service_not_ready", "retryable": True}
+    except (TimeoutError, OSError):
+        return {"status": "unavailable", "backend": "linux", "code": "session_bus_unreachable", "retryable": True}
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
 async def send(backend="auto", title="Paveway · 定时提醒", body="定时任务已到期，请打开 Paveway /inbox 查看。", tag=None):
     backend = selected_backend(backend)
-    executable = shutil.which("powershell.exe" if backend == "windows" else "notify-send")
+    env = environment(backend)
+    executable = shutil.which("powershell.exe" if backend == "windows" else "notify-send", path=env.get("PATH", os.defpath))
     if not executable:
         return {"status": "unavailable", "backend": backend, "code": "command_missing"}
+    if backend == "linux":
+        unavailable = await linux_readiness(env)
+        if unavailable:
+            return unavailable
     title, body = clean(title, 128), clean(body, 320)
     payload = None
     if backend == "windows":
@@ -117,13 +152,17 @@ async def send(backend="auto", title="Paveway · 定时提醒", body="定时任�
     process = None
     try:
         process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.PIPE if payload else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=environment(backend))
-        stdout, _ = await asyncio.wait_for(process.communicate(payload), timeout=8)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+        stdout, stderr = await asyncio.wait_for(process.communicate(payload), timeout=8)
         accepted = process.returncode == 0 and (backend != "windows" or b"PAVEWAY_NOTIFICATION_ACCEPTED" in stdout)
+        if not accepted and backend == "linux" and not any(marker in stderr for marker in (b".Rejected", b"AccessDenied", b"NotAuthorized")):
+            return {"status": "unknown", "backend": backend, "code": "notification_transport_unknown"}
         return {"status": "accepted" if accepted else "unavailable", "backend": backend, "code": None if accepted else "desktop_rejected"}
     except TimeoutError:
         return {"status": "unknown", "backend": backend, "code": "notification_timeout"}
     except OSError:
+        if process is not None:
+            return {"status": "unknown", "backend": backend, "code": "notification_transport_unknown"}
         return {"status": "unavailable", "backend": backend, "code": "desktop_unreachable"}
     finally:
         if process is not None and process.returncode is None:
@@ -131,44 +170,62 @@ async def send(backend="auto", title="Paveway · 定时提醒", body="定时任�
 
 
 class Watcher:
-    def __init__(self, store, sender=send):
+    def __init__(self, store, sender=send, *, retry_window_seconds=120):
         self.store, self.sender = store, sender
+        self.retry_window_seconds = retry_window_seconds
 
     async def tick(self, stop=None):
+        Inbox(self.store).project_due()
         values = settings(self.store.config)
         if not values["enabled"]: return
         rows = self.store.connection.execute("""SELECT event_id FROM events e
             WHERE json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder'
             AND status!='cancelled' AND not_before_utc>=? AND not_before_utc<=?
             AND NOT EXISTS(SELECT 1 FROM runtime_metadata m WHERE m.key=? || e.event_id
-                AND json_extract(m.value,'$.not_before_utc')=e.not_before_utc)
-            ORDER BY not_before_utc,created_at,event_id LIMIT 20""", (values["since_utc"], self.store.timestamp(), PREFIX)).fetchall()
+                AND json_extract(m.value,'$.not_before_utc')=e.not_before_utc
+                AND (json_extract(m.value,'$.status')!='retry_wait' OR json_extract(m.value,'$.next_attempt_at')>?))
+            ORDER BY not_before_utc,created_at,event_id LIMIT 20""", (values["since_utc"], self.store.timestamp(), PREFIX, self.store.timestamp())).fetchall()
         for row in rows:
             values = settings(self.store.config)
-            if not values["enabled"] or (stop is not None and stop.is_set()):
-                return
-            event = self.store.event(row[0])
+            if not values["enabled"] or (stop is not None and stop.is_set()): return
             with self.store.transaction() as db:
-                # Recheck cancellation and fencing immediately before intent.
-                current = self.store.event(event["event_id"])
-                previous = self.store.metadata(PREFIX + event["event_id"])
-                if current["status"] == "cancelled" or not values["since_utc"] <= current["not_before_utc"] <= self.store.timestamp() or (previous and previous["not_before_utc"] == current["not_before_utc"]): continue
-                event = current
-                delivery = Inbox(self.store).due(event, db=db)
-                identity = hashlib.sha256((event["event_id"] + event["not_before_utc"]).encode()).hexdigest()
+                event = self.store.event(row[0])
+                if event["status"] == "cancelled" or not values["since_utc"] <= event["not_before_utc"] <= self.store.timestamp(): continue
+                identity = occurrence_id(event)
                 history_key = "desktop-history:v1:" + identity
-                attempt = {"event_id": event["event_id"], "not_before_utc": event["not_before_utc"], "status": "unknown", "attempted_at": self.store.timestamp(), "code": "notification_interrupted"}
-                attempt["delivery_id"] = delivery["delivery_id"]
+                legacy_key = "desktop-history:v1:" + hashlib.sha256((event["event_id"] + event["not_before_utc"]).encode()).hexdigest()
+                previous = self.store.metadata(history_key) or self.store.metadata(legacy_key)
+                indexed = self.store.metadata(PREFIX + event["event_id"])
+                if previous is None and indexed and indexed.get("not_before_utc") == event["not_before_utc"]:
+                    previous = indexed
+                if previous and (previous["status"] != "retry_wait" or previous["next_attempt_at"] > self.store.timestamp()):
+                    previous = {**previous, "occurrence_id": identity}
+                    self.store._set_metadata(db, PREFIX + event["event_id"], previous)
+                    self.store._set_metadata(db, history_key, previous)
+                    continue
+                if previous and previous["retry_until"] <= self.store.timestamp():
+                    terminal = {**previous, "status": "unavailable", "code": "notification_retry_expired"}
+                    self.store._set_metadata(db, PREFIX + event["event_id"], terminal)
+                    self.store._set_metadata(db, history_key, terminal)
+                    continue
+                delivery = Inbox(self.store).due(event, db=db)
+                attempt = {"event_id": event["event_id"], "occurrence_id": identity, "not_before_utc": event["not_before_utc"],
+                    "status": "unknown", "attempted_at": self.store.timestamp(), "code": "notification_interrupted",
+                    "delivery_id": delivery["delivery_id"], "attempt": (previous or {}).get("attempt", 0) + 1,
+                    "retry_until": (previous or {}).get("retry_until") or utc_text(self.store.clock() + timedelta(seconds=self.retry_window_seconds))}
                 self.store._set_metadata(db, PREFIX + event["event_id"], attempt)
                 self.store._set_metadata(db, history_key, attempt)
             body = delivery["text"] if values["show_body"] else "定时任务已到期，请打开 Paveway /inbox 查看。"
             result = await self.sender(backend=values["backend"], body=body, tag=identity)
+            outcome = {**attempt, **result, "completed_at": self.store.timestamp()}
+            if result.get("retryable") is True and result["status"] == "unavailable" and self.store.timestamp() < attempt["retry_until"]:
+                next_attempt = min(self.store.clock() + timedelta(seconds=min(30, 2 ** min(attempt["attempt"], 5))), parse_timestamp(attempt["retry_until"]))
+                outcome.update(status="retry_wait", next_attempt_at=utc_text(next_attempt))
             with self.store.transaction() as db:
-                outcome = {**attempt, **result, "completed_at": self.store.timestamp()}
                 self.store._set_metadata(db, PREFIX + event["event_id"], outcome)
                 self.store._set_metadata(db, history_key, outcome)
-            print(json.dumps({"component": "desktop-notifications", "transition": result["status"],
-                "backend": result.get("backend"), "code": result.get("code")}), flush=True)
+            print(json.dumps({"component": "desktop-notifications", "transition": outcome["status"],
+                "backend": result.get("backend"), "code": outcome.get("code")}), flush=True)
 
 
 async def run(config):

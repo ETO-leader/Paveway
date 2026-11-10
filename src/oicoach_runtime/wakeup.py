@@ -21,18 +21,23 @@ class Wakeup:
         if not isinstance(parameters, dict):
             raise RuntimeContractError("Wakeup parameters must be an object")
         workflow, task = record["workflow_id"], record["task_id"]
+        intent = parameters.get("intent")
+        if "intent" in parameters and intent not in ("reminder", "agent_wake"):
+            raise RuntimeContractError("Choose reminder or agent_wake intent")
         if operation == "list":
-            if parameters:
-                raise RuntimeContractError("Wakeup list has no scope arguments")
-            return self.store.upcoming(workflow, task)[:20]
+            if set(parameters) - {"intent"}:
+                raise RuntimeContractError("Wakeup list only accepts an optional intent filter")
+            return self.store.upcoming(workflow, task, intent=intent)[:20]
         if operation in ("cancel", "reschedule"):
             expected = {"event_id", "expected_version"} | ({"at"} if operation == "reschedule" else set())
-            if set(parameters) != expected:
+            if set(parameters) - {"intent"} != expected:
                 raise RuntimeContractError("Wakeup modification requires an event and CAS version")
             event = self.store.event(parameters["event_id"])
             if (event["workflow_id"], event["task_id"]) != (workflow, task):
                 raise ConflictError("Wakeup belongs to another native scope")
-            return self.store.modify(**parameters, cancel=operation == "cancel")
+            if intent and (not event["payload"].get("native_wakeup") or event["payload"].get("intent") != intent):
+                raise ConflictError("Event type differs; use /reminder for reminders and /wakeup for Agent tasks")
+            return self.store.modify(**{k: v for k, v in parameters.items() if k != "intent"}, cancel=operation == "cancel")
         if operation != "schedule":
             raise RuntimeContractError("Unknown wakeup operation")
         if set(parameters) != {"when", "reason", "dedupe_key", "intent", "authorized_by_user"}:
@@ -71,6 +76,8 @@ class Wakeup:
                                   (workflow, task, parameters["dedupe_key"])).fetchone()
             event = self.store.enqueue(workflow, task, parameters["reason"], parameters["dedupe_key"], payload,
                                        at=due, request_identity=fingerprint, _db=db)
+            if parameters["intent"] == "reminder":
+                return event
             key = "native-wakeup-config:v1:" + event["event_id"]
             if existing:
                 if self.store.metadata(key) is None:

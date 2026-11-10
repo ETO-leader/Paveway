@@ -124,16 +124,18 @@ class Store:
             (status, status, offset)).fetchall()
         return [self.event(row[0]) for row in rows]
 
-    def upcoming(self, workflow_id, task_id=None):
+    def upcoming(self, workflow_id, task_id=None, intent=None):
         validate_id(workflow_id)
         if task_id is not None:
             validate_id(task_id)
         rows = self.connection.execute("""SELECT event_id,workflow_id,task_id,status,not_before_utc,
-            schedule_mode,relative_seconds,anchor_run_id,created_at,reason,run_id
+            schedule_mode,relative_seconds,anchor_run_id,created_at,reason,run_id,version,
+            json_extract(payload_json,'$.intent') AS intent
             FROM events WHERE workflow_id=? AND (? IS NULL OR task_id=?)
             AND status IN ('queued','waiting_anchor','leased','running')
+            AND (? IS NULL OR (json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')=?))
             ORDER BY not_before_utc IS NULL,not_before_utc,created_at,event_id LIMIT 100""",
-            (workflow_id, task_id, task_id)).fetchall()
+            (workflow_id, task_id, task_id, intent, intent)).fetchall()
         return [dict(row) for row in rows]
 
     def runs(self, task=None, offset=0):
@@ -208,7 +210,9 @@ class Store:
         due = (self.timestamp() if at == "now" else utc_text(parse_timestamp(at))) if at is not None else None
         with self.transaction() as db:
             event = self.event(event_id)
-            if event["version"] != expected_version or event["status"] not in ("queued", "waiting_anchor"):
+            completed_reminder = (not cancel and event["status"] == "succeeded" and
+                event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder")
+            if event["version"] != expected_version or (event["status"] not in ("queued", "waiting_anchor") and not completed_reminder):
                 raise ConflictError("Event version changed or event is no longer editable")
             stamp = self.timestamp()
             if cancel:
@@ -218,10 +222,22 @@ class Store:
                 if due is None:
                     raise RuntimeContractError("Reschedule requires at")
                 db.execute("""UPDATE events SET schedule_mode='at',not_before_utc=?,relative_seconds=NULL,
-                    anchor_run_id=NULL,status='queued',version=version+1,updated_at=? WHERE event_id=?""", (due, stamp, event_id))
+                    anchor_run_id=NULL,status='queued',completed_at=NULL,run_id=NULL,
+                    attempt=0,last_error_code=NULL,last_error_message=NULL,version=version+1,updated_at=? WHERE event_id=?""", (due, stamp, event_id))
                 transition = "rescheduled"
             self.audit(db, event_id, None, transition)
         return self.event(event_id)
+
+    def complete_reminder(self, db, event):
+        # Called with the Inbox write in the same transaction: no Run, lease,
+        # dispatch intent or model completion evidence is fabricated.
+        if (event["status"] == "queued" and event["not_before_utc"] <= self.timestamp() and
+                event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder"):
+            stamp = self.timestamp()
+            db.execute("""UPDATE events SET status='succeeded',completed_at=?,updated_at=?,
+                lease_owner=NULL,lease_expires_utc=NULL,version=version+1 WHERE event_id=? AND status='queued'""",
+                (stamp, stamp, event["event_id"]))
+            self.audit(db, event["event_id"], None, "reminder_delivered")
 
     def claim_due(self, owner):
         stamp = self.timestamp()
@@ -230,7 +246,9 @@ class Store:
                 return None
             if db.execute("SELECT 1 FROM runs WHERE status IN ('leased','running')").fetchone():
                 return None
-            row = db.execute("SELECT event_id FROM events WHERE status='queued' AND not_before_utc<=? ORDER BY not_before_utc,created_at,event_id LIMIT 1", (stamp,)).fetchone()
+            row = db.execute("""SELECT event_id FROM events WHERE status='queued' AND not_before_utc<=?
+                AND COALESCE(json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder',0)=0
+                ORDER BY not_before_utc,created_at,event_id LIMIT 1""", (stamp,)).fetchone()
             if not row:
                 return None
             event_id, run_id = row[0], str(uuid.uuid4())

@@ -1,10 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {analyzeSkillSource, parseSkillDraft, reviewSkillImport, validateSkillDraft} from "../src/oicoach_runtime/bundled/paveway-skill-import.mjs";
+import {analyzeSkillSource, parseSkillDraft, reviewSkillImport, selectLocalSkills, validateSkillDraft} from "../src/oicoach_runtime/bundled/paveway-skill-import.mjs";
 
 const proposal = () => ({name: "fixture-skill", category: "personal-skill", description: "Use for fixture analysis",
     content: "# Fixture\nPreserve constraints and do not invent facts.", analysis: Object.fromEntries(
         ["purpose", "triggers", "inputs", "workflow", "outputs", "constraints", "dependencies", "warnings"].map(key => [key, "Fixture " + key]))});
+
+test("local selection preserves bodies, toggles enabled, confirms replacements and submits one batch", async () => {
+    const preview = {revision: 7, resources_not_installed: ["reference.md"], skills: [
+        {name: "existing", description: "Existing", content: "\r\n正文\r\n", category: "personal-skill", enabled: false, conflict: true, source: "a/SKILL.md"},
+        {name: "new", description: "New", content: "Untouched", category: "personal-skill", enabled: true, conflict: false, source: "b/SKILL.md"}]};
+    const actions = ["全选", "切换启停", "existing", "查看正文", "existing", "导入所选项"];
+    let writes = 0;
+    const ctx = {ui: {select: async () => actions.shift(), editor: async (_title, body) => {assert.equal(body, "\r\n正文\r\n"); return "Ignored edit";},
+        confirm: async (_title, summary) => {assert.ok(summary.includes("替换 / 启用")); assert.ok(summary.includes("额外资源不会安装")); return true;}}};
+    assert.equal(await selectLocalSkills(ctx, preview, async payload => {
+        writes++;
+        assert.deepEqual(payload.replace, ["existing"]);
+        assert.equal(payload.skills[0].content, "\r\n正文\r\n");
+        assert.equal(payload.skills[0].enabled, true);
+        assert.equal(payload.skills[0].source, undefined);
+        assert.equal(payload.skills.length, 2);
+    }), true);
+    assert.equal(writes, 1);
+    assert.equal(preview.skills[0].enabled, false);
+});
+
+test("local import cancel, declined confirmation and save conflict do not report success", async () => {
+    const preview = {revision: 0, resources_not_installed: [], skills: []};
+    assert.equal(await selectLocalSkills({ui: {select: async () => "取消"}}, preview, () => assert.fail("cancel saved")), false);
+    const actions = ["全选", "导入所选项", "取消"];
+    const skill = {name: "fixture", description: "Fixture", content: "Body", enabled: true, conflict: false};
+    const ctx = {ui: {select: async () => actions.shift(), confirm: async () => false}};
+    assert.equal(await selectLocalSkills(ctx, {...preview, skills: [skill]}, () => assert.fail("declined saved")), false);
+    const conflictActions = ["全选", "导入所选项"];
+    ctx.ui.select = async () => conflictActions.shift(); ctx.ui.confirm = async () => true;
+    await assert.rejects(selectLocalSkills(ctx, {...preview, skills: [skill]}, async () => {throw new Error("revision conflict");}), /revision conflict/);
+});
 
 test("draft validation rejects partial, malformed and oversized proposals without returning model excerpts", () => {
     assert.deepEqual(parseSkillDraft("```json\n" + JSON.stringify(proposal()) + "\n```"), proposal());

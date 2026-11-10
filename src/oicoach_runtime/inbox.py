@@ -8,6 +8,11 @@ from .store import canonical_json
 PREFIX = "delivery:v1:"
 
 
+def occurrence_id(event):
+    from .models import parse_timestamp, utc_text
+    return hashlib.sha256(canonical_json([event["event_id"], utc_text(parse_timestamp(event["not_before_utc"]))]).encode()).hexdigest()
+
+
 class Inbox:
     def __init__(self, store):
         self.store = store
@@ -17,7 +22,29 @@ class Inbox:
             return self._create(db, event, kind, text, run_id)
 
     def _create(self, db, event, kind, text, run_id=None):
-        key = hashlib.sha256(canonical_json([event["event_id"], kind, run_id]).encode()).hexdigest()
+        legacy_key = hashlib.sha256(canonical_json([event["event_id"], kind, run_id]).encode()).hexdigest()
+        key = occurrence_id(event) if kind == "reminder" else legacy_key
+        if kind == "reminder":
+            alias = self.store.metadata("delivery-occurrence:v1:" + key)
+            if alias:
+                return self.store.metadata(PREFIX + alias)
+            legacy = self.store.metadata(PREFIX + legacy_key)
+            if legacy and not legacy.get("not_before_utc"):
+                # Legacy Inbox rows lacked a due time. Desktop evidence can
+                # identify it exactly; otherwise only an unchanged schedule can.
+                desktop = self.store.metadata("desktop-attempt:v1:" + event["event_id"])
+                if desktop and desktop.get("delivery_id") == legacy_key:
+                    legacy["not_before_utc"] = desktop["not_before_utc"]
+                elif not db.execute("SELECT 1 FROM audit_log WHERE event_id=? AND transition='rescheduled' AND timestamp_utc>=?",
+                                    (event["event_id"], legacy["created_at"])).fetchone():
+                    legacy["not_before_utc"] = event["not_before_utc"]
+                if legacy.get("not_before_utc"):
+                    self.store._set_metadata(db, PREFIX + legacy_key, legacy)
+            if legacy and legacy.get("not_before_utc") == event["not_before_utc"]:
+                legacy["occurrence_id"] = key
+                self.store._set_metadata(db, PREFIX + legacy_key, legacy)
+                self.store._set_metadata(db, "delivery-occurrence:v1:" + key, legacy_key)
+                return legacy
         existing = self.store.metadata(PREFIX + key)
         if existing:
             return existing
@@ -25,6 +52,8 @@ class Inbox:
             "workflow_id": event["workflow_id"], "task_id": event["task_id"],
             "conversation_id": event["payload"].get("conversation_id"), "kind": kind,
             "text": text, "state": "created", "version": 1, "created_at": self.store.timestamp()}
+        if kind == "reminder":
+            record.update(occurrence_id=key, not_before_utc=event["not_before_utc"])
         self.store._set_metadata(db, PREFIX + key, record)
         return record
 
@@ -32,7 +61,27 @@ class Inbox:
         if event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder":
             value = event["payload"].get("message")
             text = value if isinstance(value, str) and value else event["reason"]
-            return self._create(db, event, "reminder", text) if db is not None else self.create(event, "reminder", text)
+            if db is None:
+                with self.store.transaction() as db:
+                    return self.due(event, db=db)
+            delivery = self._create(db, event, "reminder", text)
+            self.store._set_metadata(db, "inbox-due:v1:" + event["event_id"], event["not_before_utc"])
+            return delivery
+
+    def project_due(self, *, complete=False):
+        rows = self.store.connection.execute("""SELECT event_id FROM events e
+            WHERE json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder'
+            AND status!='cancelled' AND not_before_utc<=?
+            AND ((? AND status='queued') OR NOT EXISTS(SELECT 1 FROM runtime_metadata m WHERE m.key='inbox-due:v1:' || e.event_id
+                AND json_extract(m.value,'$')=e.not_before_utc))
+            ORDER BY not_before_utc,event_id LIMIT 100""", (self.store.timestamp(), complete)).fetchall()
+        for row in rows:
+            with self.store.transaction() as db:
+                event = self.store.event(row[0])
+                if event["status"] != "cancelled" and event["not_before_utc"] <= self.store.timestamp():
+                    self.due(event, db=db)
+                    if complete:
+                        self.store.complete_reminder(db, event)
 
     def collect(self):
         # Project terminal evidence only; this does not start or replay a prompt.

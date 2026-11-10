@@ -16,7 +16,7 @@ MAX_SOURCE = 256 * 1024
 MAX_ENTRIES = 64
 
 
-def read_source(filename):
+def read_source(filename, *, allow_multiple=False):
     value = str(filename).strip()
     if len(value) > 1 and value[0] == value[-1] and value[0] in ("'", '"'):
         value = value[1:-1]
@@ -74,7 +74,8 @@ def read_source(filename):
                         raise RuntimeContractError("Skill package entry exceeds the source limit")
                     if not document(name, payload):
                         omitted.append(name)
-                if sum(PurePosixPath(item["path"]).name.upper() == "SKILL.MD" for item in documents) != 1:
+                count = sum(PurePosixPath(item["path"]).name.upper() == "SKILL.MD" for item in documents)
+                if count < 1 or (not allow_multiple and count != 1):
                     raise RuntimeContractError("Skill ZIP must contain exactly one UTF-8 SKILL.md; import separate Skills individually")
         except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, zlib.error):
             raise RuntimeContractError("Cannot decode the Skill ZIP package") from None
@@ -84,3 +85,34 @@ def read_source(filename):
         raise RuntimeContractError("Skill source is empty")
     return {"filename": path.name, "sha256": hashlib.sha256(data).hexdigest(),
             "documents": documents, "omitted_binary_resources": omitted, "text_bytes": total}
+
+
+def local_skills(filename, settings):
+    """Parse standard frontmatter; body characters and line endings stay exact."""
+    import yaml
+    from .customization import validate
+    source = read_source(filename, allow_multiple=True)
+    is_package = len(source["documents"]) != 1 or any(PurePosixPath(d["path"]).name.upper() == "SKILL.MD" for d in source["documents"])
+    documents = [d for d in source["documents"] if PurePosixPath(d["path"]).name.upper() == "SKILL.MD"] if is_package else source["documents"]
+    existing = {s["name"]: s for s in settings["skills"]}
+    records, seen = [], set()
+    for document in documents:
+        lines = document["text"].splitlines(keepends=True)
+        closing = next((i for i in range(1, len(lines)) if lines[i].rstrip("\r\n") == "---"), None)
+        if not lines or lines[0].rstrip("\r\n") != "---" or closing is None:
+            raise RuntimeContractError("Local import requires YAML frontmatter with name and description")
+        try: metadata = yaml.safe_load("".join(lines[1:closing]))
+        except yaml.YAMLError:
+            raise RuntimeContractError("Invalid Skill YAML frontmatter") from None
+        if not isinstance(metadata, dict): raise RuntimeContractError("Skill frontmatter must be an object")
+        name = metadata.get("name")
+        if not isinstance(name, str) or name in seen:
+            raise RuntimeContractError("Skill names must be present and unique within the import")
+        seen.add(name)
+        old = existing.get(name)
+        skill = {"name": name, "description": metadata.get("description"), "content": "".join(lines[closing + 1:]),
+            "category": metadata.get("category", "personal-skill"), "enabled": old["enabled"] if old else metadata.get("enabled", True)}
+        validate({"schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": [skill]})
+        records.append({**skill, "source": document["path"], "conflict": old is not None})
+    return {"api_version": 1, "revision": settings["revision"], "skills": records,
+        "resources_not_installed": [d["path"] for d in source["documents"] if d not in documents] + source["omitted_binary_resources"]}

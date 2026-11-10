@@ -202,69 +202,78 @@ class Frontend:
                 self.save(db, record)
         return self.public(record)
 
+    @staticmethod
+    def file_identity(filename):
+        if not filename: return None
+        try:
+            st = Path(filename).stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_mode, st.st_uid)
+
     def finish(self, conversation_id, generation, owner_token, exit_code):
         if exit_code is not None and type(exit_code) is not int:
             raise RuntimeContractError("Native exit code must be an integer or unknown")
-        with self.store.transaction() as db:
-            record = self.authenticate(conversation_id, generation, owner_token, uncertain=True)
-            living = any(alive(record.get(kind + "_pid"), record.get(kind + "_identity")) for kind in ("guardian", "omp"))
-            if living:
-                raise ConflictError("Native owner is still alive; refusing release")
-            valid = exit_code == 0
-            diagnostic = "clean_exit" if valid else ("native_exit_unknown" if exit_code is None else "native_exit_nonzero")
-            if valid:
-                from .config import ensure_private_directory
-                lock = None
-                try:
-                    directory = Path(record["session_dir"])
-                    if not directory.exists():
-                        # A direct begin/finish before any launch has no lock or
-                        # history to release. Do not create filesystem state for
-                        # that metadata-only case. A launched session is different.
-                        if record.get("guardian_pid") or record.get("omp_pid") or record["session_file"]:
-                            raise NativeSessionError("native_session_missing")
-                    else:
-                        ensure_private_directory(directory)
-                        try:
-                            lock = InstanceLock(directory / "owner.lock")
-                        except ConflictError:
-                            valid, diagnostic = False, "native_owner_lock_unavailable"
-                    if lock:
-                        self.validate_session(record, allow_unwritten=True)
-                except (OSError, RuntimeContractError) as error:
-                    valid = False
-                    diagnostic = error.code if isinstance(error, NativeSessionError) else "native_session_validation_failed"
-                finally:
-                    if lock:
-                        lock.close()
-            record["status"] = "released" if valid else "uncertain"
-            record["exit_code"] = exit_code
-            record["release_diagnostic"] = diagnostic
-            self.save(db, record)
-        return self.public(record)
+        record = self.authenticate(conversation_id, generation, owner_token, uncertain=True)
+        return self._release(record, exit_code=exit_code)
 
     def recover(self, conversation_id):
         record = self.get(conversation_id)
         if record["status"] != "uncertain":
             raise ConflictError("Only an uncertain native conversation needs recovery")
-        for kind in ("guardian", "omp"):
-            if alive(record.get(kind + "_pid"), record.get(kind + "_identity")):
-                raise ConflictError("Native process is still alive; heartbeat loss does not permit takeover")
-        lock = InstanceLock(Path(record["session_dir"]) / "owner.lock")
+        return self._release(record, recovering=True)
+
+    def _release(self, record, *, exit_code=None, recovering=False):
+        # No write transaction is held during filesystem I/O. The physical lock
+        # fences native writers through validation AND the final commit.
+        fields = ("generation", "token_hash", "session_file", "session_id", "frontend_turn_id")
+        expected = {key: record.get(key) for key in fields}
+        if any(alive(record.get(k + "_pid"), record.get(k + "_identity")) for k in ("guardian", "omp")):
+            raise ConflictError("Native owner is still alive; refusing release")
+        valid = recovering or exit_code == 0
+        diagnostic = "explicit_recovery_validated" if recovering else ("clean_exit" if valid else ("native_exit_unknown" if exit_code is None else "native_exit_nonzero"))
+        lock, identity = None, None
+        filename = record["session_file"]
         try:
-            self.validate_session(record)
+            if valid:
+                try:
+                    directory = Path(record["session_dir"])
+                    if not directory.exists():
+                        if record.get("guardian_pid") or record.get("omp_pid") or filename:
+                            raise NativeSessionError("native_session_missing")
+                    else:
+                        from .config import ensure_private_directory
+                        ensure_private_directory(directory)
+                        try: lock = InstanceLock(directory / "owner.lock")
+                        except ConflictError:
+                            failure = ConflictError("Native owner.lock is still held; release was not committed")
+                            failure.code = "native_owner_lock_unavailable"
+                            raise failure from None
+                        identity = self.file_identity(filename)
+                        self.validate_session(record, allow_unwritten=not recovering)
+                        if self.file_identity(filename) != identity:
+                            raise NativeSessionError("native_session_changed")
+                except (OSError, RuntimeContractError) as error:
+                    if recovering: raise
+                    valid = False
+                    diagnostic = getattr(error, "code", "native_session_validation_failed")
             with self.store.transaction() as db:
-                fresh = self.get(conversation_id)
-                if fresh["generation"] != record["generation"] or fresh["status"] != "uncertain":
-                    raise ConflictError("Native owner changed during recovery")
-                fresh["status"] = "released"
-                fresh["release_diagnostic"] = "explicit_recovery_validated"
-                if "history_export" in record:
-                    fresh["history_export"] = record["history_export"]
+                fresh = self.get(record["conversation_id"])
+                if any(fresh.get(key) != value for key, value in expected.items()) or fresh["status"] == "released" or (recovering and fresh["status"] != "uncertain"):
+                    raise ConflictError("Native owner changed during validation; release was not committed")
+                if any(alive(fresh.get(k + "_pid"), fresh.get(k + "_identity")) for k in ("guardian", "omp")):
+                    raise ConflictError("Native owner is still alive; refusing release")
+                if valid and self.file_identity(filename) != identity:
+                    raise NativeSessionError("native_session_changed")
+                fresh.update(status="released" if valid else "uncertain", release_diagnostic=diagnostic)
+                if not recovering: fresh["exit_code"] = exit_code
+                if valid:
+                    fresh.update(session_file=record["session_file"], session_id=record["session_id"])
+                    if "history_export" in record: fresh["history_export"] = record["history_export"]
                 self.save(db, fresh)
+            return self.public(fresh)
         finally:
-            lock.close()
-        return self.public(fresh)
+            if lock: lock.close()
 
     def archive(self, record):
         from .git_sync import export_session

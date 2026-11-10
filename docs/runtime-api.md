@@ -138,9 +138,9 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 | IPC command | parameters |
 | --- | --- |
 | `wakeup.schedule` | when `{kind:"at",at:带时区时间}` 或 `{kind:"after_now",seconds:N}`、reason、dedupe_key、intent `reminder/agent_wake`、authorized_by_user=true |
-| `wakeup.list` | 空对象 |
-| `wakeup.cancel` | event_id、expected_version |
-| `wakeup.reschedule` | event_id、expected_version、at |
+| `wakeup.list` | 可选 intent `reminder/agent_wake`（不传时列两种类型） |
+| `wakeup.cancel` | event_id、expected_version、可选 intent 类型保护 |
+| `wakeup.reschedule` | event_id、expected_version、at、可选 intent 类型保护 |
 | `native_memory.list/show/put/delete` | 与原 Memory 数据接口相同；scope 为 profile/task，workflow/task 从 owner 推导 |
 
 Native `put` 同样接受可选 `expires_at` 和 `source_event_id`，执行现有有效期和作用域校验。`memory.recall`／`native_memory.context` 新增 `availability`（available/empty/expired）和 `expired_count`；读取失败走错误路径，不返回伪造空列表。`status.diagnostics` 提供按 binding 聚合的有界失败证据和显式恢复指引，不携带正文。更多见 [唤醒与记忆工程改进](engineering-improvements.md)。
@@ -148,6 +148,10 @@ Native `put` 同样接受可选 `expires_at` 和 `source_event_id`，执行现�
 | `inbox.bound-list/show/acknowledge` | 分别为 offset、delivery_id、delivery_id+expected_version |
 
 拒绝额外的跨 scope 字段；旧 generation、released/uncertain owner 或已死亡的 OMP 不能使用受管能力。扩展不向子 Agent 交付主会话操作。`after_now` 重试用语义 identity 去重，重复请求不会随着重试时间重新顺延；前台 `after_turn_settled` 不提供，不隐式替换为 after_now。
+
+`/reminder` 固定 intent=reminder，`/wakeup` 固定 intent=agent_wake；列表和修改命令都传类型。reminder 到期时 Inbox 写入与事件 `queued → succeeded` 在同一事务提交，`run_id` 为 null（新事件），不产生模型调用证据；不是 Agent 执行成功。通知 Worker 可先投递 Inbox，Runtime 再幂等结算。agent_wake 沿用完整 Run／快照／RPC 完成与 uncertain 恢复契约。普通没有 native_wakeup 或 intent 的 schedule/after_turn 不走纯提醒分支；旧 queued reminder 按实际 intent 执行，已完成或 uncertain 的模型任务不自动重放。
+
+`sync status` 的 `last.session_archives` 为本次本机导出统计：`exported`、`skipped`、`deferred`、`attention`、`reasons`。active/changed 属正常暂缓；size_limit、entry_limit、missing、unavailable、unsafe、invalid_or_unsupported、owner_unreleased 需关注。只有计数与固定原因，不含正文或路径。此对象保存在已有本机 status.json，不进入 Git 归档格式；state=ok/remote_synced 仍仅表示本轮同步成功，不保证全部 Session 导出。若后续 push/fetch 失败，保留已经完成的本次导出统计。
 
 公开 Inbox CLI：`inbox list --workflow ID [--task ID] [--offset N]`、`inbox show DELIVERY --workflow ID`、`inbox acknowledge DELIVERY --workflow ID --expected-version N`。消息状态 created/offered/acknowledged 与 Run 状态分离；列出或通知不代表已读。没有自动 sendMessage 或未知 prompt 重播。
 

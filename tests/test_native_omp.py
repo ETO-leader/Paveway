@@ -161,7 +161,7 @@ class NativeFixture(unittest.TestCase):
             until("M0_REPLY", requests=baseline + 1, predicate=lambda:
                 request(self.config.server.socket_path, "frontend.show", {"conversation_id": conversation})["status"] == "idle" and evidence())
             if wakeup:
-                send(b"/wakeup in 1s TEST_NATIVE_TIMER\r")
+                send(b"/reminder in 1s TEST_NATIVE_TIMER\r")
                 until("native_wakeup")
             if switch:
                 before = request(self.config.server.socket_path, "frontend.list")[0]
@@ -290,13 +290,17 @@ class NativeOmpTests(NativeFixture):
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})
-            if len(inbox["messages"]) >= 2:
+            if inbox["messages"]:
                 break
             time.sleep(0.05)
-        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder"})
         self.assertTrue(all(row["state"] != "acknowledged" for row in inbox["messages"]))
         reminders = [row for row in inbox["messages"] if row["kind"] == "reminder"]
         self.assertEqual(reminders[0]["text"], "TEST_NATIVE_TIMER")
+        event = request(self.config.server.socket_path, "events.show", {"event_id": reminders[0]["event_id"]})
+        self.assertEqual(event["status"], "succeeded")
+        self.assertIsNone(event["run_id"])
+        self.assertFalse(list((self.config.state_dir / "sessions").glob("*")))
 
     def test_real_native_agent_tool_schedules_in_the_same_runtime(self):
         self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
@@ -346,7 +350,7 @@ class NativeOmpTests(NativeFixture):
         self.assertIsNotNone(event)
         self.assertEqual(event["status"], "succeeded", event.get("last_error_code"))
         inbox = request(self.config.server.socket_path, "inbox.list", {"workflow_id": "native-test"})
-        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"reminder", "result"})
+        self.assertEqual({row["kind"] for row in inbox["messages"]}, {"result"})
         self.assertTrue(all(row["state"] == "created" for row in inbox["messages"]))
         self.assertTrue(any("FROZEN_WAKEUP_AFTER_RESTART" in json.dumps(body["messages"]) for body in self.server.requests))
         self.assertEqual(path.read_text(), '{"broken_future_edit":')
