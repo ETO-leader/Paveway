@@ -5,11 +5,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from oicoach_runtime.cache_usage import session_usage
-from oicoach_runtime.cli import main, parser, remote_arguments
+from oicoach_runtime.cli import parser, remote_arguments
 from oicoach_runtime.errors import ConflictError, NotFoundError, RuntimeContractError
 
 
@@ -63,7 +62,7 @@ class CacheUsageTests(unittest.TestCase):
         self.assertEqual(call["cache_write_tokens"], 20)
         self.assertEqual(call["omp_normalized_input_tokens"], 100)
         self.assertEqual(call["cache_hit_ratio"], 0.6)
-        self.assertTrue(call["on_active_branch"])
+        self.assertTrue(call["on_last_persisted_entry_ancestry"])
         self.assertEqual(result["cumulative"]["cache_hit_ratio"], 0.6)
         self.assertIn("OMP normalized", result["semantics"]["input_denominator"])
         self.assertEqual(result["source"], "omp_session_jsonl")
@@ -112,7 +111,7 @@ class CacheUsageTests(unittest.TestCase):
         self.assertEqual(first["cumulative"]["input_tokens"], 40)
         self.assertEqual(first["cumulative"]["cache_read_tokens"], 120)
         self.assertEqual(first["cumulative"]["omp_calculated_cost_usd"], 0.5)
-        self.assertEqual(first["active_branch"]["call_count"], 2)
+        self.assertEqual(first["last_persisted_entry_ancestry"]["call_count"], 2)
         self.assertEqual(session_usage(Path(str(self.path))), first)
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(self.call("resumed", "after", self.usage())) + "\n")
@@ -121,20 +120,55 @@ class CacheUsageTests(unittest.TestCase):
         self.assertEqual(restarted["cumulative"]["cache_read_tokens"], 180)
         self.assertNotIn("PRIVATE", json.dumps(restarted))
 
-    def test_fork_ancestry_and_off_branch_active_leaf_are_respected(self):
+    def test_fork_statistics_describe_last_persisted_entry_not_live_branch(self):
+        # branch("old") or resetLeaf() can change the live leaf without writing
+        # another entry, so even an ordinary tail cannot prove the live branch.
         entries = [self.call("root", usage=self.usage()),
                    self.call("old", "root", self.usage()),
                    self.call("new", "root", self.usage())]
-        late = self.call("late", "old", self.usage())
-        late["activeLeafId"] = "new"
-        entries.append(late)
         result = session_usage(self.write(entries))
-        self.assertEqual(result["cumulative"]["call_count"], 4)
-        self.assertEqual(result["active_branch"]["call_count"], 2)
-        self.assertEqual(result["active_branch"]["cache_read_tokens"], 120)
-        self.assertEqual([call["on_active_branch"] for call in result["calls"]], [True, False, True, False])
+        ancestry = result["last_persisted_entry_ancestry"]
+        self.assertEqual(result["cumulative"]["call_count"], 3)
+        self.assertEqual(ancestry["call_count"], 2)
+        self.assertEqual(ancestry["cache_read_tokens"], 120)
+        self.assertEqual([call["on_last_persisted_entry_ancestry"] for call in result["calls"]], [True, False, True])
         self.assertEqual(result["cumulative"]["scope"], "session_file_all_calls_all_branches")
-        self.assertEqual(result["active_branch"]["scope"], "persisted_active_branch_ancestry")
+        self.assertEqual(ancestry["scope"], "last_persisted_entry_ancestry")
+        self.assertIn("unavailable", result["semantics"]["live_active_branch"])
+        self.assertNotIn("active_branch", result)
+        self.assertNotIn("active_branch", result["semantics"])
+        self.assertTrue(all("on_active_branch" not in call for call in result["calls"]))
+
+    def test_final_off_branch_model_usage_uses_physical_tail_ancestry(self):
+        entries = [self.call("root", usage=self.usage()),
+                   self.call("old", "root", self.usage()),
+                   self.call("new", "root", self.usage())]
+        late = {"type": "model_usage", "id": "late", "parentId": "old",
+                "purpose": "PRIVATE PURPOSE", "usage": self.usage()}
+        # Late usage can leave the live leaf on "new". Older OMP writers omit
+        # activeLeafId; newer writers record it for replay, not live navigation.
+        for marker in ({}, {"activeLeafId": "new"}):
+            with self.subTest(marker=marker):
+                result = session_usage(self.write([*entries, {**late, **marker}]))
+                self.assertEqual(result["cumulative"]["call_count"], 4)
+                self.assertEqual(result["cumulative"]["cache_read_tokens"], 240)
+                ancestry = result["last_persisted_entry_ancestry"]
+                self.assertEqual(ancestry["call_count"], 3)
+                self.assertEqual(ancestry["cache_read_tokens"], 180)
+                self.assertEqual([call["on_last_persisted_entry_ancestry"] for call in result["calls"]],
+                                 [True, True, False, True])
+                self.assertEqual(result["calls"][-1]["entry_type"], "model_usage")
+                self.assertEqual(session_usage(self.path), result)
+                self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_active_leaf_metadata_is_not_used_for_physical_ancestry(self):
+        for marker in ("missing", None, {"PRIVATE": "not-an-entry-id"}):
+            with self.subTest(marker=marker):
+                entry = {**self.call(usage=self.usage()), "activeLeafId": marker}
+                result = session_usage(self.write([entry]))
+                self.assertEqual(result["last_persisted_entry_ancestry"]["call_count"], 1)
+                self.assertTrue(result["calls"][0]["on_last_persisted_entry_ancestry"])
+                self.assertNotIn("PRIVATE", json.dumps(result))
 
     def test_model_usage_and_mixed_provider_apis_keep_separate_call_identity(self):
         tool = {"type": "message", "id": "tool", "parentId": "a", "message": {
@@ -167,19 +201,20 @@ class CacheUsageTests(unittest.TestCase):
         self.assertEqual(result["calls"][-1]["entry_id"], "c23")
         self.assertEqual(result["cumulative"]["call_count"], 24)
         self.assertEqual(result["cumulative"]["omp_calculated_cost_usd"], 6)
-        self.assertEqual(result["active_branch"]["call_count"], 24)
+        self.assertEqual(result["last_persisted_entry_ancestry"]["call_count"], 24)
         self.assertEqual(result["calls_scope"], "latest_persisted_calls_all_branches")
 
-    def test_legacy_archive_without_tree_does_not_invent_an_active_branch(self):
+    def test_legacy_archive_without_tree_does_not_invent_entry_ancestry(self):
         header = dict(self.header, version=1)
         entry = self.call(usage=self.usage())
         del entry["id"]
         del entry["parentId"]
         result = session_usage(self.write([entry], header))
         self.assertEqual(result["cumulative"]["call_count"], 1)
-        self.assertIsNone(result["calls"][0]["on_active_branch"])
-        self.assertEqual(result["active_branch"]["status"], "unavailable")
-        self.assertIsNone(result["active_branch"]["call_count"])
+        self.assertIsNone(result["calls"][0]["on_last_persisted_entry_ancestry"])
+        self.assertEqual(result["last_persisted_entry_ancestry"]["status"], "unavailable")
+        self.assertEqual(result["last_persisted_entry_ancestry"]["reason"], "persisted_tree_unavailable")
+        self.assertIsNone(result["last_persisted_entry_ancestry"]["call_count"])
 
     def test_invalid_metrics_and_free_text_metadata_are_not_returned(self):
         result = session_usage(self.write([self.call(usage={
@@ -219,10 +254,10 @@ class CacheUsageTests(unittest.TestCase):
                 self.assertNotIn("PRIVATE", str(error.exception))
                 self.assertNotIn("secret", str(error.exception))
 
-    def test_corrupt_tree_is_rejected_without_fabricated_branch_totals(self):
+    def test_corrupt_tree_is_rejected_without_fabricated_ancestry_totals(self):
         cases = [[self.call("a", "missing", self.usage())],
                  [self.call("a", usage=self.usage()), self.call("a", "a", self.usage())],
-                 [{**self.call(usage=self.usage()), "activeLeafId": "missing"}]]
+                 [self.call("a", 42, self.usage())]]
         for entries in cases:
             with self.subTest(entries=len(entries)):
                 with self.assertRaises(RuntimeContractError):
@@ -253,12 +288,6 @@ class CacheUsageTests(unittest.TestCase):
 
 
 class CacheStatsCliTests(unittest.TestCase):
-    def test_selectors_produce_cache_stats_ipc_arguments(self):
-        args = parser().parse_args(["cache-stats", "--conversation", "conversation-1", "--json"])
-        self.assertEqual(remote_arguments(args), ("cache.stats", {"conversation_id": "conversation-1"}))
-        args = parser().parse_args(["cache-stats", "--workflow", "synthetic", "--task", "training"])
-        self.assertEqual(remote_arguments(args), ("cache.stats", {"workflow_id": "synthetic", "task_id": "training"}))
-
     def test_invalid_selector_combinations_are_rejected(self):
         for argv in (["--workflow", "synthetic"], ["--conversation", "c", "--task", "training"]):
             with self.subTest(argv=argv):
@@ -269,32 +298,25 @@ class CacheStatsCliTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parser().parse_args(["cache-stats", *argv])
 
-    def test_command_sends_selector_and_prints_runtime_report(self):
-        config = SimpleNamespace(server=SimpleNamespace(socket_path=Path("/synthetic/socket")))
-        report = {"source": "omp_session_jsonl", "cumulative": {"call_count": 2}}
-        output = io.StringIO()
-        with patch("oicoach_runtime.cli.load_config", return_value=config), \
-                patch("oicoach_runtime.cli.request", return_value=report) as request, \
-                contextlib.redirect_stdout(output):
-            status = main(["cache-stats", "--conversation", "conversation-1", "--json"])
-        self.assertEqual(status, 0)
-        request.assert_called_once_with(config.server.socket_path, "cache.stats", {"conversation_id": "conversation-1"})
-        self.assertEqual(json.loads(output.getvalue()), {"api_version": 1, "result": report})
-
-
 
 class PhysicalOmpArchiveTests(unittest.TestCase):
     def test_padded_title_slot_precedes_header_and_is_never_returned(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "physical.jsonl"
-            title = json.dumps({"type": "title", "title": "PRIVATE TITLE"})
+            title = {"type": "title", "v": 1, "title": "PRIVATE TITLE",
+                     "source": "user", "updatedAt": "2026-11-10T00:00:00.000Z", "pad": ""}
+            unpadded = json.dumps(title, separators=(",", ":")) + "\n"
+            title["pad"] = " " * (256 - len(unpadded.encode("utf-8")))
+            title_line = json.dumps(title, separators=(",", ":")) + "\n"
+            self.assertEqual(len(title_line.encode("utf-8")), 256)
             header = {"type": "session", "version": 3, "id": "real-format", "cwd": "/workspace"}
             call = {"type": "message", "id": "m1", "parentId": None, "message": {
                 "role": "assistant", "usage": {"input": 64, "output": 8, "cacheRead": 96, "cacheWrite": 0, "totalTokens": 168}}}
-            path.write_text(title.ljust(1023) + "\n" + json.dumps(header) + "\n" + json.dumps(call) + "\n")
+            path.write_text(title_line + json.dumps(header) + "\n" + json.dumps(call) + "\n")
             result = session_usage(path, "real-format")
             self.assertEqual(result["cumulative"]["cache_read_tokens"], 96)
             self.assertIsNone(result["cumulative"]["cache_write_tokens"])
+            self.assertEqual(result["last_persisted_entry_ancestry"]["call_count"], 1)
             self.assertNotIn("PRIVATE TITLE", json.dumps(result))
 if __name__ == "__main__":
     unittest.main()

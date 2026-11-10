@@ -72,11 +72,13 @@ kind 是 `fact | preference | summary | hypothesis`。这是笔记作者的分�
 
 启用 `workflow.memory_enabled` 时，Native 与 Scheduler RPC 共用 `paveway-memory-context.mjs`，在 OMP `before_agent_start` 中读取当前有效笔记。System Prompt **不再包含 Memory**。选择仍按 pinned、task 专属、近期更新排序，最多检查 101 条候选，正文快照保持 64 KiB 传输边界；单条仍最多 4096 UTF-8 字节，超出选择范围的笔记通过 list/show 查询，记忆库总量不裁剪。
 
-会话证据来自 OMP 当前分支中实际接受的 `paveway-memory-context` 消息及 Compaction `preserveData.pavewayMemory`，不是发送前写入数据库的“已交付”标记。逐条比较 `(workflow_id, task_id, key)`、版本和内容指纹；重排候选列表不触发重复注入。只追加新增/变化笔记及明确的 `deleted`、`expired`、`outside_current_context` 撤回；后者表示退出有界上下文，不是假称数据库删除。停用 Memory 时追加一次 `memory_disabled` 撤回，不读取禁用的记忆库。
+会话证据仅来自 OMP **当前分支最新 `reset_boundary` 之后**实际接受的 `paveway-memory-context` 消息及该范围内的 Compaction 检查点，不是发送前写入数据库的“已交付”标记。`/clear` 之前的 receipt/Compaction 仍保留在磁盘，但不能证明新上下文已经含有笔记；所以清空后首次输入会重新追加必要的当前记忆，未变版本同样适用，后续未变化轮次不重复。逐条比较 `(workflow_id, task_id, key)`、版本和内容指纹；重排候选列表不触发重复注入。只追加新增/变化笔记及明确的 `deleted`、`expired`、`outside_current_context` 撤回；后者表示退出有界上下文，不是假称数据库删除。停用时一次 `memory_disabled` 撤回，不读取禁用的记忆库。
+
+模型输入和磁盘写入分开计量：普通 receipt 只保存既有 `details.delta`，每 64 次实际接受的变化才在既有 `details.state` 中保存完整检查点；计数从持久分支重放得到，失败/取消的准备不计入。恢复从最新检查点重放后续增量，Compaction 继续保存精确状态，无独立日志或数据库。检查点标记为内部 schema 2，模型可见 delta 保持 schema 1。旧 schema 1 的完整 selection 兼容读取；在 `/clear` 后它可能含未实际发送的旧笔记，因此必须重放该边界后的 delta，而不能当作已发送证明。此改动不强迫现有 Composer v6 会话新建，也不重写旧文件。
 
 OMP 将 custom 消息持久化在本轮输入之后，但默认会将它转成 developer 角色。因此受管 `context` 投影从首次发送起始终将 Memory 映射为 **user 级历史数据，并排在对应输入之前**；不改写磁盘原文。后续请求对既有消息使用完全相同的投影，Memory 更新只扩展已发送前缀。原始用户输入、图片、事件 Run ID/时间仍属于原有消息通道。写入工具结果在当前回合可见，外部记忆更改在下一次顶层输入准备时刷新，不声称每个 tool continuation 都重新查询数据库。
 
-Compaction 保存压缩时点的精确有界 Memory 状态。出站上下文在摘要后恢复未被保留尾部覆盖的笔记，并带当前 key 目录，否定摘要中的旧/失效副本。恢复块固定到该 Compaction 和其 `firstKeptEntryId`：后续增改不会改变这个早先块；后续更正/撤回仍优先。不向磁盘历史每轮追加完整快照，也不无条件载入完整记忆库。新一轮、重启、取消及重试均从 OMP 实际分支重新判断，不把 hook 准备结果当提交；消息留在已接受上下文不等于 Provider 已处理它。
+Compaction 保存压缩时点的精确有界 Memory 状态。出站上下文在宿主摘要后恢复未被实际保留尾部覆盖的笔记，并带当前 key 目录，否定摘要中的旧/失效副本。恢复块固定到该 Compaction、reset 范围及原生 `firstKeptEntryId` / `providerReplayThroughEntryId` 规则：OpenAI replacement history 和 Anthropic 原生 replay 的保留尾部不同，不能统一猜测。后续增改不会改变这个早先块，之后更正/撤回仍优先。没有宿主 `compactionSummary` 时不添加推测性恢复；当前兼容 OMP 的普通、自定义与 Provider 原生重建均有该宿主消息。新一轮、重启、取消及重试均从实际分支重新判断；消息已接受不等于 Provider 已处理。
 
 Composer v6 是明确的恢复边界：旧的 Memory-in-System 会话或 Role base 改变时，Native 要求 `--new`，后台返回 `session_prompt_changed`，需使用新 task/session。旧文件、旧对话和归档原样保留，不自动改写、导入或重播。Persona 原有绑定继续有效；用户 Prompt、Skill、MCP 配置仍走既有 OMP 更新语义，变更本身可能使缓存前缀失效。
 

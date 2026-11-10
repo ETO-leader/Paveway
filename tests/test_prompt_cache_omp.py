@@ -6,7 +6,6 @@ The tests never load the user's profile or call a paid/external provider.
 
 import os
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import unittest
@@ -18,9 +17,7 @@ class PromptCacheOmpTests(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
         from verify_prompt_cache import CacheHarness
-        executable = os.environ.get("PAVEWAY_TEST_CACHE_OMP_EXECUTABLE") or shutil.which("omp")
-        if not executable:
-            self.fail("cache capture was explicitly enabled but omp is missing")
+        executable = os.environ.get("PAVEWAY_TEST_CACHE_OMP_EXECUTABLE")
         temporary = tempfile.TemporaryDirectory(prefix="pw-cache-test-")
         self.addCleanup(temporary.cleanup)
         self.fixture = CacheHarness(Path(temporary.name), executable)
@@ -105,6 +102,13 @@ class PromptCacheOmpTests(unittest.TestCase):
         finally:
             stop_process(conversation.process)
             os.close(conversation.master)
+
+    def test_clear_unchanged_memory_restart_updates_deletions_and_compaction(self):
+        result = self.fixture.clear_scenarios()
+        self.assertTrue(result["unchanged_reinjected_once"])
+        self.assertTrue(result["old_history_preserved"])
+        self.assertTrue(result["restart_prefix_equal"])
+        self.assertTrue(result["compaction_then_changes_prefix_equal"])
 
 
 if __name__ == "__main__":

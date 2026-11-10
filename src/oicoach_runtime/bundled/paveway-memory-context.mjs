@@ -3,22 +3,47 @@ import {createHash} from "node:crypto";
 
 export const MEMORY_TYPE = "paveway-memory-context";
 const SCHEMA = 1;
+const CHECKPOINT_SCHEMA = 2;
+const CHECKPOINT_INTERVAL = 64;
 const canonical = value => JSON.stringify(value, (_key, item) =>
     item && typeof item === "object" && !Array.isArray(item)
         ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const identity = note => canonical([note.workflow_id, note.task_id || "", note.key]);
 const fingerprint = note => createHash("sha256").update(canonical(note)).digest("hex");
 const sameScope = (left, right) => left?.workflow_id === right.workflow_id && left?.task_id === right.task_id;
-const validState = (value, scope) => value?.schema === SCHEMA && sameScope(value.scope, scope) && Array.isArray(value.notes);
+const validState = (value, scope) => (value?.schema === SCHEMA || value?.schema === CHECKPOINT_SCHEMA) &&
+    sameScope(value.scope, scope) && Array.isArray(value.notes);
 
 export function memoryState(entries, scope) {
-    let state = {schema: SCHEMA, scope, notes: []};
-    for (const entry of entries) {
+    const boundary = entries.findLastIndex(entry => entry.type === "reset_boundary");
+    let start = boundary + 1;
+    let checkpoint;
+    // Bound replay to the latest accepted checkpoint on the visible branch.
+    // Legacy receipts already carry state; compactions use the same shape.
+    for (let index = entries.length - 1; index > boundary; index--) {
+        const entry = entries[index];
         const candidate = entry.type === "compaction" ? entry.preserveData?.pavewayMemory :
             entry.type === "custom_message" && entry.customType === MEMORY_TYPE ? entry.details?.state : undefined;
-        if (validState(candidate, scope)) state = candidate;
+        // Old state described a selection, not necessarily the notes emitted
+        // after /clear. Only the new replay-derived checkpoints certify that.
+        if (validState(candidate, scope) && (boundary < 0 || candidate.schema === CHECKPOINT_SCHEMA)) {
+            checkpoint = candidate;
+            start = index + 1;
+            break;
+        }
     }
-    return state;
+    const notes = new Map((checkpoint?.notes || []).map(note => [identity(note), note]));
+    let replayed_deltas = 0;
+    for (let index = start; index < entries.length; index++) {
+        const entry = entries[index];
+        const delta = entry.type === "custom_message" && entry.customType === MEMORY_TYPE ? entry.details?.delta : undefined;
+        if (delta?.schema !== SCHEMA || !sameScope(delta.scope, scope) ||
+            !Array.isArray(delta.upserts) || !Array.isArray(delta.withdrawals)) continue;
+        for (const note of delta.withdrawals) notes.delete(identity(note));
+        for (const note of delta.upserts) notes.set(identity(note), note);
+        replayed_deltas++;
+    }
+    return {schema: CHECKPOINT_SCHEMA, scope, notes: [...notes.values()], replayed_deltas};
 }
 
 export function planMemory(snapshot, previous, scope) {
@@ -35,10 +60,14 @@ export function planMemory(snapshot, previous, scope) {
         previous_version: note.version, reason: reasons.get(key) || "outside_current_context",
     }));
     if (!upserts.length && !withdrawals.length) return undefined;
-    const state = {schema: SCHEMA, scope, notes};
     const delta = {schema: SCHEMA, scope, upserts, withdrawals, truncated: snapshot.truncated === true};
+    const details = {delta};
+    // Count only replayed receipts, never prepared/failed attempts. Checkpoints
+    // are metadata; their creation must not resend unchanged notes to the model.
+    if ((previous?.replayed_deltas || 0) >= CHECKPOINT_INTERVAL - 1)
+        details.state = {schema: CHECKPOINT_SCHEMA, scope, notes};
     return {customType: MEMORY_TYPE, display: false, attribution: "agent",
-        content: renderMemory(delta), details: {state, delta}};
+        content: renderMemory(delta), details};
 }
 
 function renderMemory(delta) {
@@ -53,11 +82,14 @@ function renderMemory(delta) {
 // The frozen frame is anchored to the compaction summary; later deltas still win.
 export function restoreCompactedMemory(messages, entries, scope) {
     const compactIndex = entries.findLastIndex(entry => entry.type === "compaction");
-    if (compactIndex < 0) return messages;
+    const boundary = entries.findLastIndex(entry => entry.type === "reset_boundary");
+    if (compactIndex <= boundary) return messages;
     const compaction = entries[compactIndex];
     // Another authorized extension may supply the compaction result, bypassing
     // session.compacting. Its immutable pre-compaction branch is still evidence.
-    const state = compaction.preserveData?.pavewayMemory ?? memoryState(entries.slice(0, compactIndex), scope);
+    const saved = compaction.preserveData?.pavewayMemory;
+    const state = validState(saved, scope) && (boundary < 0 || saved.schema === CHECKPOINT_SCHEMA)
+        ? saved : memoryState(entries.slice(0, compactIndex), scope);
     if (!validState(state, scope)) return messages;
     const summary = messages.findIndex(message => message.role === "compactionSummary");
     if (summary < 0) return messages;
@@ -67,8 +99,19 @@ export function restoreCompactedMemory(messages, entries, scope) {
     // Freeze coverage to the tail retained AT compaction. Looking at later
     // deltas would shrink/change this earlier frame on every Memory update,
     // invalidating the already-sent history prefix.
-    const keptIndex = entries.findIndex(entry => entry.id === compaction.firstKeptEntryId);
-    const retained = keptIndex >= 0 && keptIndex < compactIndex ? entries.slice(keptIndex, compactIndex) : [];
+    const keptIndex = entries.findIndex((entry, index) => index > boundary && entry.id === compaction.firstKeptEntryId);
+    const replayThrough = entries.findIndex((entry, index) => index > boundary && entry.id === compaction.providerReplayThroughEntryId);
+    const providerType = messages[summary].providerPayload?.type;
+    // Match OMP's actual native-tail rules. OpenAI replacement history ignores
+    // firstKeptEntryId; Anthropic may retain a tail after its replay boundary.
+    let retainedStart = keptIndex;
+    if (providerType === "openaiResponsesHistory") {
+        retainedStart = replayThrough >= 0 ? replayThrough + 1 : -1;
+    } else if (keptIndex < 0 && providerType === "anthropicCompaction" &&
+               compaction.firstKeptEntryId === "" && replayThrough >= 0) {
+        retainedStart = replayThrough + 1;
+    }
+    const retained = retainedStart >= 0 && retainedStart < compactIndex ? entries.slice(retainedStart, compactIndex) : [];
     for (const entry of retained) {
         if (entry.type !== "custom_message" || entry.customType !== MEMORY_TYPE) continue;
         for (const note of entry.details?.delta?.upserts || [])
@@ -158,7 +201,8 @@ export function registerMemoryContext(pi, {scope, recall, fail, enabled = true, 
     });
     pi.on("session.compacting", (_event, ctx) => {
         if (!main(ctx)) return;
-        return {preserveData: {pavewayMemory: memoryState(ctx.sessionManager.getBranch(), scope)}};
+        const state = memoryState(ctx.sessionManager.getBranch(), scope);
+        return {preserveData: {pavewayMemory: {schema: CHECKPOINT_SCHEMA, scope, notes: state.notes}}};
     });
     pi.on("context", (event, ctx) => {
         if (!main(ctx)) return;

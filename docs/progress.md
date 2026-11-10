@@ -733,3 +733,12 @@ CI 保留 Python 矩阵，新增锁定 OMP/Bun、前置条件、Bun 与本地 HT
 全量 Python 496 项，407 通过、89 条件跳过（144.444 秒），/tmp/paveway-skill-import-python-full.log。固定 Bun/Host 全量 136 项通过，/tmp/paveway-skill-import-bun-full.log。真实原生管理 UI 19 项全部通过（109.182 秒），/tmp/paveway-skill-import-native-full.log，包含成功分析／预览／保存、无效分析不保存、并发修改保留草稿且不覆盖 Prompt；原手动创建 Skill 回归保留。另以超过 64 KiB 的完整源文件实测导入并核对末尾标记确实进入模型请求（4.474 秒），/tmp/paveway-skill-import-native-long-source.log。全部模型测试使用真实 OMP/PTY 与隔离本地 HTTP Provider，未调用私人付费模型；未声称对生成内容质量进行真实模型评估。
 
 未导入真实用户文件、未重启真实服务、未修改真实会话或远端设置。保留既有工作区修改，未 commit 或 push。新增 Native CI 验收选择器；远端 CI 未触发。加载代码需在正常退出 UI、后台空闲后重启 Runtime，再进入原生界面；导入后保存的 Skill 从下次原生启动加载。
+
+
+## 2026-11-10 — 同步工程改进、Native 生命周期与 Skill 导入
+
+本地工程更新汇总为 9fe2121，合并远端 f63fbb2（新增 2 个提交），保留远端 Memory reset boundary、压缩恢复、64 次增量检查点和缓存计数修复。自动合并无文本冲突；本地新增的无记忆模式回归改为校验接受 delta 后 memoryState 重建的空笔记集，兼容远端不再每条 receipt 保存完整 state 的语义，不放宽撤回断言。
+
+合并后全量 Python 501 项，407 通过、94 条件跳过（128.099 秒），/tmp/paveway-sync-final-python.log；固定 Bun 140 项全部通过，/tmp/paveway-sync-final-bun.log。真实锁定 Host 的 Memory 边界、原始 RPC／压缩恢复、检查点崩溃／取消证明、无记忆模式、Skill 文件导入／CAS 冲突、Ctrl+D 连续恢复与训练交接 9 项通过（42.085 秒），/tmp/paveway-sync-final-native.log。所有模型请求均使用隔离本地 Provider。
+
+仅同步源码、项目文档与测试；暂存路径及新增内容已检查，没有加入运行文件或凭据。未修改真实服务、用户配置、会话、用户数据 Git 远端或 event.md。运行中的旧 Runtime 需在 UI 正常退出、后台空闲后重启以加载新的构建。
