@@ -4,8 +4,9 @@
 path; runtime callers must enforce their own session-directory boundary. It does
 not follow parent-session files, start OMP, or mutate the journal. Cumulative
 usage covers every persisted call in this file, including compacted and inactive
-branches, rather than the current prompt context. Only the latest 20 call records
-are returned so the diagnostic fits the bounded IPC transport.
+branches, rather than the current prompt context. Last-persisted-entry ancestry
+is a physical journal scope, not the live active branch, which disk alone cannot
+establish. Only the latest 20 call records are returned for bounded IPC transport.
 
 OMP initializes normalized cache and cost fields to zero, losing whether the
 provider supplied them. Positive values are evidence; zero/missing values remain
@@ -116,8 +117,8 @@ def _read_archive(path, expected_session_id):
     header = None
     calls = []
     parents = {}
-    leaf = None
-    branch_available = True
+    last_entry_id = None
+    ancestry_available = True
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
@@ -153,14 +154,14 @@ def _read_archive(path, expected_session_id):
                     if expected_session_id is not None and entry["id"] != expected_session_id:
                         raise ConflictError("Session archive header does not match the recorded session")
                     header = {"id": entry["id"], "version": version}
-                    branch_available = version != 1
+                    ancestry_available = version != 1
                     continue
                 if header is None:
                     raise RuntimeContractError("Session archive header is missing")
                 identity = _identifier(entry.get("id"))
                 parent = entry.get("parentId")
                 if identity is None or "parentId" not in entry:
-                    branch_available = False
+                    ancestry_available = False
                 else:
                     if identity in parents or (parent is not None and _identifier(parent) is None):
                         raise RuntimeContractError("Invalid session archive entry identity")
@@ -168,9 +169,9 @@ def _read_archive(path, expected_session_id):
                     if parent is not None and parent not in parents:
                         raise RuntimeContractError("Session archive branch ancestry is incomplete")
                     parents[identity] = parent
-                    leaf = entry.get("activeLeafId", identity)
-                    if leaf is not None and (_identifier(leaf) is None or leaf not in parents):
-                        raise RuntimeContractError("Invalid session archive active leaf")
+                    # This physical scope deliberately ignores activeLeafId:
+                    # replay markers cannot establish the live navigation state.
+                    last_entry_id = identity
                 call = _call(entry)
                 if call is not None:
                     calls.append(call)
@@ -183,12 +184,12 @@ def _read_archive(path, expected_session_id):
         raise RuntimeContractError("Session archive cannot be read safely; check paths and permissions") from None
     if header is None:
         raise RuntimeContractError("Session archive header is missing")
-    branch = set()
-    if branch_available:
-        while leaf is not None:
-            branch.add(leaf)
-            leaf = parents[leaf]
-    return header, calls, branch if branch_available else None
+    ancestry = set()
+    if ancestry_available:
+        while last_entry_id is not None:
+            ancestry.add(last_entry_id)
+            last_entry_id = parents[last_entry_id]
+    return header, calls, ancestry if ancestry_available else None
 
 
 def session_usage(path, expected_session_id=None):
@@ -196,20 +197,22 @@ def session_usage(path, expected_session_id=None):
 
     ``None`` means unavailable, not a reported zero. ``observed_subtotals`` sum
     only available metrics; ``available_call_counts`` distinguish those partial
-    observations from complete totals. The active branch is persisted ancestry,
-    not a claim about an in-memory OMP leaf or compacted context. Legacy v1
-    journals have no reliable persisted tree and expose no active-branch total.
+    observations from complete totals. Last-persisted-entry ancestry includes the
+    final logical entry and its parents, not the live OMP leaf or compacted prompt
+    context. Legacy v1 journals expose no reliable persisted ancestry total.
     Invalid/unsafe archives raise fixed, content-free RuntimeContractError
     subclasses, including NotFoundError and ConflictError.
     """
     if expected_session_id is not None and _identifier(expected_session_id) is None:
         raise RuntimeContractError("Invalid expected session identity")
-    header, calls, branch = _read_archive(path, expected_session_id)
+    header, calls, ancestry = _read_archive(path, expected_session_id)
     for call in calls:
-        call["on_active_branch"] = call["entry_id"] in branch if branch is not None else None
+        call["on_last_persisted_entry_ancestry"] = call["entry_id"] in ancestry if ancestry is not None else None
     recent = list(deque(calls, maxlen=CALL_LIMIT))
-    active = _summary([call for call in calls if call["on_active_branch"]], "persisted_active_branch_ancestry") if branch is not None else {
-        "scope": "persisted_active_branch_ancestry", "status": "unavailable", "reason": "persisted_tree_unavailable", "call_count": None,
+    persisted = _summary(
+        [call for call in calls if call["on_last_persisted_entry_ancestry"]], "last_persisted_entry_ancestry",
+    ) if ancestry is not None else {
+        "scope": "last_persisted_entry_ancestry", "status": "unavailable", "reason": "persisted_tree_unavailable", "call_count": None,
     }
     return {
         "source": "omp_session_jsonl",
@@ -220,12 +223,13 @@ def session_usage(path, expected_session_id=None):
             "input_denominator": "OMP normalized input_tokens + cache_read_tokens + cache_write_tokens; unavailable if any component is ambiguous",
             "cost": "OMP calculated USD cost, not an actual provider invoice; zero or missing cost is unavailable",
             "cumulative": "All persisted model-call records in this session file, all branches, including before compaction; no parent-session or subagent files followed",
-            "active_branch": "Persisted ID ancestry only; excludes unrelated fork and off-branch records and may differ from a live in-memory leaf",
+            "last_persisted_entry_ancestry": "Final persisted logical entry and its parent chain, including that entry; an off-branch append can select an unrelated ancestry",
+            "live_active_branch": "unavailable from the persisted journal; OMP navigation can change the live leaf without writing an entry, and replay markers are not live state",
         },
         "calls": recent,
         "calls_scope": "latest_persisted_calls_all_branches",
         "calls_truncated": len(calls) > CALL_LIMIT,
         "call_limit": CALL_LIMIT,
         "cumulative": _summary(calls, "session_file_all_calls_all_branches"),
-        "active_branch": active,
+        "last_persisted_entry_ancestry": persisted,
     }

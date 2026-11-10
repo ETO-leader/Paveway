@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 import pty
 import select
-import shutil
 import struct
 import subprocess
 import sys
@@ -31,6 +30,7 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
+from oicoach_runtime.native_host import prepare_native_host
 from oicoach_runtime.workflow_setup import create
 
 try:
@@ -64,6 +64,21 @@ def system_blocks(body):
 def history_blocks(body):
     return [message for message in body.get("messages", [])
             if message.get("role") not in ("system", "developer")]
+
+def memory_deltas(body):
+    result = []
+    for message in body.get("messages", []):
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else [
+            block.get("text", "") for block in content or [] if isinstance(block, dict)]
+        for text in texts:
+            try:
+                value = json.loads(text.split("\n")[-1])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("upserts"), list) and isinstance(value.get("withdrawals"), list):
+                result.append(value)
+    return result
 
 def main_request(body, marker):
     messages = body.get("messages", [])
@@ -209,7 +224,8 @@ class NativeConversation:
             if predicate():
                 return
             if self.process.poll() is not None:
-                raise RuntimeError("native OMP exited before the requested fixture state")
+                raise RuntimeError(f"native OMP exited ({self.process.returncode}) before the requested fixture state: " +
+                                   self.output.decode(errors="replace")[-3000:])
         raise TimeoutError("native OMP did not reach the requested fixture state: " +
                            self.output.decode(errors="replace")[-1500:])
 
@@ -263,6 +279,21 @@ class NativeConversation:
                 "real OMP compaction did not call the loopback summary model")
         return self.fixture.server.requests[start:]
 
+    def clear(self):
+        path = self.record["session_file"]
+        before = read_archive(path, self.fixture.root)
+        boundaries = sum(entry.get("type") == "reset_boundary" for entry in before)
+        requests = len(self.fixture.server.requests)
+        self.send("/clear\r")
+        self.until(lambda: sum(entry.get("type") == "reset_boundary"
+                               for entry in read_archive(path, self.fixture.root)) > boundaries)
+        after = read_archive(path, self.fixture.root)
+        old_messages = {entry["id"]: entry for entry in before if entry.get("type") in ("message", "custom_message")}
+        new_messages = {entry["id"]: entry for entry in after if entry.get("type") in ("message", "custom_message")}
+        require(all(new_messages.get(key) == value for key, value in old_messages.items()),
+                "/clear rewrote persisted message history")
+        require(len(self.fixture.server.requests) == requests, "/clear unexpectedly called the model")
+
     def close(self):
         try:
             if self.process.poll() is None:
@@ -279,8 +310,11 @@ class NativeConversation:
 class CacheHarness:
     def __init__(self, root, executable=None):
         self.root = Path(root)
-        executable = executable or shutil.which("omp")
-        require(bool(executable), "omp is not installed; supply --omp or install the pinned launcher")
+        # Native always replaces its executable; consistency evidence must use that same host.
+        prepared = prepare_native_host()
+        require(executable is None or Path(executable).resolve() == Path(prepared).resolve(),
+                "Cache consistency capture requires the prepared Paveway OMP launcher for both Native and RPC")
+        executable = prepared
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), CacheProvider)
         self.server.requests = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -419,6 +453,82 @@ class CacheHarness:
                              "E_summary": summary_requests, "E": e, "E2": e2, "E3": e3},
                     "normalized_usage": usage, "diagnostics": diagnostics}
 
+    def clear_scenarios(self):
+        keep, old, changed, added, latest = (
+            "CLEAR_CURRENT_KEEP", "CLEAR_OLD_DELETED", "CLEAR_OLD_UPDATE",
+            "CLEAR_NEW_ADDED", "CLEAR_UPDATED_CURRENT")
+        self.note(keep)
+
+        def put(key, content, version=0):
+            return self.api("memory.put", {"workflow_id": WORKFLOW, "key": key, "title": key,
+                "content": content, "expected_version": version})
+
+        put("clear-delete", old)
+        put("clear-update", changed)
+        with self.native() as native:
+            before = native.prompt("CLEAR_BEFORE", " historical padding" * 200)
+            native.compact()
+            native.clear()
+            unchanged = native.prompt("CLEAR_UNCHANGED_DATABASE")
+            wire = canonical(history_blocks(unchanged))
+            require(all(wire.count(text) == 1 for text in (keep, old, changed)),
+                    "/clear lost unchanged current Memory or duplicated its snapshot")
+            require("CLEAR_BEFORE" not in wire, "/clear resurrected the old conversation")
+            require(system_blocks(before) == system_blocks(unchanged), "/clear changed stable system policy")
+            steady = native.prompt("CLEAR_UNCHANGED_AGAIN")
+            require(compare_requests(unchanged, steady)["history_prefix_equal"] and
+                    canonical(history_blocks(steady)).count(keep) == 1,
+                    "unchanged post-clear turn resent Memory or rewrote its prefix")
+            self.api("memory.delete", {"workflow_id": WORKFLOW, "key": "clear-delete", "expected_version": 1})
+            put("clear-update", latest, 1)
+            put("clear-add", added)
+            mutated = native.prompt("CLEAR_CHANGED_AND_DELETED")
+            require(compare_requests(steady, mutated)["history_prefix_equal"],
+                    "post-clear changes rewrote the existing prefix")
+            require(any(note["key"] == "clear-delete" and note["reason"] == "deleted"
+                        for delta in memory_deltas(mutated) for note in delta["withdrawals"]),
+                    "deletion has no explicit withdrawal on the actual wire")
+            native.clear()
+            clean = native.prompt("CLEAR_AFTER_MUTATIONS")
+            visible = canonical(history_blocks(clean))
+            require(all(visible.count(text) == 1 for text in (keep, latest, added)),
+                    "new epoch failed to restore current note versions")
+            require(old not in visible and changed not in visible and "CLEAR_UNCHANGED_DATABASE" not in visible,
+                    "old receipts crossed reset boundary")
+            original = dict(native.record)
+        with self.native() as resumed:
+            restarted = resumed.prompt("CLEAR_RESTARTED")
+            require(resumed.record["session_file"] == original["session_file"] and
+                    compare_requests(clean, restarted)["history_prefix_equal"],
+                    "post-clear restart did not preserve the effective context prefix")
+            require(canonical(history_blocks(restarted)).count(keep) == 1,
+                    "restart resent unchanged Memory")
+            resumed.compact()
+            compacted = resumed.prompt("CLEAR_COMPACTED")
+            require(keep in canonical(compacted) and old not in canonical(compacted),
+                    "post-clear compaction lost current Memory or revived deleted Memory")
+            put("clear-update", "CLEAR_UPDATED_AFTER_COMPACTION", 2)
+            self.api("memory.delete", {"workflow_id": WORKFLOW, "key": "clear-add", "expected_version": 1})
+            final = resumed.prompt("CLEAR_COMPACTION_UPDATE_DELETE")
+            require(compare_requests(compacted, final)["history_prefix_equal"],
+                    "post-clear compaction recovery changed after later update/deletion")
+            require("CLEAR_UPDATED_AFTER_COMPACTION" in canonical(final),
+                    "latest update is missing after compaction")
+            require(any(note["key"] == "clear-add" and note["reason"] == "deleted"
+                        for delta in memory_deltas(final) for note in delta["withdrawals"]),
+                    "post-compaction deletion has no explicit withdrawal")
+            resumed.clear()
+            final_clean = resumed.prompt("CLEAR_FINAL_EPOCH")
+            final_wire = canonical(history_blocks(final_clean))
+            require(keep in final_wire and "CLEAR_UPDATED_AFTER_COMPACTION" in final_wire and
+                    all(text not in final_wire for text in (old, changed, added, latest)),
+                    "old Memory/compaction state crossed the final clear")
+        return {"unchanged_reinjected_once": True, "old_history_preserved": True,
+                "restart_prefix_equal": True, "compaction_then_changes_prefix_equal": True,
+                "wire": {"before": before, "unchanged": unchanged, "mutated": mutated,
+                         "clean": clean, "restarted": restarted, "compacted": compacted,
+                         "final": final, "final_clean": final_clean}}
+
     def ask(self, marker):
         start = len(self.server.requests)
         result = subprocess.run([sys.executable, "-m", "oicoach_runtime", "ask", "--config", str(self.path),
@@ -473,13 +583,13 @@ class CacheHarness:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--omp", help="Installed omp or the public pinned launcher")
+    parser.add_argument("--omp", help="Prepared Paveway launcher only; alternate builds are rejected to keep Native/RPC comparable")
     parser.add_argument("--output", type=Path, help="Write complete synthetic capture JSON")
     arguments = parser.parse_args()
     observations = {"provider": "loopback fixture, not real cache proof", "external_calls": False,
                     "cost_label": "OMP calculated, not actual invoice", "scenarios": {}}
     try:
-        for name, method in (("native", "native_scenarios"), ("rpc", "rpc_scenario")):
+        for name, method in (("native", "native_scenarios"), ("rpc", "rpc_scenario"), ("clear", "clear_scenarios")):
             with tempfile.TemporaryDirectory(prefix="pw-cache-omp-") as directory:
                 with CacheHarness(Path(directory), arguments.omp) as fixture:
                     capture = {"all_wire_requests": fixture.server.requests}
@@ -498,7 +608,7 @@ def main():
     finally:
         if arguments.output:
             arguments.output.write_text(json.dumps(observations, ensure_ascii=False, indent=2) + "\n")
-    print(json.dumps({"probe": "prompt-cache", "scenarios": ["A", "B", "C", "D", "E"],
+    print(json.dumps({"probe": "prompt-cache", "scenarios": ["A", "B", "C", "D", "E", "clear/restart"],
                       "invariants_passed": True, "real_cache_proof": False,
                       "capture_output": str(arguments.output) if arguments.output else None}))
     return 0

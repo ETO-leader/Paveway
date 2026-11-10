@@ -91,7 +91,9 @@ class Terminal:
         self.case.assertFalse(pending, "Terminal input did not drain")
 
     def status(self):
-        return next((y for y, row in enumerate(self.screen.display) if "PAVEWAY" in row), None)
+        # ASCII splash branding is a separate centered PAVEWAY row, not the footer.
+        return next((y for y, row in enumerate(self.screen.display)
+                     if "PAVEWAY" in row and row.strip() != "PAVEWAY"), None)
 
     def cells(self):
         # A PTY read may split OMP's erase/repaint. Sample only after its

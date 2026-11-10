@@ -1,5 +1,7 @@
 # Prompt Cache：实现与验证
 
+> 本文记录首次重构。基于 b809568 的 `/clear`、分支统计、状态持久化与原生压缩修复见 [后续审计与实测](prompt-cache-audit.md)。
+
 ## 结论和验证边界
 
 动态 Runtime Memory 已从 System Prompt 移出。真实 OMP 的隔离 loopback 请求捕获证明：相同配置下，Memory 更新、Native 重启及后台新进程 `--resume` 不改变系统块或已经发送的消息前缀。Compaction 本身改变历史；其后的恢复块保持稳定，后续 Memory 更新仍只扩展请求。
@@ -55,7 +57,7 @@ Memory 的出站投影从首次请求起就固定；不是每次更新后重新�
 - 后台：`oicoach-runtime cache-stats --workflow ID --task ID --config CONFIG --json`。
 - 三者共用只读 `cache.stats` 和 `cache_usage.session_usage()`，不为统计调用模型或添加提示词。
 
-读实际 OMP JSONL（含物理 title slot），提供最近 20 个持久化调用、全文件累计和可判定时的分支累计；压缩不丢累计。统计范围明确限于 Session 内已持久化的记录，不声称完整覆盖未落盘的辅助请求、中断消耗、其他子 Agent 文件或实际发票。
+读实际 OMP JSONL（含物理 title slot），提供最近 20 个持久化调用、全文件累计和最后持久化逻辑条目的祖先链累计；后者不代表实时活动分支，详见后续审计。压缩不丢全文件累计。统计范围限于 Session 内已持久化的记录，不声称完整覆盖未落盘的辅助请求、中断消耗、其他子 Agent 文件或实际发票。
 
 Input/Output、Cache Read/Write 和 cost 都是 **OMP 归一化数据**，不是原始响应。Anthropic、OpenAI-compatible、Google、Ollama 等映射不同，部分不报告写缓存；OMP 又会把缺失缓存字段变为 0。因此缓存零/缺失均保守输出 `null`（unavailable），不伪造命中率；正值可观测。部分累计另有 observed_subtotals/available_call_counts。仅当 input/read/write 的分母可用时计算 `read / (input + read + write)`。费用标记为 OMP 计算值，不是实际账单。
 

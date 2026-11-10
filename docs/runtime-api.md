@@ -158,7 +158,7 @@ oicoach-runtime cache-stats --conversation CONVERSATION_ID --config CONFIG --jso
 oicoach-runtime cache-stats --workflow WORKFLOW_ID --task TASK_ID --config CONFIG --json
 ```
 
-Native 使用 `/paveway cache`。两者调用同一个只读 `cache.stats` IPC，参数二选一：`{conversation_id}` 或 `{workflow_id,task_id}`。不启动模型、不修改 Session、不向提示词注入 usage。输出最近 20 次持久化调用、整个 Session 文件累计值及可判定时的当前分支祖先累计值；Compaction 不清零累计值。大于既有 16 MiB/1 MiB 行归档边界时拒绝读取，不伪装成完整统计。
+Native 使用 `/paveway cache`。两者调用同一个只读 `cache.stats` IPC，参数二选一：`{conversation_id}` 或 `{workflow_id,task_id}`。不启动模型、不修改 Session、不向提示词注入 usage。输出最近 20 次持久化调用、整个 Session 文件累计值及树结构可判定时的 `last_persisted_entry_ancestry` 累计值（最后一条逻辑记录及其父链）；每次调用的 `on_last_persisted_entry_ancestry` 仅表示属于这条物理祖先链，不表示当前活动分支。最终追加的离分支 `model_usage` 也会改变该物理范围；OMP 可不写记录就切换活动叶，`activeLeafId` 回放标记也不能证明实时状态，因此实时活动分支统计 unavailable，不再输出 `active_branch`／`on_active_branch`。Compaction 不清零全文件累计值。大于既有 16 MiB/1 MiB 行归档边界时拒绝读取，不伪装成完整统计。
 
 数据源是 `omp_session_jsonl`，不是原始 Provider 响应：Input 是 OMP 归一化的未缓存输入；Cache Read/Write 为其缓存桶。OMP 会将缺失缓存字段归零，不能反推 Provider 是否报告了真实 0，所以零/缺失或未完成 usage 以 `null`（unavailable）表示。正值保留；部分累计用 `observed_subtotals` 和 `available_call_counts` 表明覆盖度。只有各组成量可靠时计算 `cacheRead / (input + cacheRead + cacheWrite)`，注明 OMP 归一化口径。`omp_calculated_cost_usd` 是 OMP 计算费用，不是实际账单；原始发票费用 unavailable。
 

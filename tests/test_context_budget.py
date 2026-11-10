@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import subprocess
 import unittest
 from importlib.resources import files
@@ -15,16 +14,23 @@ from oicoach_runtime.config import load_config
 
 
 class ContextBudgetTests(unittest.TestCase):
+    def native_runtime(self):
+        manifest = Path(os.environ.get("PAVEWAY_OMP_CACHE",
+            str(Path.home() / ".cache/paveway/omp/18.16.0"))) / "runtime.json"
+        if not manifest.is_file():
+            self.skipTest("archival native algorithm checks require the prepared Paveway host")
+        runtime = json.loads(manifest.read_text())
+        return runtime["bun"], str(Path(runtime["source"]) / "packages/coding-agent/src/main.ts")
+
     def test_token_count_is_not_bytes_and_accepts_special_token_text(self):
         self.assertLess(count_tokens("a " * 15000), len(("a " * 15000).encode()))
         self.assertGreater(count_tokens("漢字🙂" * 5000), LIMIT_TOKENS)
         self.assertGreater(count_tokens("<|endoftext|>"), 0)
         self.assertIn("no fixed conversation token limit", CONTEXT_PROMPT)
 
-    @unittest.skipUnless(shutil.which("bun") and shutil.which("omp"), "native OMP tokenizer requires bun and omp")
     def test_native_window_budget_tool_pairs_multibyte_and_archive_immutability(self):
         module = str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))
-        host = str(Path(shutil.which("omp")).resolve())
+        bun, host = self.native_runtime()
         script = r'''
 const {Tokenizer} = await import(Bun.resolveSync("@oh-my-pi/pi-agent-core", process.argv[1]));
 const {windowMessages,conversationJson} = await import(process.argv[2]);
@@ -63,7 +69,7 @@ const checks = fixtures.map(messages=>{
 });
 console.log(JSON.stringify(checks));
 '''
-        process = subprocess.run([shutil.which("bun"), "-e", script, host, module],
+        process = subprocess.run([bun, "-e", script, host, module],
                                  capture_output=True, text=True, timeout=40)
         self.assertEqual(process.returncode, 0, process.stderr)
         checks = json.loads(process.stdout)
@@ -90,10 +96,9 @@ console.log(JSON.stringify(checks));
         self.assertIn("FOUND_PUBLIC_CANDIDATE_10", checks[-2]["text"])
         self.assertNotIn("PRIVATE_THOUGHTS", checks[-2]["text"])
 
-    @unittest.skipUnless(shutil.which("bun") and shutil.which("omp"), "native OMP tokenizer requires bun and omp")
     def test_guard_failure_stops_before_inference_without_exposing_content(self):
         module = str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))
-        host = str(Path(shutil.which("omp")).resolve())
+        bun, host = self.native_runtime()
         script = r'''
 const {default: guard, installContextGuard} = await import(process.argv[2]);
 // OMP's factory loader turns process.exit into a catchable exception.
@@ -113,7 +118,7 @@ process.stdout.write("INFERENCE_REACHED\n");
 '''
         for stage in ("registration", "admission", "context"):
             with self.subTest(stage=stage):
-                process = subprocess.run([shutil.which("bun"), "-e", script, host, module, stage],
+                process = subprocess.run([bun, "-e", script, host, module, stage],
                                          capture_output=True, text=True, timeout=40)
                 self.assertEqual(process.returncode, -9, process.stderr)
                 self.assertIn("paveway_context_failed", process.stderr)
