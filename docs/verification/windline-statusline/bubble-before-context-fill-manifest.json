@@ -1,0 +1,8 @@
+{
+  "image": "bubble-before-context-fill-120.png",
+  "image_sha256": "974e3d38307a042a7c64ca8f1aa6185914172a16f18aba3c32c3587bd6f8a82b",
+  "source": "isolated-native-pty-before-context-fill",
+  "capture_directory": "/tmp/paveway-bubble-before-context-fill",
+  "json_sha256": "59def6ad4e53d637bec0f8e5598b95b029a6e0bd51f5ea9b8b04a04699d774c1",
+  "ansi_sha256": "56add6afb1365b524f3a2ee02b7f46f7ed55ddf075970db2364e70e2370a034d"
+}

@@ -86,8 +86,8 @@ await browser.close({{all:true,kill:true}});'''
         main = next(body for body in self.server.requests[count:] if
             self.is_prompt_request(body, "MEMORY_FRESH_SESSION_PROBE"))
         system = json.dumps([m for m in main["messages"] if m["role"] == "system"])
-        self.assertIn("Runtime memory snapshot", system)
-        self.assertIn("MEMORY_NATIVE_OK", system)
+        self.assertNotIn("MEMORY_NATIVE_OK", system)
+        self.assertIn("MEMORY_NATIVE_OK", json.dumps([m for m in main["messages"] if m["role"] != "system"]))
         self.assertNotIn("NATIVE_MEMORY_PROBE", json.dumps(main["messages"]))
 
     def test_native_memory_tool_crud_loop_enforces_versions_and_tombstone(self):

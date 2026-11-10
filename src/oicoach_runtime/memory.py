@@ -125,7 +125,7 @@ class Memory:
             (workflow_id, task, self.store.timestamp(), query, offset)).fetchall()
         return [{k: v for k, v in self._decode(row).items() if k != "content"} for row in rows]
 
-    def context(self, workflow_id, task_id):
+    def context(self, workflow_id, task_id, known=None):
         workflow_id, task = scope(workflow_id, task_id)
         rows = self.store.connection.execute("""SELECT * FROM memory_notes
             WHERE workflow_id=? AND task_id IN ('',?) AND deleted=0
@@ -143,6 +143,30 @@ class Memory:
                 result["truncated"] = True
         if len(rows) == 101:
             result["truncated"] = True
+
+        # Only inspect previously supplied scoped identities. Omission from the
+        # bounded selection is not evidence of deletion.
+        if known is not None:
+            if not isinstance(known, list) or len(known) > 101:
+                raise RuntimeContractError("Invalid Memory context identities")
+            selected = {(note["task_id"], note["key"]) for note in result["notes"]}
+            result["withdrawn"] = []
+            for item in known:
+                if not isinstance(item, dict) or set(item) != {"task_id", "key"}:
+                    raise RuntimeContractError("Invalid Memory context identity")
+                scope(workflow_id, item["task_id"] or None)
+                validate_id(item["key"])
+                if item["task_id"] not in ("", task):
+                    raise ConflictError("Memory context belongs to another task")
+                if (item["task_id"], item["key"]) in selected:
+                    continue
+                row = self.store.connection.execute(
+                    "SELECT deleted,expires_at FROM memory_notes WHERE workflow_id=? AND task_id=? AND key=?",
+                    (workflow_id, item["task_id"], item["key"])).fetchone()
+                reason = "deleted" if row is None or row["deleted"] else (
+                    "expired" if row["expires_at"] and row["expires_at"] <= self.store.timestamp()
+                    else "outside_current_context")
+                result["withdrawn"].append({"workflow_id": workflow_id, **item, "reason": reason})
         return result
 
 

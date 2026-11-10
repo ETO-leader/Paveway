@@ -1,0 +1,31 @@
+diff --git a/packages/coding-agent/src/modes/interactive-mode.ts b/packages/coding-agent/src/modes/interactive-mode.ts
+index b65a749..29a9ae2 100644
+--- a/packages/coding-agent/src/modes/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive-mode.ts
+@@ -4332,7 +4332,7 @@ export class InteractiveMode implements InteractiveModeContext {
+ 		});
+ 	}
+ 	syncComposerShape(): void {
+-		const shape = cfgComposerShape.get(settings);
++		const shape = this.editor.composerStyle ?? cfgComposerShape.get(settings);
+ 		const style = getComposerStyle(shape);
+ 		this.composer.setPreferences({ composerShape: shape });
+ 		this.statusLine.attachToEditor(this.editor, style);
+diff --git a/packages/tui/src/prompt/custom-editor.ts b/packages/tui/src/prompt/custom-editor.ts
+index eb67bfe..1991139 100644
+--- a/packages/tui/src/prompt/custom-editor.ts
++++ b/packages/tui/src/prompt/custom-editor.ts
+@@ -461,6 +461,13 @@ export type ComposerChipDescriptor =
+  * Custom editor that handles configurable app-level shortcuts for coding-agent.
+  */
+ export class CustomEditor extends Editor {
++	/**
++	 * Optional registered composer style owned by an extension editor factory.
++	 * InteractiveMode honors it across factory swaps and settings refreshes;
++	 * undefined retains the user's configured shape. Does not persist settings.
++	 */
++	composerStyle: string | undefined = undefined;
++
+ 	#spelling = new MacOSSpellingProvider();
+ 	/** The word being typed: its typo mark waits until the caret leaves it. */
+ 	#typing = new TypingWordTracker();

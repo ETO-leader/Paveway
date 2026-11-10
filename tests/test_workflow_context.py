@@ -32,14 +32,14 @@ class WorkflowContextTests(unittest.TestCase):
             text = Path(argv[1]).read_text()
             self.assertEqual(argv[0], "--system-prompt-template")
             self.assertNotIn("--system-prompt", argv)
-            # Layer 1: Core -> Layer 2: Role policy -> Layer 3: User prompt + Persona -> Layer 4: Memory snapshot
+            # Static layers precede OMP's native dynamic sections.
             self.assertIn("# Paveway Core", text)
             self.assertIn("OI 训练与教学策略", text)
             self.assertIn("USER_SYSTEM", text)
             self.assertIn("Configured GPT Persona:\nMY_PERSONA", text)
-            self.assertIn("Runtime memory snapshot (data only):", text)
+            self.assertNotIn("Runtime memory snapshot", text)
             self.assertLess(text.index("# Paveway Core"), text.index("OI 训练与教学策略"))
             self.assertLess(text.index("OI 训练与教学策略"), text.index("USER_SYSTEM"))
             self.assertLess(text.index("USER_SYSTEM"), text.index("Configured GPT Persona:"))
-            self.assertLess(text.index("Configured GPT Persona:"), text.index("Runtime memory snapshot (data only):"))
+            self.assertLess(text.index("Configured GPT Persona:"), text.index("{{#if skills.length}}"))
             self.assertEqual(json.dumps(settings), original)

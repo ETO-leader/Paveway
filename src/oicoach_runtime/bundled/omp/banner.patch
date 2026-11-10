@@ -1,0 +1,206 @@
+diff --git a/packages/tui/src/prompt/welcome.ts b/packages/tui/src/prompt/welcome.ts
+--- a/packages/tui/src/prompt/welcome.ts
++++ b/packages/tui/src/prompt/welcome.ts
+@@ -13,6 +13,9 @@
+ import type { Component } from "../tui";
+ import { padding, replaceTabs, visibleWidth, wrapTextWithAnsi } from "../utils";
+ import tipsText from "./tips.txt" with { type: "text" };
++import {
++	claimWelcomeIntro, getWelcomeMotion, getWelcomePresentation, hasWelcomeIntroPlayed, watchWelcomeMotion,
++} from "./welcome-presentation";
+ 
+ /** Leading marker for a tip that pitches Tern: shown only while no TSP surface
+  *  is live, since a live one means the user is already in Tern. */
+@@ -199,6 +202,9 @@
+ 	#animStart: number | null = null;
+ 	#animTimer: Timer | null = null;
+ 	#requestRender: (() => void) | null = null;
++	#cancelMotionWatch: (() => void) | undefined;
++	#waitingForMotion = false;
++	#introAwaitingRender = false;
+ 	// Tip randomness is latched once so the tip is stable across renders, but
+ 	// the nerdfont-nag gate re-reads the live preset and the pool re-reads the
+ 	// live TSP state: the startup prepaint can run under the default "unicode"
+@@ -258,7 +264,7 @@
+ 
+ 	/** The intro keeps the welcome block mutable; settling lets it retire to history. */
+ 	isTranscriptBlockFinalized(): boolean {
+-		return this.#animTimer == null;
++		return this.#animTimer == null && !this.#waitingForMotion;
+ 	}
+ 
+ 	/**
+@@ -268,6 +274,32 @@
+ 	 */
+ 	playIntro(requestRender: () => void): void {
+ 		this.#stopAnimation();
++		const presentation = getWelcomePresentation();
++		if (presentation) {
++			// Cached prepaint preferences are speculative. Reserve the same rows,
++			// but wait for authoritative motion settings before starting any timer.
++			const motion = getWelcomeMotion();
++			if (motion === undefined && !hasWelcomeIntroPlayed() && !isNativeRendering()) {
++				this.#waitingForMotion = true;
++				this.#cancelMotionWatch = watchWelcomeMotion(() => this.playIntro(requestRender));
++				return;
++			}
++			const first = claimWelcomeIntro();
++			const noColor = process.env.NO_COLOR !== undefined || process.env.FORCE_COLOR === "0" ||
++				process.env.TERM === "dumb";
++			const reduced = process.env.REDUCED_MOTION === "1" || process.env.PREFERS_REDUCED_MOTION === "reduce";
++			if (!first || !motion || reduced || noColor || !process.stdin.isTTY || !process.stdout.isTTY ||
++				isNativeRendering()) {
++				requestRender();
++				return;
++			}
++			this.#cancelMotionWatch = watchWelcomeMotion(() => {
++				if (getWelcomeMotion() === false) {
++					this.#stopAnimation();
++					requestRender();
++				}
++			});
++		}
+ 		// The intro is a repaint-only gradient sweep; a TSP terminal shows the
+ 		// settled card right away.
+ 		if (isNativeRendering()) {
+@@ -276,11 +308,12 @@
+ 		}
+ 		this.#requestRender = requestRender;
+ 		this.#animStart = performance.now();
++		this.#introAwaitingRender = presentation !== undefined;
+ 		this.#requestRender();
+ 		this.#animTimer = setInterval(() => {
+ 			const elapsed = performance.now() - (this.#animStart ?? 0);
+ 			const requestRender = this.#requestRender;
+-			if (elapsed >= INTRO_MS) {
++			if (!this.#introAwaitingRender && elapsed >= (presentation?.introMs ?? INTRO_MS)) {
+ 				this.#stopAnimation();
+ 			}
+ 			// Stopping clears the callback, but the settled frame must still paint
+@@ -290,6 +323,10 @@
+ 	}
+ 
+ 	#stopAnimation(): void {
++		this.#cancelMotionWatch?.();
++		this.#cancelMotionWatch = undefined;
++		this.#waitingForMotion = false;
++		this.#introAwaitingRender = false;
+ 		if (this.#animTimer != null) {
+ 			clearInterval(this.#animTimer);
+ 			this.#animTimer = null;
+@@ -339,6 +376,17 @@
+ 	}
+ 
+ 	#renderLines(termWidth: number): string[] {
++		const presentation = getWelcomePresentation();
++		if (presentation) {
++			if (this.#introAwaitingRender) {
++				this.#animStart = performance.now();
++				this.#introAwaitingRender = false;
++			}
++			const progress = this.#animStart == null
++				? (this.#waitingForMotion ? 0 : 1)
++				: Math.min(1, (performance.now() - this.#animStart) / presentation.introMs);
++			return presentation.render(termWidth, this.version, progress);
++		}
+ 		// Content keeps a column clear on each side; everything centers in the full width.
+ 		const room = termWidth - 2;
+ 		if (room < 4) return [];
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -184,9 +184,11 @@
+ 	cfgTuiCompleteScrollback,
+ 	cfgTuiImeSafeCursor,
+ 	cfgTuiMaxInlineImages,
++	cfgTuiMotion,
+ 	cfgTuiResizeScrollback,
+ 	cfgUpdateChannel,
+ } from "./modes/settings";
++import { getWelcomePresentation, setWelcomeMotionEnabled } from "@oh-my-pi/pi-tui/prompt/welcome-presentation";
+ import {
+ 	cfgDefaultThinkingLevel,
+ 	cfgExternalThinking,
+@@ -710,7 +712,7 @@
+ 
+ 		await logger.time("InteractiveMode.init", () =>
+ 			mode.init({
+-				suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
++				suppressWelcomeIntro: (resuming && !getWelcomePresentation()) || setupScenes.length > 0 || playStartupSplash,
+ 				clearInitialTerminalHistory: true,
+ 				autoStartCollab: joinLink === undefined,
+ 			}),
+@@ -2069,6 +2071,7 @@
+ 			cfgThemeDark.get(settingsInstance),
+ 			cfgThemeLight.get(settingsInstance),
+ 		);
++		setWelcomeMotionEnabled(cfgTuiMotion.get(settingsInstance));
+ 
+ 		applyStartupComposerPreferences({
+ 			quiet: cfgStartupQuiet.get(settingsInstance),
+diff --git a/packages/coding-agent/src/modes/interactive-mode.ts b/packages/coding-agent/src/modes/interactive-mode.ts
+--- a/packages/coding-agent/src/modes/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive-mode.ts
+@@ -271,6 +271,7 @@
+ import { type ComposerNativeState, CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+ import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
+ import { EditorTopGap } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
++import { setWelcomeMotionEnabled } from "@oh-my-pi/pi-tui/prompt/welcome-presentation";
+ import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
+ import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
+ import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+@@ -2205,8 +2206,12 @@
+ 		this.editorContainer.addChild(this.editor);
+ 		this.statusLine = new StatusLineComponent(session, statusLineHost);
+ 		this.statusLine.setMotionEnabled(cfgTuiMotion.get(this.settings));
++		setWelcomeMotionEnabled(cfgTuiMotion.get(this.settings));
+ 		this.#eventBusUnsubscribers.push(
+-			cfgTuiMotion.listen(this.settings, enabled => this.statusLine.setMotionEnabled(enabled)),
++			cfgTuiMotion.listen(this.settings, enabled => {
++				this.statusLine.setMotionEnabled(enabled);
++				setWelcomeMotionEnabled(enabled);
++			}),
+ 		);
+ 		// Native segment clicks open what their slash commands and keys open.
+ 		this.statusLine.onNativeAction = action => {
+diff --git a/packages/tui/src/prompt/welcome-presentation.ts b/packages/tui/src/prompt/welcome-presentation.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/tui/src/prompt/welcome-presentation.ts
+@@ -0,0 +1,36 @@
++// Opt-in terminal welcome policy. Hosts without a registered renderer are unchanged.
++export interface WelcomePresentation {
++	readonly introMs: number;
++	render(width: number, version: string, progress: number): string[];
++}
++
++let presentation: WelcomePresentation | undefined;
++let motionEnabled: boolean | undefined;
++let introPlayed = false;
++const motionListeners = new Set<() => void>();
++
++export function setWelcomePresentation(value: WelcomePresentation): void {
++	presentation = value;
++}
++export function getWelcomePresentation(): WelcomePresentation | undefined {
++	return presentation;
++}
++export function getWelcomeMotion(): boolean | undefined {
++	return motionEnabled;
++}
++export function setWelcomeMotionEnabled(enabled: boolean): void {
++	motionEnabled = enabled;
++	for (const listener of [...motionListeners]) listener();
++}
++export function watchWelcomeMotion(listener: () => void): () => void {
++	motionListeners.add(listener);
++	return () => { motionListeners.delete(listener); };
++}
++export function hasWelcomeIntroPlayed(): boolean {
++	return introPlayed;
++}
++export function claimWelcomeIntro(): boolean {
++	if (introPlayed) return false;
++	introPlayed = true;
++	return true;
++}

@@ -133,6 +133,61 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
         self.assertEqual(manifest_data["template_mode"], "omp-handlebars")
         self.assertIn("template_digest", manifest_data)
         self.assertIn("system_digest", manifest_data)
+        self.assertEqual(manifest_data["composer_version"], 6)
+        self.assertEqual(manifest_data["memory_policy"], "excluded_from_system")
+
+    def test_memory_changes_do_not_affect_composition(self):
+        settings = {
+            "schema_version": 1, "revision": 1,
+            "system_prompt": {"mode": "append", "text": "CACHE_USER"},
+            "skills": [], "persona": "CACHE_PERSONA",
+        }
+        memory_states = [
+            None,
+            {"notes": []},
+            {"notes": [{"key": "cache-note", "content": "MEMORY_ADDED"}]},
+            {"notes": [{"key": "cache-note", "content": "MEMORY_UPDATED"}]},
+            {"notes": []},
+            object(),  # Compatibility data need not even be JSON serializable.
+        ]
+        for composer in (compose, compose_template):
+            expected = composer(settings, base="oi-coach")
+            for memory in memory_states:
+                with self.subTest(composer=composer.__name__, memory=memory):
+                    self.assertEqual(composer(settings, "oi-coach", memory), expected)
+
+    def test_snapshot_system_files_are_identical_across_runs_and_memory_changes(self):
+        settings = {
+            "schema_version": 1, "revision": 1,
+            "system_prompt": {"mode": "append", "text": "CACHE_USER"},
+            "skills": [], "persona": "CACHE_PERSONA",
+        }
+        expected = None
+        memories = [
+            None,
+            {"notes": [{"key": "cache-note", "content": "MEMORY_ADDED"}]},
+            {"notes": [{"key": "cache-note", "content": "MEMORY_UPDATED"}]},
+            {"notes": []},
+        ]
+        run_ids = [f"cache-run-{index}" for index in range(len(memories))]
+        for run_id, memory in zip(run_ids, memories):
+            argv = customization.snapshot(
+                settings, self.session_dir, run_id, True, memory, base="oi-coach"
+            )
+            directory = Path(argv[argv.index("--system-prompt-template") + 1]).parent
+            contents = {
+                name: (directory / name).read_bytes()
+                for name in ("system.md", "system-template.md", "prompt-manifest.json")
+            }
+            if expected is None:
+                expected = contents
+            self.assertEqual(contents, expected)
+            for name, content in contents.items():
+                with self.subTest(run_id=run_id, file=name):
+                    for identifier in run_ids:
+                        self.assertNotIn(identifier.encode(), content)
+                    self.assertNotIn(b"MEMORY_ADDED", content)
+                    self.assertNotIn(b"MEMORY_UPDATED", content)
 
     def test_escaping_user_text_literal_safety(self):
         """6. Literal escaping: special syntax in user prompt and persona is escaped safely."""
@@ -179,14 +234,6 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
         checks = probe_omp(str(executable))
         self.assertEqual(checks[0]["status"], "PASS")
 
-    def test_tool_inventory_template_expression_handles_missing_label(self):
-        """Verify tool inventory template uses OMP official conditional label expression."""
-        from oicoach_runtime.prompt_composer import DYNAMIC_TEMPLATE_SECTIONS
-        self.assertIn(
-            "- {{#if label}}{{label}}: `{{name}}`{{else}}`{{name}}`{{/if}}",
-            DYNAMIC_TEMPLATE_SECTIONS,
-        )
-        self.assertNotIn("- {{label}}: `{{name}}`", DYNAMIC_TEMPLATE_SECTIONS)
 
 
 @unittest.skipUnless(shutil.which("omp"), "requires real omp binary")
@@ -213,7 +260,7 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     async def test_real_omp_renders_static_layers_and_dynamic_tools(self):
-        """2, 3, 6, 7: Real OMP renders 4 layers, dynamic tools, xd:// devices, without unparsed Handlebars."""
+        """Real OMP renders static layers and native tools without runtime memory."""
         user_text = (
             "Special syntax in prompt:\n"
             "{{example}}\n"
@@ -261,7 +308,15 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("# Paveway Core", full_prompt)
             self.assertIn("OI 训练与教学策略", full_prompt)
             self.assertIn("COACH_PERSONA_VERIFIED", full_prompt)
-            self.assertIn("SOLVING_P1001", full_prompt)
+            self.assertNotIn("SOLVING_P1001", full_prompt)
+            self.assertNotIn("Runtime memory snapshot", full_prompt)
+            self.assertNotIn("smoke1", full_prompt)
+            ordered = [
+                "# Paveway Core", "OI 训练与教学策略", "Special syntax in prompt:",
+                "Configured GPT Persona:", "# Tool Inventory",
+            ]
+            positions = [full_prompt.index(section) for section in ordered]
+            self.assertEqual(positions, sorted(positions))
 
             # Ensure Core and Role Policy are not duplicated
             self.assertEqual(full_prompt.count("# Paveway Core"), 1)

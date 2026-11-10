@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Checkout entrypoint for the wheel-bundled Paveway OMP launcher."""
+import os
+import sys
+from pathlib import Path
+
+launcher = Path(__file__).resolve().parents[2] / "src/oicoach_runtime/bundled/omp/omp"
+os.execv(sys.executable, [sys.executable, str(launcher), *sys.argv[1:]])

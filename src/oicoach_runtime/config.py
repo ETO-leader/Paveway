@@ -51,6 +51,12 @@ class QueueConfig:
 
 
 @dataclass(frozen=True)
+class StatusLineConfig:
+    # auto: Powerline for nerd/unicode, ASCII parentheses for ascii. powerline/plain are explicit.
+    cap_style: str = "auto"
+
+
+@dataclass(frozen=True)
 class _LegacyTijianConfig:
     """Validate retired config only; never enables the removed CLI bridge."""
 
@@ -70,6 +76,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
+    statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
     # Preserve exactly the supplied legacy fields during configuration rewrites.
     # This is not an active integration and must never be used to launch Tijian.
     legacy_tijian: dict | None = field(default=None, repr=False)
@@ -170,19 +177,22 @@ def load_config(path: Path) -> Config:
     queue = _section(QueueConfig, raw.get("queue", {}))
     if queue.expired_event_policy != "keep" or queue.uncertain_event_policy != "manual_review":
         raise ConfigError("Only keep/manual_review queue policies are supported")
+    statusline = _section(StatusLineConfig, raw.get("statusline", {}))
+    if statusline.cap_style not in ("auto", "powerline", "plain"):
+        raise ConfigError("statusline.cap_style must be auto, powerline or plain")
     legacy_tijian = None
     if "tijian" in raw:
         _section(_LegacyTijianConfig, raw["tijian"])
         legacy_tijian = dict(raw["tijian"])
     return Config(state, root, server=server, agent=agent, restart=restart, queue=queue,
-                  legacy_tijian=legacy_tijian)
+                  statusline=statusline, legacy_tijian=legacy_tijian)
 
 
 def config_text(config: Config) -> str:
     # JSON string quoting is compatible with TOML basic strings for filesystem paths.
     lines = ["schema_version = 1", f"state_dir = {json.dumps(str(config.state_dir), ensure_ascii=False)}",
              f"workflow_root = {json.dumps(str(config.workflow_root), ensure_ascii=False)}"]
-    for name in ("server", "agent", "restart", "queue"):
+    for name in ("server", "agent", "restart", "queue", "statusline"):
         section = getattr(config, name)
         lines.extend(["", f"[{name}]"])
         for f in fields(section):

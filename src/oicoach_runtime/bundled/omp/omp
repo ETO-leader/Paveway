@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Launch the already-prepared, isolated Paveway OMP runtime."""
+import runpy
+import sys
+from pathlib import Path
+
+try:
+    runpy.run_path(str(Path(__file__).resolve().with_name("install.py")))["launch"]()
+except (OSError, RuntimeError) as error:
+    print(f"Paveway OMP: {error}", file=sys.stderr)
+    raise SystemExit(1)

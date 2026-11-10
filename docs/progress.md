@@ -402,7 +402,6 @@ Git 稽核覆盖源代码全部可达历史 187 个 blob 及工作区，私密�
 
 依据契约 D4 保留旧入口，M1–M6 不提前验收；未修改生产 schema、用户数据、OMP／Tijian 上游或默认启动器。Windows Tijian MCP、真实模型、Browser／Subagent 未测试。复现命令、日志、失败样例与回退边界见 [本机复验记录](verification/omp-m0-wsl-2026-10-30.md)。
 
-
 ## 2026-10-30 — M0 范围变更：取消固定 10k 限制
 
 用户在原生重构期间明确回复「取消 10k limit」，取代先前固定 Guard 门槛。后台不再加载预算扩展，只验证原生 RPC ready/protocol；prompt 不再宣称 10k 裁剪，记忆快照去掉 token 上限，仅保留 64 KiB IPC 字节边界。用户自定义 prompt、Skill、既存 event.md 和历史原文均未改写。旧预算算法仅保留历史探针，不进入默认路径。
@@ -493,6 +492,131 @@ Persona 改动要求新对话；旧对话续接被明确拒绝，原文、配置
 
 对已有长 Skill 完成真实 daemon 校验：schedule 接口先加载 Workflow／Skills，再在入队前拒绝故意设置的无效 task_id；返回预期 invalid_input 而非 invalid_workflow。前后事件计数与自定义文件字节均不变，无新测试事件或模型请求。此检查证明服务已加载新校验，不冒充完成了一次真实模型唤醒。源码中的普通 ask／聊天消息仍有独立 32KiB 上限，不是 Skill 正文上限；本次没有扩大普通消息或数据库 payload 边界。
 
+## 2026-11-02 — MCP 工具输出与上下文 Token 效率优化
+
+更新 `src/oicoach_runtime/bundled/coach.md`，增加工具输出与上下文效率要求，减少 Agent 使用 MCP 时不必要的大体积工具结果进入模型上下文的问题。
+
+新增以下原则：
+
+- 调用可能返回大量内容的工具前，先判断任务是否需要模型实际理解完整原始内容。
+- 对于单纯复制、导出、转发或保存数据的任务，优先通过代码或工具管道直接传递，避免完整内容反复进入模型上下文。
+- 只需要部分字段、统计量或筛选结果时，优先在工具执行层完成投影、过滤和聚合。
+- 确实需要分析、推导或证明的任务仍须获取完整必要证据，不得为节省 Token 牺牲正确性。
+- 不假定所有 MCP 工具均支持服务端字段过滤或结果重定向，具体处理方式取决于当前实际工具能力。
+
+本次只修改 Agent 指导文本，没有新增 MCP 输出过滤 API、工具调用拦截器或自动上下文裁剪机制，也没有改变既有工具返回的原始数据。
+
+对应提交：`120398ba`。
+
+## 2026-11-02 — 11-03 系统提示词分层架构重构与旧 Workflow 污染修复
+
+重构 Paveway 的系统提示词架构，解决旧版 Workflow 模板中混杂框架身份、教学策略、过期工具协议和用户自定义内容，导致 Agent 使用错误工具、继承旧角色或难以维护的问题。
+
+新增 `bundled/core.md` 和 `bundled/oi-coach.md`，将提示词统一拆分为四层：
+
+1. **Paveway Core**：基础身份、事实边界、工具使用、记忆、唤醒和 Runtime 契约，由框架统一提供。
+2. **Built-in Role Policy**：通过 Workflow 的 `base` 标识选择内置角色策略，例如 `oi-coach` 负责 OI 教学与训练原则。
+3. **User Customization**：用户追加的系统 Prompt 和独立 GPT Persona，保持原有私有存储和 revision/CAS 更新机制。
+4. **Runtime Context**：运行时记忆快照等动态上下文，以数据身份注入，不允许将外部内容提升为系统指令。
+
+前台原生 OMP 与后台 RPC 继续使用同一 Prompt Composer。框架指令由当前安装包提供，而非复制到各个 Workflow 或 GPT Profile；升级框架后，新启动的会话可使用新的 Core 与 Role Policy，无须修改用户的 `event.md`。
+
+用户系统 Prompt 改为仅支持 `append`，不再允许 `replace` 覆盖框架 Core。旧设置中的 `replace` 在读取时兼容转换为追加语义，不直接重写原始文件；新写入及整体设置替换接口均拒绝重新设置 `replace`。清空追加文本只删除用户自定义部分，不删除框架指令或角色策略。
+
+同时修复 GPT Profile 创建流程中对旧事件模板的错误清理逻辑：不再依据文本长度或特定旧关键词擅自替换用户模板；保留合法的自定义事件模板及原有用户内容。对角色 `base` 使用明确的支持范围校验，避免未知角色被静默解释为其他策略。
+
+新增 `tests/test_prompt_architecture_refactor.py`，覆盖框架升级、旧模板隔离、用户 Prompt 与 Persona 保留、Profile 创建、前后台 Prompt 一致性、事件数据边界及角色策略加载。
+
+本轮没有修改原生 OMP、Tijian 上游或用户历史 Session；已经生成的不可变 Prompt 快照不会被追溯改写。
+
+对应提交：`f9c0807`、`fecec72`。
+
+## 2026-11-03 — OMP 动态系统模板恢复与 Runtime 构建兼容检查
+
+### 1. 恢复 OMP 原生动态系统模板
+
+在分层 Prompt Composer 基础上，进一步修复完整替换系统提示词后，OMP 原生工具、Skills、Rules 和动态设备信息不能正常进入模型上下文的问题。
+
+Composer 升至 v5。新增 Handlebars 系统模板组装机制，通过 OMP 原生 `--system-prompt-template` 加载，而不再使用静态 `--system-prompt` 覆盖动态模板。
+
+动态模板保留：
+
+- Skills 索引及 `skill://` 正文按需读取提示。
+- Always-apply Rules 与按需加载的领域 Rules。
+- OMP Internal URLs。
+- 当前实际工具目录 `toolInventory` / `toolInfo`。
+- `xd://` 工具设备与读取、调用指引。
+
+对用户 Prompt、Persona、记忆等静态文本中的 Handlebars 特殊符号进行字面值转义，避免其意外参与模板求值。Prompt manifest 新增 `template_digest` 与 `template_mode`，用于标识生成的模板内容及加载模式。
+
+修复部分 OMP 工具条目缺少 `label` 时生成错误描述的问题：有标签时显示标签，没有标签时直接使用工具名称，不影响工具发现。
+
+相应更新 `doctor.py` 的 OMP 参数能力检查及系统模板回归测试。
+
+### 2. 新增同版本代码指纹兼容检查
+
+新增 `build_id.py` 与 `compatibility.py`，解决源码已更新但后台 daemon 仍运行旧代码时，客户端与 Runtime 协议或行为不一致的问题。
+
+构建指纹依据运行时代码与打包资源计算确定性 SHA-256 摘要，并排除运行数据、缓存等非代码内容。daemon 启动时固定本次构建指纹，通过状态接口返回 `runtime_version`、`runtime_build_id` 和 `native_protocol_version`。
+
+`paveway.sh` 在复用现有 daemon 前检查：
+
+- 原生协议版本是否兼容。
+- Paveway 版本号是否一致。
+- 运行中的 daemon 是否提供构建指纹。
+- 即使版本号相同，代码构建指纹是否一致。
+
+不兼容时明确拒绝继续进入原生界面，并根据当前服务管理方式给出 systemd 或独立 daemon 的重启指引。
+
+**不自动终止或替换仍在运行的 daemon**，不因客户端代码更新而中断正在执行的任务。
+
+新增 `tests/test_compatibility.py`，覆盖确定性构建指纹、代码变化识别、缓存排除、wheel/editable 安装布局、协议及版本不匹配、同版本不同构建、启动器复用及受管服务重启指引。
+
+对应提交：`0a6f0b3`、`7cfe76e`、`d393810`。
+
+## 2026-11-04 — 原生 TUI 设置中心与 Tijian MCP 三档权限
+
+重构 `/paveway` 原生设置体验，新增基于 OMP 原生 TUI `SettingsList`、`SelectList` 的分层设置页面。
+
+`/paveway settings` 统一管理 Tijian MCP、模型偏好和思考等级偏好；`/paveway tijian` 可直接进入 Tijian MCP 设置页。设置操作在原生交互界面完成，不将配置内容提交为聊天消息，也不向模型暴露额外设置工具。
+
+### Tijian MCP 三档权限
+
+新增 `workflow tijian show/set`，支持单独读取和修改当前 Workflow Workspace 的 `.omp/mcp.json`。
+
+| 权限 | MCP 启动参数 | 行为 |
+| --- | --- | --- |
+| None | `--write-policy=none` | 只读查询、搜索、题面及历史读取 |
+| Managed（默认推荐） | `--write-policy=managed` | 只读及 `problem_ensure`、`problem_content_ensure`、`problem_embedding_ensure` 等受控维护能力 |
+| Full | `--write-policy=full` | 完整读写，包括直接修改和删除 |
+
+Managed 的权限执行由 Tijian 原生 MCP Server 负责，Paveway 只保存启动参数，不在 Python 中复制工具权限 Schema。
+
+首次配置默认选择 Managed；从 None 或 Managed 切换到 Full，必须经过用户明确确认。
+
+设置页面将 MCP 可执行文件路径与权限分别编辑：
+
+- 修改权限时无需重新输入已有路径。
+- 修改可执行文件路径时保留已有权限。
+- Esc 取消未提交输入，设置页退出不会保存草稿权限。
+- 设置保存成功后明确提示需要重启原生 OMP Session 才能生效，不冒充运行中 MCP 权限已经更新。
+
+### 配置安全与兼容性
+
+配置读取为只读操作，不创建文件或启动 MCP 进程。新 API 以整个配置文件内容的 SHA-256 作为 revision，保存时检查旧版本，拒绝并发修改导致的覆盖。
+
+写入仅针对 `mcpServers.tijian`，保留其他 MCP Server 和配置字段。采用临时文件、fsync 与原子写入，限制文件大小及权限，拒绝 symlink、不安全目录、非法 JSON、未知启动参数及显式禁用 Tijian 的冲突配置。
+
+无实质变化的保存不重复写盘，保留原文件字节、inode 和修改时间。
+
+旧版 `workflow connect-tijian` 继续兼容，保留原只读默认行为和根目录旧 MCP 配置的显式导入路径；新设置接口只读取 `.omp/mcp.json`，不自动导入旧文件。
+
+新增和扩充 `test_native_management.py`、`test_native_mcp.py`，覆盖设置页面导航、窄终端显示、取消与确认、三档工具发现、权限及路径独立修改、旧参数兼容、并发冲突和原子写入边界。
+
+目前设置页只保证配置已保存；真实服务可用性及实际工具权限仍需重启后由 OMP 与 MCP 完成握手确认，没有实现热重载。
+
+对应提交：`ea72b9f`。
+
 ## 2026-11-03 — 启动时提供异常会话恢复入口
 
 用户实际启动提示 Native conversation has an active or uncertain owner。后台及配置均正常；阻碍是异常结束后留下的 uncertain 登记。现场检查确认旧 guardian/OMP 均退出、文件锁空闲、历史持久化有效后，先将原生 Session 复制到私密 recovery-backups，再通过既有 frontend.recover 接口解除登记。未重播请求、重试任务或修改 Tijian；未把实际用户历史、路径标识和内容写入源码。实际项目 ./paveway.sh 的无提示词 PTY smoke 随后进入原生 UI，/exit 正常返回 0。
@@ -542,3 +666,48 @@ Windows 通过固定 PowerShell WinRT 程序与已注册的系统应用身份显
 初始本地原生夹具依赖旧 Identity 文本，合并后按实际提交请求及新 Core 识别主请求，保留原文持久化、无重复模型调用及提示词隔离断言。停止修改运行代码后统一复验：全量 **412 项，360 通过、52 条件跳过，115.838 秒**，`/tmp/paveway-git-merge-full.log`；原生设置／恢复／记忆／唤醒 **28 项全部通过（147.007 秒）**，`/tmp/paveway-git-merge-native-final.log`；构建兼容与桌面通知 **29 项通过（3.914 秒）**，`/tmp/paveway-git-merge-compat.log`。原生模型响应仅本地 fixture，未调用私人付费 Provider。
 
 本次仅同步源码；未重启正式 Runtime、通知服务或活前台，未修改私密 Prompt、Skills、event.md 或用户数据 Git。远端新增严格版本／构建匹配检查，已运行的旧 daemon 需要在前台退出、任务空闲后按启动器指引重启，再加载合并后的新架构。
+
+## 2026-11-04 — 一键启动会话选择与原生退出恢复修复
+
+扩展 `paveway.sh` 的原生 Conversation 参数：
+
+- `--new`：显式创建新的 Paveway Conversation。
+- `--conversation ID`：明确选择已有 Conversation。
+- 两个参数互斥，且只适用于原生 OMP 界面；使用 `--legacy-ui` 或 `PAVEWAY_UI=legacy` 时拒绝。
+- 未指定参数时保持原有的默认续接行为，不自动创建新 Conversation，也不通过隐式新建绕过所有权冲突。
+
+同时修复原生 TUI 正常退出后的所有权释放与归档确认问题。
+
+原实现关闭 `owner.lock` 后，额外读取一次 `frontend.show` 取得 generation，再提交 `frontend.finish`；若期间发生 daemon 异常或读取失败，错误可能被吞掉，导致界面正常退出但 Conversation 没有正确释放。
+
+新实现使用已认证的 owner/generation 信息直接提交 `frontend.finish`，原生 `/new` 发生 generation 变化时同步更新本次受管会话的身份信息，避免结束时使用过期 generation。
+
+只有 Runtime 确认成功释放并完成所需归档后，才将正常退出视为完整成功。若 OMP 已正常退出但所有权释放未得到确认，返回明确的 `native_finish_failed` 错误及人工恢复指引，而非静默宣称成功；原本已发生的主异常仍优先保留，不会被收尾错误覆盖。
+
+修复覆盖空闲界面的 Ctrl+D、`/exit`、立即恢复及 daemon 重启场景。所有权不明时不自动重发用户输入，不凭 PID 消失或心跳超时直接接管会话；用户可核对旧进程及副作用后显式恢复，或通过 `--new` 保留旧历史并创建新对话。
+
+新增及扩充启动脚本、原生恢复、所有权收尾和会话身份相关测试，检查正常退出后 SQLite 状态、锁释放、重复启动及旧会话续接行为。
+
+对应提交：`520643d3`。
+
+## 2026-11-05 — CI 启动兼容性测试环境修复
+
+- 启动兼容性 Fixture 显式配置仓库现有的 `tests/fake_omp.py` 并赋予执行权限，不再要求 CI 的 PATH 中安装真实 OMP；生产默认值和启动器的可执行文件检查保持不变。
+- Case A 通过真实 IPC 核对 Runtime 版本、原生协议及 build ID；Case B 保留进程复用检查；Case D 增加 daemon 状态、socket 身份及持久化文件摘要不变的断言，排除 SQLite 共享内存读标记，不 mock 启动器或兼容性检查。
+- 本地 Python 3.14.4 定向测试通过（17 项）；独立 smoke 在无真实 OMP 的 PATH 和临时 HOME 下验证启动、复用、不兼容拒绝，以及清理后的进程退出、锁释放和 socket 删除。
+- 本机未找到 Python 3.11、3.12、3.13，未验证这三个版本，也未宣称 GitHub Actions 已通过。
+- 完整回归实际运行 392 项：337 通过、54 项按既有条件跳过、1 项失败。唯一失败为 `test_proxy.py:78` 的关闭 listener 后 TCP 不可达断言；单独运行代理测试同样失败，独立原始 socket 场景亦出现关闭 listener 后仍能连接。本次未修改无关代理代码或放宽其断言。
+
+## 2026-11-05 — 代理 TCP 测试确定性修复
+
+- 仅调整 `tests/test_proxy.py` 的 TCP 用例：正向保留真实本地临时端口和 `proxy.synchronize()`；负向对 `socket.create_connection()` 注入 `ConnectionRefusedError`，不再假定关闭 listener 后端口立即不可达。
+- 在 patch 作用域内核对不可达结果和原代理端点调用，正负报告均检查用户名、密码及完整代理 URL 不泄露；生产代理逻辑、超时和返回语义不变。
+- 本地 Python 3.14.4：代理定向测试 6 项通过，TCP 用例在 10 个独立进程中重复执行全部通过，当前兼容性定向测试 18 项通过。独立 smoke 确认真实正向连接、负向拒绝、线程执行完成及临时资源清理。
+- 完整回归通过：413 项，355 通过、58 项按既有条件跳过，无失败；未新增跳过逻辑。结果仅代表本地 Python 3.14.4，未验证远端 GitHub Actions。
+
+
+## 2026-11-10 — 同步远端并保留归档会话时间戳
+
+合并 origin/main 的 b809568（11 个提交）与本地 6ca3bd7，自动合并无冲突。保留远端 UI、独立 OMP Host 与记忆上下文更新，并保留归档创建／消息时间、系统时区显示及最近更新排序。未修改正式 Runtime、用户配置、私密 Skills 或 event.md。
+
+合并后 Python 全量 467 项，389 通过、78 条件跳过（121.340 秒）；Bun UI 118 通过、12 跳过。日志分别为 /tmp/paveway-sync-20261110-python.log 与 /tmp/paveway-sync-20261110-bun.log。原生 UI 单项尝试在固定 Bun 1.4.4 下载阶段超过夹具等待时间，尚未完成新 Host 的实机验收（/tmp/paveway-sync-20261110-native.log）；未放宽断言或修改安装版本。合并前本地归档单元 13 项及原生归档 1 项均通过。

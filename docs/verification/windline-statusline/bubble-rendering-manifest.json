@@ -1,0 +1,560 @@
+{
+  "font": "Paveway-DejaVuSansMNerdFontMono-Regular.ttf",
+  "font_sha256": "f0ad5d5e932a02c7c0169b67bb4a7a1d8ecde33ab42c7d584b4c91cebef98300",
+  "size": 20,
+  "source": "isolated-native-pty",
+  "captures": [
+    {
+      "name": "bubble-ascii-empty-120.json",
+      "json_sha256": "4e78896c49fb0b649a7110fd3df5a3a98140748e01742f7c1228d9b165310a6f",
+      "ansi_sha256": "312e3c5e041c657d0a369fddb45d696a6ae0848784fe303d3c26367646c762ca",
+      "image": "bubble-ascii-empty-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-cancelled-idle.json",
+      "json_sha256": "711046a988205d1a92d005245636a3764fc3e25d919abf80adc3d66020b2a6d4",
+      "ansi_sha256": "4e49a04e3ebc0dc0a62a3dff3293511e7710e4c44029ecea39d5322ac71af537",
+      "image": "bubble-cancelled-idle.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-compact-idle-80.json",
+      "json_sha256": "2cd62795f78252fc18ddd72c5aac90e55109dfe72681719dd0f9c40e4c0b1ea9",
+      "ansi_sha256": "1a46e3b00ee8a554b403e47a9f6e0a30a60676a0497bbcbef4615feaf54c7a58",
+      "image": "bubble-compact-idle-80.png",
+      "pixels": [
+        960,
+        240
+      ]
+    },
+    {
+      "name": "bubble-empty-100.json",
+      "json_sha256": "c4030f3e6f7df32a02d21fd9683759cc8971740dd201ebafab9dc69e8ea08bcf",
+      "ansi_sha256": "f4925cfab9929431488d348e7e56ceff78863456ca3402b8be673d0c5668f50b",
+      "image": "bubble-empty-100.png",
+      "pixels": [
+        1200,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-120.json",
+      "json_sha256": "ee125c9d814a434b839b7535aa9e41783d05da10990f3103328d4992041a373a",
+      "ansi_sha256": "e3cb78b64465f81bec26925b9e003c51659da51ff8ee11089b0595025535ff01",
+      "image": "bubble-empty-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-160.json",
+      "json_sha256": "a8b2e0cfd4603a0a50e2a9a25dd53cbb80df1b87f9043abe7185a8e7a9575fb8",
+      "ansi_sha256": "27d88ec0e2269d1426ab2df99ca13bcc87bc0d15945d858d3eb77ba0b913356b",
+      "image": "bubble-empty-160.png",
+      "pixels": [
+        1920,
+        264
+      ]
+    },
+    {
+      "name": "bubble-empty-80.json",
+      "json_sha256": "ae0671ca3dcfc87895df43b0fc1e4dbc78b692147f6850d145250ea2f50c16f5",
+      "ansi_sha256": "8dba712a93a48d2de009d21ed55ef6a9a6332624da9a4690a2cd203bcb5d8bcf",
+      "image": "bubble-empty-80.png",
+      "pixels": [
+        960,
+        264
+      ]
+    },
+    {
+      "name": "bubble-high-context.json",
+      "json_sha256": "1193e81e861f2f83d3dfb08551d563a995282fa351f2326a442e7578758491d7",
+      "ansi_sha256": "12d0aee2c8f6ff454298aded50a6adb91108cf1de33db6c67000f5dd9005e258",
+      "image": "bubble-high-context.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-idle-120.json",
+      "json_sha256": "af114fe6304fcf894ff542416b155dbbabe687b19665597e9b37a61c6af10b76",
+      "ansi_sha256": "2368ce76f68619e05a18ae566799b3400bf69010399bba6ce050c37cf73057be",
+      "image": "bubble-idle-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-inbox-unread.json",
+      "json_sha256": "35f01c0840481668f67d6575873977c8fafbe0bf0c825b383d1217ff4951ce86",
+      "ansi_sha256": "93e59015b7df32f5e46e035711d9990c328fabb1d3528402ad09ab2cf5b46358",
+      "image": "bubble-inbox-unread.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-low-context.json",
+      "json_sha256": "d4c9c7e13723652e6d0a27d38b07db9ea2904d28e0cc1f79c62e7f1dd7e16548",
+      "ansi_sha256": "b20340ce0f38308aa7a2ec9caa20b90f27fafdc19fcf60726fe2dbd630341793",
+      "image": "bubble-low-context.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-motion-disabled.json",
+      "json_sha256": "9b4a181989274d667037fb92ac4069e926f433ef6bc0f32a7288ba0cc059dcb4",
+      "ansi_sha256": "6dbcd3b8812b16b248a192271a73968b2b41e672a30d3a964f3cee0dfa2d2e29",
+      "image": "bubble-motion-disabled.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-reply-idle.json",
+      "json_sha256": "8f98770956473133ecf9685755c211b95946df7ad218e3e95b38f1bbe752da8d",
+      "ansi_sha256": "6a4b56b731e911f8aec9a9ad71f0a9a98940cfc4df497c7192c8c0c26eeb3954",
+      "image": "bubble-reply-idle.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-resize-100.json",
+      "json_sha256": "e3c82a3bf21a2b82b9b445e8be4139cb44b6a31b9df5eb7bb39d2dbf097fecce",
+      "ansi_sha256": "844bbf91991fdd33493081c3841266a2b5a4fcabeebcaeee975f79f25d13f0c1",
+      "image": "bubble-resize-100.png",
+      "pixels": [
+        1200,
+        264
+      ]
+    },
+    {
+      "name": "bubble-resize-120.json",
+      "json_sha256": "0d45d15e64d6888c58c126ce437d9c29864a8d8a4c0cfda036a1f1c9de8f836b",
+      "ansi_sha256": "3d93e9b8c3fa4bf96a48ccfd36d8e79261f57da396153ed2bf349368d5797faf",
+      "image": "bubble-resize-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-resize-160.json",
+      "json_sha256": "e425bc414e536e27d06d65f7b2a46370778e52fb035ed5e2fe7cde266f0cb175",
+      "ansi_sha256": "e1f07ba2c4ff6569d2567c86538ef2c399ffb092fde858706a6341c24dcc2aff",
+      "image": "bubble-resize-160.png",
+      "pixels": [
+        1920,
+        264
+      ]
+    },
+    {
+      "name": "bubble-resize-80.json",
+      "json_sha256": "8ade51c563952014119b3d7d2426646ec31da970d363cb5dad51487850bb4cd3",
+      "ansi_sha256": "effba5aacea85df4c800d731f91c84c5aaaee83fe6f8af49ea7ad40be583e94a",
+      "image": "bubble-resize-80.png",
+      "pixels": [
+        960,
+        264
+      ]
+    },
+    {
+      "name": "bubble-runtime-recovered-160.json",
+      "json_sha256": "ccc4b01f0fc0ac27ec321e9cb3ed0401817b6287d5a3da3cde595204e5a84f3e",
+      "ansi_sha256": "4f23dfa8d614659b4c375a9d2da5bfdb2e643f0da614f7e992378d55102bca4b",
+      "image": "bubble-runtime-recovered-160.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-runtime-unavailable-160.json",
+      "json_sha256": "4e2a454caf6a1c232aab794cd01aa60faee678c1cfb8030cac084136a3238c45",
+      "ansi_sha256": "9bab45e107236367ed297b98d3c99e7601d34ee5493b0e708ee66e9801b30784",
+      "image": "bubble-runtime-unavailable-160.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-session-switch.json",
+      "json_sha256": "1abca1e396e51a9d3c6e18c20b2a4fdbba654c77c8c0aa545afdfe197b09cfeb",
+      "ansi_sha256": "0505b4668f9e7c36a6176683b2d332e89ad6cb6143d08ae9dcead7b79b0af908",
+      "image": "bubble-session-switch.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-unicode-empty-120.json",
+      "json_sha256": "1bb869103a1a062340d6594fa7f9551254417a045b722b583107798732ebe311",
+      "ansi_sha256": "3f9f1acaa361f235b0c4d1efd02a2d3881f2643792e60c55cdfe9df1462bc9c1",
+      "image": "bubble-unicode-empty-120.png",
+      "pixels": [
+        1440,
+        264
+      ]
+    },
+    {
+      "name": "bubble-wakeup-countdown-160.json",
+      "json_sha256": "a9c7d43862e18242df003a0f9cd9a42d22ab60339f10cbe3a5999a58ed5b621b",
+      "ansi_sha256": "b185a8a997cb4604c95fa9e3420cd0eab2425b6800ee4cab8a17f5db488a5cc7",
+      "image": "bubble-wakeup-countdown-160.png",
+      "pixels": [
+        1920,
+        240
+      ]
+    },
+    {
+      "name": "bubble-wakeup-running-160.json",
+      "json_sha256": "c42b245c9e741adb3125d081677bd746a27cbd5580b6008e4c06c9d6697a7747",
+      "ansi_sha256": "3d98e8cab21c299572619d9ff77964332722c5c3fa31a26748a3fe9d11d3e776",
+      "image": "bubble-wakeup-running-160.png",
+      "pixels": [
+        1920,
+        264
+      ]
+    },
+    {
+      "name": "bubble-working-0.json",
+      "json_sha256": "c7327359a1a07b58cc35622917431a532ed468833e7eb139376989adb84fc6d2",
+      "ansi_sha256": "2146011dd456a3424305f65591e8cd75d953c7c753cc0cf037319af6c9e552d2",
+      "image": "bubble-working-0.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-1.json",
+      "json_sha256": "28b509e30d57a04daf22b755db7ba154ed7ba91ad5d417e6004aa6520c386e66",
+      "ansi_sha256": "7200dd8cd35b5ae30af899cf7dc37347daa3613731ceaa7363f1857267d7c646",
+      "image": "bubble-working-1.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-10.json",
+      "json_sha256": "c38a0b91f1289f9789daa7d8744962845561a6ba7514f89f8860d9ff4c8de501",
+      "ansi_sha256": "4edb7d31bf9b78fa0db89fda9c24cac3804c05a6c673515dea97440faa4e15a7",
+      "image": "bubble-working-10.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-11.json",
+      "json_sha256": "9e2bf67bcad09b96f0e2af66a56562b4a2c10e5a1793c85afed39e2c440ee6fb",
+      "ansi_sha256": "71dc1deffea5f8090418ca3f0516e7c25c2a9f2cc1feb7e31f44c0883c7c54bc",
+      "image": "bubble-working-11.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-12.json",
+      "json_sha256": "775c6259238a2b7057f3a0b37c4ada6441ac3d2bbd31645f133a24e8fd415cbd",
+      "ansi_sha256": "c649a4218e2b35fa536c1d32f7dc8b3d4137276634c5c95539344bcb1c3096b8",
+      "image": "bubble-working-12.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-13.json",
+      "json_sha256": "334dd3ea3362f42af70a036de11301ba9f27a7e2ae4c2136297c9395eed4aa88",
+      "ansi_sha256": "94971ef5a543e01b02fb00fa670c9784eb3b3f158c9933c17895cfdd44644a14",
+      "image": "bubble-working-13.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-14.json",
+      "json_sha256": "451ba8063abf4ad502f23000dac5a0169aa254643fa98599f7b18d0eec7b1b99",
+      "ansi_sha256": "d0393fecce080c2b2676788c19a04508b286115372079edfcc70ca069d791c89",
+      "image": "bubble-working-14.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-15.json",
+      "json_sha256": "62be6dd33c31d8d50eaa8842a4c18d1cf35cc6b3f80d4ae9b11af52a44e60a26",
+      "ansi_sha256": "2ccd862018ae48fb4b5d267ecbf043acd8b5522374adaad0f20d040a7ce843cf",
+      "image": "bubble-working-15.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-16.json",
+      "json_sha256": "094a8658a7912709065afa1a56c5dc40e0ab2c5c162b887bfc06e24736d39648",
+      "ansi_sha256": "489cc62e2bec4703238171288582c44928098bd41644f638c09f867687a3dd70",
+      "image": "bubble-working-16.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-17.json",
+      "json_sha256": "c3477349935d9264eec56aa206fb8043315142f596738fa7fa0c5f0233a09a77",
+      "ansi_sha256": "a180bb246f20b4faf23014864614f1095e6d1df24aa8eeba678c76e088e5f494",
+      "image": "bubble-working-17.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-18.json",
+      "json_sha256": "c0f86f8345b07bf885594e60f076469b39102799880694aa1514bf6ded5fd427",
+      "ansi_sha256": "ae1b8a6e41b63446fc6f1a3ae3111691c20e08ff3fa983fea692c6a6148fc67f",
+      "image": "bubble-working-18.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-19.json",
+      "json_sha256": "f7c70283c2d0f739bd925f1214692a181d446e64ee7050a7718cc30b89256bb3",
+      "ansi_sha256": "3ad98867211daa72f4474690e115e06f8b38a10636b127e608a06ee9785908f0",
+      "image": "bubble-working-19.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-2.json",
+      "json_sha256": "28b509e30d57a04daf22b755db7ba154ed7ba91ad5d417e6004aa6520c386e66",
+      "ansi_sha256": "7200dd8cd35b5ae30af899cf7dc37347daa3613731ceaa7363f1857267d7c646",
+      "image": "bubble-working-2.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-20.json",
+      "json_sha256": "65fb0e72677817c23666ebf0acda2c2cbf4e36e82f71f6793e3a8482a8a6036c",
+      "ansi_sha256": "3c5fc3da47cdbec839e6fa732a6f419439cea9be1169898b489b9cb2d3e44dd1",
+      "image": "bubble-working-20.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-21.json",
+      "json_sha256": "b7fef482c3f6d23fa2deaf74027c644935b770c0315146ea617faf55d6e0c2a0",
+      "ansi_sha256": "58aff6f8e5ee78d43a1af4bcc2a5128d403dc542c0dc3e674a6228b4b284ed5e",
+      "image": "bubble-working-21.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-22.json",
+      "json_sha256": "0061cbd26a62117c5ddf08608c08c4fcec19f16bdcbb73aed6fb6734248a9bb7",
+      "ansi_sha256": "56210a1e3b841b9a53049bb6f7adebad66373d2e404d8c01ca3205a92a6dea40",
+      "image": "bubble-working-22.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-23.json",
+      "json_sha256": "38bc276703651af737dd1fe32c81be312b1a81aea1c87e8246cc3f4ccfdceb0d",
+      "ansi_sha256": "ab88cfba9c3c47718fedbe30839560c7caace3bcd83c1727c87797ab6ea13d37",
+      "image": "bubble-working-23.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-24.json",
+      "json_sha256": "d33d288ee7183eaa1bcb900e7eb056f83d2a9d8b8f0c9019a77b08eb24f009be",
+      "ansi_sha256": "974fcee6144ff4f62ae45887059480b8504109529f7cc07771758346adb37825",
+      "image": "bubble-working-24.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-25.json",
+      "json_sha256": "3816c1038ffa098be79788e464afd5eff30108498735dc5c2e3e4fd4a14593b2",
+      "ansi_sha256": "143c89d4f9e146dd8cea2fd00d76119eb2664cdc835690800b8f92d7edb8a05c",
+      "image": "bubble-working-25.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-26.json",
+      "json_sha256": "b58e4972e2205a71d3021329cce148aa380fd8ca33d5ad8189fb462123fd56a3",
+      "ansi_sha256": "f00c039a2e302c4852206f388b320b8792ed9faee05199236eaf18b1cead2ea8",
+      "image": "bubble-working-26.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-27.json",
+      "json_sha256": "229bf7bd0ab3748a2475eb85fff82f0a947e57381dcc9147d97a1dbb3b058221",
+      "ansi_sha256": "1b4dc8b1eb6d13e0e2557b3b03ee054659d54442a1384bfebd2809acadbdf439",
+      "image": "bubble-working-27.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-28.json",
+      "json_sha256": "60c9cd0b2ec2c1ceebbf3244370987cd2b2a387988606c09229b06959dae1acd",
+      "ansi_sha256": "a8170867dae750ce9660e1d6ca4f8757dd57b0b61695ee9947539593d929a301",
+      "image": "bubble-working-28.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-29.json",
+      "json_sha256": "97bffa5990259278ef3b8c2a1c20b2b86468d193107c7a5cac375cc9a0cc806c",
+      "ansi_sha256": "6f3651580a49d2c32a99c87cbb6bca2874bdb18fde391d0c53ada42684d2a8f7",
+      "image": "bubble-working-29.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-3.json",
+      "json_sha256": "a5ffe917066d456b8029c650737508eb4a202edafb5f00ae6d0685f05eeae6ab",
+      "ansi_sha256": "72c1056661c99a01a6adfc1b7b86b445215938f4f1f5d4acac580c80c349315d",
+      "image": "bubble-working-3.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-30.json",
+      "json_sha256": "168d8e25b9e22a9ad4b6e52f13123613c60c1e6fed48a4dbe54c9bec3be1c17e",
+      "ansi_sha256": "0e268d28880ee592346ba46c7b6f014d16b6cf791ff06e5be96e1f490a27c897",
+      "image": "bubble-working-30.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-31.json",
+      "json_sha256": "1da71ce7e6d7d7ec514c395390302d5cb4f3b7e86ff8913468bec67ba2fc62fa",
+      "ansi_sha256": "4147a84223dac8394daa6f9f4698a91bf50004624fdb8b23c29309560207ad0c",
+      "image": "bubble-working-31.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-4.json",
+      "json_sha256": "df57318a507d72fd4897c789484e9a387230a02ac7c9bcff045650d3e91abfc0",
+      "ansi_sha256": "d540b34d2264bbe028d9f30d0472dd02a535f98481242128acd3123bfe5594f2",
+      "image": "bubble-working-4.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-5.json",
+      "json_sha256": "630899318822e87207e57b9f0f2e908c2af757189b2f5636d5bd39e750322c37",
+      "ansi_sha256": "dccc6caab54c36d2f9b7fff2f0e94f69a46045445525d6e8fa1d101671c4935a",
+      "image": "bubble-working-5.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-6.json",
+      "json_sha256": "df2e3fe50c9ea3dad73d1b66a7f9d3c6a7771cde44666fcc64db4c8d229293bc",
+      "ansi_sha256": "c9d4dfb226f56c6f9fdfe6b007130c89714bbc2c5e21ea531e713996ec85f34e",
+      "image": "bubble-working-6.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-7.json",
+      "json_sha256": "7473a3baab785fb9ec8dfcaa0b4fefd3fbae92010bfe342261fbca533e4efcc6",
+      "ansi_sha256": "48d3d2ebdcbc13ce215b119b77f354e1cf5cfb5a505ddc8bdc98411fe25bf30a",
+      "image": "bubble-working-7.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-8.json",
+      "json_sha256": "8241831e583e3ed1aba59c7b6bfbef49f19d066193a8f30dac3db23276b2e862",
+      "ansi_sha256": "93b2d26e494c7e395c4a6eda415e7728ea5b28a3970898ea6b99f2282a004d0c",
+      "image": "bubble-working-8.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    },
+    {
+      "name": "bubble-working-9.json",
+      "json_sha256": "b6788c52992f617342deaa87b7f8237d37eae3bb355fa9f21975c7ce1fb27385",
+      "ansi_sha256": "50f132262c31196208bc4d338011a1c15c211b152852109e38980bfbb6294c6a",
+      "image": "bubble-working-9.png",
+      "pixels": [
+        1440,
+        240
+      ]
+    }
+  ],
+  "wide_font": "msyh.ttc",
+  "wide_font_sha256": "d79c55e68b1131eea0cc1c47be4f572d964f28c682e143db2ad09c1e4cb07a3f"
+}

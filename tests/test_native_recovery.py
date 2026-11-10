@@ -181,7 +181,7 @@ class NativeRecoveryTests(NativeFixture):
             {"conversation_id": before["conversation_id"]})
         switch_offset = len(raw)
         send("/new\r")
-        until("OMP native", lambda: b"OMP native" in raw[switch_offset:] and
+        until("PAVEWAY", lambda: b"PAVEWAY" in raw[switch_offset:] and
             request(self.config.server.socket_path, "frontend.show",
                 {"conversation_id": before["conversation_id"]})["generation"] > before["generation"])
         response_offset = len(raw)

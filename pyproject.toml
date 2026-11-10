@@ -21,4 +21,4 @@ oicoach-runtime = "oicoach_runtime.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs", "bundled/*.ps1", "bundled/skills/*/SKILL.md"]
+oicoach_runtime = ["migrations/*.sql", "bundled/*.md", "bundled/*.mjs", "bundled/*.ps1", "bundled/omp/*", "bundled/skills/*/SKILL.md"]

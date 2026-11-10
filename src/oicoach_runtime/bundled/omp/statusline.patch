@@ -1,0 +1,643 @@
+diff --git a/packages/coding-agent/src/extensibility/extensions/runner.ts b/packages/coding-agent/src/extensibility/extensions/runner.ts
+index 8aa7944..187cb9d 100644
+--- a/packages/coding-agent/src/extensibility/extensions/runner.ts
++++ b/packages/coding-agent/src/extensibility/extensions/runner.ts
+@@ -475,6 +475,7 @@ const noOpUIContext: ExtensionUIContext = {
+ 	setWorkingMessage: () => {},
+ 	setWidget: () => {},
+ 	setFooter: () => {},
++	setStatusLine: () => {},
+ 	setHeader: () => {},
+ 	setTitle: () => {},
+ 	custom: async () => undefined as never,
+diff --git a/packages/coding-agent/src/extensibility/extensions/types.ts b/packages/coding-agent/src/extensibility/extensions/types.ts
+index a5515b9..6c0f901 100644
+--- a/packages/coding-agent/src/extensibility/extensions/types.ts
++++ b/packages/coding-agent/src/extensibility/extensions/types.ts
+@@ -39,7 +39,8 @@ import type {
+ 	ToolLoadMode,
+ } from "@oh-my-pi/pi-agent-core";
+ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+-import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
++import type { ContextUsage, StatusLineRenderer } from "@oh-my-pi/pi-tui/status-line/types";
++export type { StatusLineRenderer, StatusLineSnapshot } from "@oh-my-pi/pi-tui/status-line/types";
+ import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
+ import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
+ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+@@ -385,6 +386,9 @@ export interface ExtensionUIContext {
+ 	/** Set a custom footer component, or undefined to restore the built-in footer. */
+ 	setFooter(factory: ExtensionUiComponentFactory | undefined): void;
+ 
++	/** Own one bottom TUI row; undefined restores the original composer status. Not supported outside interactive mode. */
++	setStatusLine(renderer: StatusLineRenderer | undefined): void;
++
+ 	/** Set a custom header component, or undefined to restore the built-in header. */
+ 	setHeader(factory: ExtensionUiComponentFactory | undefined): void;
+ 
+diff --git a/packages/coding-agent/src/modes/acp/acp-agent.ts b/packages/coding-agent/src/modes/acp/acp-agent.ts
+index 4537538..a805836 100644
+--- a/packages/coding-agent/src/modes/acp/acp-agent.ts
++++ b/packages/coding-agent/src/modes/acp/acp-agent.ts
+@@ -778,6 +778,7 @@ export function createAcpExtensionUiContext(
+ 		setWorkingMessage: () => {},
+ 		setWidget: () => {},
+ 		setFooter: () => {},
++		setStatusLine: () => {},
+ 		setHeader: () => {},
+ 		setTitle: () => {},
+ 		custom: async () => undefined as never,
+diff --git a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+index 76c5b60..036887d 100644
+--- a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
++++ b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+@@ -222,6 +222,7 @@ export class ExtensionUiController {
+ 				return Promise.resolve({ success: false, error: "Direct theme object not supported" });
+ 			},
+ 			setFooter: () => {},
++			setStatusLine: renderer => this.ctx.statusLine.setStatusLine(renderer),
+ 			setHeader: () => {},
+ 			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
+ 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
+diff --git a/packages/coding-agent/src/modes/interactive-mode.ts b/packages/coding-agent/src/modes/interactive-mode.ts
+index b65a749..289589f 100644
+--- a/packages/coding-agent/src/modes/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive-mode.ts
+@@ -420,6 +420,7 @@ import {
+ 	cfgTuiTextSizing,
+ 	cfgTuiTight,
+ 	cfgTuiTitleSpinner,
++	cfgTuiMotion,
+ 	cfgTuiTitleState,
+ 	cfgTuiVimMode,
+ 	cfgTuiVimModeDisplay,
+@@ -495,6 +496,7 @@ const cfgLiveUiSettings = combine({
+ 	"tui.hyperlinks": cfgTuiHyperlinks,
+ 	"tui.titleState": cfgTuiTitleState,
+ 	"tui.titleSpinner": cfgTuiTitleSpinner,
++	"tui.motion": cfgTuiMotion,
+ 	"statusLine.preset": cfgStatusLinePreset,
+ 	"statusLine.leftSegments": cfgStatusLineLeftSegments,
+ 	"statusLine.rightSegments": cfgStatusLineRightSegments,
+@@ -2202,6 +2204,10 @@ export class InteractiveMode implements InteractiveModeContext {
+ 		this.editorContainer = new Container();
+ 		this.editorContainer.addChild(this.editor);
+ 		this.statusLine = new StatusLineComponent(session, statusLineHost);
++		this.statusLine.setMotionEnabled(cfgTuiMotion.get(this.settings));
++		this.#eventBusUnsubscribers.push(
++			cfgTuiMotion.listen(this.settings, enabled => this.statusLine.setMotionEnabled(enabled)),
++		);
+ 		// Native segment clicks open what their slash commands and keys open.
+ 		this.statusLine.onNativeAction = action => {
+ 			switch (action) {
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-mode.ts b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+index 5a2c6cc..97a1595 100644
+--- a/packages/coding-agent/src/modes/rpc/rpc-mode.ts
++++ b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+@@ -1621,6 +1621,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions
+ 			// Custom footer not supported in RPC mode - requires TUI access
+ 		}
+ 
++		setStatusLine(_renderer: unknown): void {
++			// A renderer needs the interactive TUI; RPC clients own their chrome.
++		}
++
+ 		setHeader(_factory: unknown): void {
+ 			// Custom header not supported in RPC mode - requires TUI access
+ 		}
+diff --git a/packages/coding-agent/src/modes/settings.ts b/packages/coding-agent/src/modes/settings.ts
+index acfc8cb..a8a88c2 100644
+--- a/packages/coding-agent/src/modes/settings.ts
++++ b/packages/coding-agent/src/modes/settings.ts
+@@ -56,6 +56,18 @@ export const cfgGitEnabled = register({
+ // Appearance
+ // ────────────────────────────────────────────────────────────────────────
+ 
++export const cfgTuiMotion = register({
++	id: "tui.motion",
++	type: "boolean",
++	default: true,
++	ui: {
++		tab: "appearance",
++		group: "Status Line",
++		label: "Status Line Motion",
++		description: "Animate extension status lines while the main agent is working.",
++	},
++});
++
+ // Theme
+ export const cfgThemeDark = register({
+ 	id: "theme.dark",
+diff --git a/packages/coding-agent/src/session/agent-session.ts b/packages/coding-agent/src/session/agent-session.ts
+index eecfac3..18c2b56 100644
+--- a/packages/coding-agent/src/session/agent-session.ts
++++ b/packages/coding-agent/src/session/agent-session.ts
+@@ -717,6 +717,7 @@ const noOpUIContext: ExtensionUIContext = {
+ 	getTheme: () => Promise.resolve(undefined),
+ 	setTheme: _theme => Promise.resolve({ success: false, error: "UI not available" }),
+ 	setFooter: () => {},
++	setStatusLine: () => {},
+ 	setHeader: () => {},
+ 	setEditorComponent: () => {},
+ 	getEditorComponent: () => undefined,
+diff --git a/packages/coding-agent/test/autoresearch-state.test.ts b/packages/coding-agent/test/autoresearch-state.test.ts
+index fb01627..50413e4 100644
+--- a/packages/coding-agent/test/autoresearch-state.test.ts
++++ b/packages/coding-agent/test/autoresearch-state.test.ts
+@@ -504,6 +504,7 @@ function createCommandHarness(
+ 			onTerminalInput: () => () => {},
+ 			select: async () => undefined,
+ 			setFooter(): void {},
++			setStatusLine(): void {},
+ 			setHeader(): void {},
+ 			setStatus(): void {},
+ 			setTitle(): void {},
+diff --git a/packages/coding-agent/test/extensions-runner.test.ts b/packages/coding-agent/test/extensions-runner.test.ts
+index 52d64eb..4db1e8b 100644
+--- a/packages/coding-agent/test/extensions-runner.test.ts
++++ b/packages/coding-agent/test/extensions-runner.test.ts
+@@ -2730,6 +2730,7 @@ describe("ExtensionRunner", () => {
+ 					setWorkingMessage: () => {},
+ 					setWidget: () => {},
+ 					setFooter: () => {},
++					setStatusLine: () => {},
+ 					setHeader: () => {},
+ 					setTitle: () => {},
+ 					custom: async <T>() => undefined as T,
+diff --git a/packages/coding-agent/test/tools/approval-cached-mode.test.ts b/packages/coding-agent/test/tools/approval-cached-mode.test.ts
+index 04e40e7..edef3f6 100644
+--- a/packages/coding-agent/test/tools/approval-cached-mode.test.ts
++++ b/packages/coding-agent/test/tools/approval-cached-mode.test.ts
+@@ -360,6 +360,7 @@ describe("always-ask-cached wrapper cycle", () => {
+ 				setWorkingMessage: () => {},
+ 				setWidget: () => {},
+ 				setFooter: () => {},
++				setStatusLine: () => {},
+ 				setHeader: () => {},
+ 				setTitle: () => {},
+ 				custom: async <T>() => undefined as T,
+diff --git a/packages/coding-agent/test/tools/xdev-approval-gate.test.ts b/packages/coding-agent/test/tools/xdev-approval-gate.test.ts
+index b30b437..e83ce08 100644
+--- a/packages/coding-agent/test/tools/xdev-approval-gate.test.ts
++++ b/packages/coding-agent/test/tools/xdev-approval-gate.test.ts
+@@ -76,6 +76,7 @@ function runnerWith(sessionManager: SessionManager, select: ExtensionUIContext["
+ 			setWorkingMessage: () => {},
+ 			setWidget: () => {},
+ 			setFooter: () => {},
++			setStatusLine: () => {},
+ 			setHeader: () => {},
+ 			setTitle: () => {},
+ 			custom: async <T>() => undefined as T,
+diff --git a/packages/tui/src/status-line/component.ts b/packages/tui/src/status-line/component.ts
+index e56d2db..eb17cc4 100644
+--- a/packages/tui/src/status-line/component.ts
++++ b/packages/tui/src/status-line/component.ts
+@@ -57,6 +57,8 @@ import type {
+ 	StatusLineSegmentOptions,
+ 	StatusLineSeparatorStyle,
+ 	StatusLineSettings,
++	StatusLineRenderer,
++	StatusLineSnapshot,
+ 	StatusResetExpiry,
+ } from "./types";
+ 
+@@ -632,6 +634,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	#topAttachment: ComposerStyle["statusAttachment"] = "top-border";
+ 	#standaloneGap = false;
+ 	#autocompleteActiveProbe: (() => boolean) | undefined;
++	#customRenderer: StatusLineRenderer | undefined;
++	#customTimer: Timer | undefined;
++	#customPhase = 0;
++	#motion = true;
++	readonly #mainSession: TSession;
++	#customSessionFile: string | undefined;
++	#customSessionId: string | undefined;
+ 	#renderRevision = 0;
+ 	/** Fully rendered bars for the current revision/clock tick, keyed by layout. */
+ 	#statusLineRenderCache: Record<StatusLineLayout, CachedStatusLine | undefined> = {
+@@ -836,10 +845,99 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 		private session: TSession,
+ 		private readonly host: StatusLineHost<TSession>,
+ 	) {
++		this.#mainSession = session;
++		this.#customSessionFile = session.sessionFile;
++		this.#customSessionId = session.sessionManager?.getSessionId?.();
+ 		this.#settings = host.getSettings();
+ 		this.#unwatchNativeRendering = onNativeRenderingChange(() => this.#syncActiveWindowRepaint());
+ 	}
+ 
++	/** Replace the bottom row without changing editor layout or extension hook rows. */
++	setStatusLine(renderer: StatusLineRenderer | undefined): void {
++		if (this.#disposed) return;
++		if (renderer !== this.#customRenderer) {
++			const previous = this.#customRenderer;
++			this.#customRenderer = renderer;
++			this.#stopCustomTimer();
++			previous?.dispose?.();
++			this.#stopBrandFadeTimer();
++			this.#stopSpeculationBlink();
++			this.#syncActiveWindowRepaint();
++			this.#syncPricingTimer();
++			this.#renderRevision++;
++		}
++		this.#syncCustomTimer();
++		this.#onBranchChange?.();
++	}
++
++	setMotionEnabled(enabled: boolean): void {
++		this.#motion = enabled;
++		this.#syncActiveWindowRepaint();
++		this.#onBranchChange?.();
++	}
++
++	#customWorking(): boolean {
++		const meter = this.#activeMeters.has(this.#mainSession) && this.session === this.#mainSession
++			? this.#meter() : this.#activeMeters.get(this.#mainSession);
++		return meter ? meter.activeStartedAt !== null : this.#mainSession.isStreaming;
++	}
++
++	#stopCustomTimer(): void {
++		clearInterval(this.#customTimer);
++		this.#customTimer = undefined;
++		this.#customPhase = 0;
++	}
++
++	#syncCustomTimer(): void {
++		const sessionFile = this.#mainSession.sessionFile;
++		const sessionId = this.#mainSession.sessionManager?.getSessionId?.();
++		if (sessionId !== this.#customSessionId ||
++			(sessionFile !== undefined && this.#customSessionFile !== undefined && sessionFile !== this.#customSessionFile)) {
++			this.#stopCustomTimer();
++			this.#activeMeters.delete(this.#mainSession);
++		}
++		this.#customSessionFile = sessionFile;
++		this.#customSessionId = sessionId;
++		if (this.#disposed || !this.#customRenderer || !this.#motion || !this.#customWorking()) {
++			this.#stopCustomTimer();
++			return;
++		}
++		if (this.#customTimer) return;
++		this.#customTimer = setInterval(() => {
++			if (this.#disposed || !this.#customRenderer || !this.#motion || !this.#customWorking()) {
++				this.#stopCustomTimer();
++				return;
++			}
++			this.#customPhase++;
++			this.#onBranchChange?.();
++		}, 125);
++		this.#customTimer.unref?.();
++	}
++
++	getStatusLineSnapshot(): StatusLineSnapshot {
++		const model = this.session.state.model ?? this.session.model;
++		const breakdown = this.getCachedContextBreakdown();
++		const boundaries = this.#autoCompactEnabled ? this.#compactionBoundaries(breakdown.contextWindow) : null;
++		return {
++			model: model ? { id: model.id, name: model.name, provider: model.provider } : undefined,
++			thinking: this.session.isAutoThinking
++				? this.session.autoResolvedThinkingLevel()
++				: this.session.state.thinkingLevel,
++			working: this.#customWorking(),
++			motion: this.#motion,
++			phase: this.#customPhase,
++			context: {
++				percent: breakdown.contextWindow > 0 && !this.#contextUsageCache?.percentUnknown
++					? breakdown.usedTokens / breakdown.contextWindow * 100 : null,
++				window: breakdown.contextWindow,
++				thresholdPercent: boundaries?.thresholdPercent ?? null,
++				speculationPercent: boundaries?.speculationPercent ?? null,
++				autoCompact: this.#autoCompactEnabled,
++			},
++			cost: this.session.sessionManager?.getUsageStatistics().cost,
++		};
++	}
++
+ 	#gitEnabled(): boolean {
+ 		return this.host.gitEnabled();
+ 	}
+@@ -938,6 +1036,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	setSession(session: TSession, focusedAgentId?: string): void {
+ 		const sessionChanged = this.session !== session;
+ 		if (!sessionChanged && this.#focusedAgentId === focusedAgentId) return;
++		this.#stopCustomTimer();
+ 		this.session = session;
+ 		this.#focusedAgentId = focusedAgentId;
+ 		if (sessionChanged) {
+@@ -1300,6 +1399,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 
+ 	dispose(): void {
+ 		this.#disposed = true;
++		this.#stopCustomTimer();
++		const renderer = this.#customRenderer;
++		this.#customRenderer = undefined;
++		renderer?.dispose?.();
+ 		this.#branchResolveActive?.controller.abort();
+ 		this.#branchResolveActive = undefined;
+ 		this.#resetJjRequests();
+@@ -1325,7 +1428,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	 */
+ 	#syncSpeculationBlink(state: "idle" | "running" | "armed"): void {
+ 		// A TSP terminal pulses the icon itself (`fx: "pulse"`).
+-		if (state === "running" && !this.#disposed && !isNativeRendering()) {
++		if (state === "running" && !this.#disposed && !this.#customRenderer && !isNativeRendering()) {
+ 			this.#speculationBlinkTimer ??= setInterval(() => {
+ 				this.#speculationBlinkOn = !this.#speculationBlinkOn;
+ 				this.invalidate();
+@@ -1426,6 +1529,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	 * own spinner and needs none.
+ 	 */
+ 	#syncActiveWindowRepaint(): void {
++		if (this.#customRenderer) {
++			this.#stopActiveWindowRepaint();
++			this.#syncCustomTimer();
++			return;
++		}
+ 		if (this.#disposed || isNativeRendering() || this.getTurnElapsedMs() === null) {
+ 			this.#stopActiveWindowRepaint();
+ 			return;
+@@ -1456,6 +1564,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	}
+ 
+ 	#syncPricingTimer(): void {
++		if (this.#customRenderer) {
++			this.#stopPricingTimer();
++			return;
++		}
+ 		const cost = this.session.state.model?.cost;
+ 		const effectiveSettings = this.#resolveSettings();
+ 		const costVisible =
+@@ -1500,6 +1612,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 
+ 	invalidate(): void {
+ 		this.#renderRevision++;
++		this.#syncActiveWindowRepaint();
+ 		this.#syncPricingTimer();
+ 		// Generic repaint invalidation (theme change, message event, model
+ 		// switch, …). Must NOT abort or restart a live reftable HEAD/PR resolve:
+@@ -3478,6 +3591,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 	}
+ 
+ 	getTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
++		if (this.#customRenderer) return { content: "", width: 0, revision: this.#renderRevision };
+ 		const statusLine = this.#buildStatusLine(width, "box", previewTitle);
+ 		return {
+ 			content: statusLine.dimmedContent,
+@@ -3488,6 +3602,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 
+ 	/** Flush-left soft-capped powerline band (the band composer's top row). */
+ 	getBandTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
++		if (this.#customRenderer) return { content: "", width: 0, revision: this.#renderRevision };
+ 		const statusLine = this.#buildStatusLine(width, "band", previewTitle);
+ 		return {
+ 			content: statusLine.dimmedContent,
+@@ -3525,6 +3640,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 
+ 	/** Plain right-group content for the claude composer's top rule. */
+ 	getStandaloneTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
++		if (this.#customRenderer) return { content: "", width: 0, revision: this.#renderRevision };
+ 		const statusLine = this.#buildStatusLine(width, "plain-right", previewTitle);
+ 		return {
+ 			content: statusLine.dimmedContent,
+@@ -3878,6 +3994,15 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
+ 
+ 	render(width: number): readonly string[] {
+ 		const lines: string[] = [];
++		if (this.#customRenderer) {
++			this.#syncCustomTimer();
++			if (this.#settings.showHookStatus ?? true) {
++				lines.push(...this.#sortedHookStatuses.map(text => truncateToWidth(sanitizeHookStatusText(text), width)));
++			}
++			const content = this.#customRenderer.render(width, this.getStatusLineSnapshot());
++			lines.push(truncateToWidth(content.replace(/[\r\n]+/g, " "), Math.max(0, width)));
++			return lines;
++		}
+ 		if (this.#standalone && !this.#autocompleteActiveProbe?.()) {
+ 			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
+ 			if (content) {
+diff --git a/packages/tui/src/status-line/types.ts b/packages/tui/src/status-line/types.ts
+index 47917bf..558ae8d 100644
+--- a/packages/tui/src/status-line/types.ts
++++ b/packages/tui/src/status-line/types.ts
+@@ -1,3 +1,25 @@
++/** Immutable inputs supplied by the host to an extension-owned bottom status row. */
++export interface StatusLineSnapshot {
++	readonly model: { readonly id: string; readonly name: string; readonly provider: string } | undefined;
++	readonly thinking: string | undefined;
++	readonly working: boolean;
++	readonly motion: boolean;
++	readonly phase: number;
++	readonly context: {
++		readonly percent: number | null;
++		readonly window: number;
++		readonly thresholdPercent: number | null;
++		readonly speculationPercent: number | null;
++		readonly autoCompact: boolean;
++	};
++	readonly cost: number | undefined;
++}
++
++export interface StatusLineRenderer {
++	render(width: number, snapshot: StatusLineSnapshot): string;
++	dispose?(): void;
++}
++
+ import type { Model } from "@oh-my-pi/pi-ai";
+ import type { SessionState, TspSpan, TspTone } from "@oh-my-pi/pi-wire";
+ import type { NativeNode, NativeUiEvent } from "../native/node";
+diff --git a/packages/tui/test/status-line-extension.test.ts b/packages/tui/test/status-line-extension.test.ts
+new file mode 100644
+index 0000000..d3fa684
+--- /dev/null
++++ b/packages/tui/test/status-line-extension.test.ts
+@@ -0,0 +1,192 @@
++import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
++import { stripVTControlCharacters } from "node:util";
++import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
++import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
++import { Editor } from "../src/components/editor";
++import { getComposerStyle } from "../src/components/composer/registry";
++import { StatusLineComponent } from "../src/status-line/component";
++import type { StatusLineHost, StatusLineSession } from "../src/status-line/host";
++import type { ComposerFactsSource, StatusLineRenderer } from "../src/status-line/types";
++import { getEditorTheme, initTheme } from "../src/theme";
++
++function fixture() {
++ const model = getBundledModel("deepseek", "deepseek-v4-flash");
++ let percent: number | null = 25;
++ let revision = 0;
++ let threshold = 82;
++ let tokens = 25000;
++ let window = 100000;
++ const getContextUsage = vi.fn(() => ({ tokens, contextWindow: window, percent }));
++ const session: StatusLineSession = {
++  model, messages: [], state: { model, messages: [], thinkingLevel: ThinkingLevel.High },
++  isStreaming: false, isAutoThinking: false,
++  sessionManager: { getSessionName: () => undefined, getSessionId: () => "main", getUsageStatistics: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, orchestrationInput: 0, orchestrationOutput: 0, orchestrationCacheRead: 0, premiumRequests: 0, cost: 1.25 }) },
++  modelRegistry: { isUsingOAuth: () => false }, getContextUsage,
++  autoResolvedThinkingLevel: () => "medium", isFastModeActive: () => false,
++  getAsyncJobSnapshot: () => ({ running: [] }), getGoalModeState: () => undefined,
++ };
++ const host: StatusLineHost = {
++  getSettings: () => ({ preset: "minimal", leftSegments: ["model"], rightSegments: ["context_pct"], showHookStatus: true }),
++  gitEnabled: () => false, codexResetFireworksEnabled: () => false,
++  getSettingsRevision: () => revision, getSessionSettingsRevision: () => revision,
++  getSessionSettingsIdentity: () => host, goalStatusInFooter: () => false,
++  activeAccount: () => undefined, canFetchUsageReports: () => false,
++  fetchUsageReports: async () => null, resolveActiveRepo: () => null,
++  lookupPullRequest: async () => ({ stdout: "", exitCode: 0 }),
++  calculateTokensPerSecond: () => null, limitMatchesActiveAccount: () => false,
++  computeCompactionBoundaries: () => ({ thresholdPercent: threshold, speculationPercent: 70 }),
++ };
++ const component = new StatusLineComponent(session, host);
++ const repaint = vi.fn();
++ component.watchBranch(repaint);
++ component.setAutoCompactEnabled(true);
++ return { component, session, repaint, getContextUsage,
++  unknownContext() { percent = null; session.contextUsageRevision = (session.contextUsageRevision ?? 0) + 1; },
++  changeContext(nextTokens: number, nextWindow: number) {
++   tokens = nextTokens; window = nextWindow; percent = tokens / window * 100;
++   session.contextUsageRevision = (session.contextUsageRevision ?? 0) + 1;
++  },
++  changeThreshold() { threshold = 90; revision++; } };
++}
++
++beforeAll(async () => { await initTheme(); });
++afterEach(() => { vi.useRealTimers(); });
++
++describe("extension-owned status row", () => {
++ it("uses cached provider context, session spend and real compaction boundaries", () => {
++  const f = fixture();
++  const snapshot = f.component.getStatusLineSnapshot();
++  expect(snapshot.context).toEqual({ percent: 25, window: 100000, thresholdPercent: 82, speculationPercent: 70, autoCompact: true });
++  expect(snapshot.cost).toBe(1.25);
++  expect(snapshot.model?.id).toBe(f.session.model?.id);
++  expect(snapshot.thinking).toBe("high");
++  f.component.getStatusLineSnapshot();
++  expect(f.getContextUsage).toHaveBeenCalledTimes(1);
++  f.unknownContext();
++  expect(f.component.getStatusLineSnapshot().context.percent).toBeNull();
++  f.changeThreshold();
++  expect(f.component.getStatusLineSnapshot().context.thresholdPercent).toBe(90);
++  f.component.setAutoCompactEnabled(false);
++  expect(f.component.getStatusLineSnapshot().context.thresholdPercent).toBeNull();
++  f.component.dispose();
++ });
++
++ it("refreshes the cached meter after compaction and a model-window change", () => {
++  const f = fixture();
++  expect(f.component.getStatusLineSnapshot().context.percent).toBe(25);
++  f.changeContext(10000, 100000);
++  expect(f.component.getStatusLineSnapshot().context.percent).toBe(10);
++  f.session.state.model = { ...f.session.state.model!, id: "changed-window", contextWindow: 200000 };
++  f.changeContext(10000, 200000);
++  const changed = f.component.getStatusLineSnapshot();
++  expect(changed.model?.id).toBe("changed-window");
++  expect(changed.context).toMatchObject({ percent: 5, window: 200000 });
++  f.component.dispose();
++ });
++
++ for (const shape of ["box", "band", "claude", "pi", "borderless", "rule", "field", "rail"]) {
++  it(`preserves ${shape} editor input/chrome and restores its original status`, () => {
++   const { component } = fixture();
++   const editor = Object.assign(new Editor(getEditorTheme()), { composerFacts: undefined as ComposerFactsSource | undefined });
++   editor.setBorderStyle(shape);
++   editor.setText("KEEP THIS DRAFT");
++   const style = getComposerStyle(shape);
++   component.attachToEditor(editor, style);
++   const original = editor.render(100).map(stripVTControlCharacters);
++   component.setStatusLine({ render: () => "PAVEWAY" });
++   component.attachToEditor(editor, style);
++   const custom = editor.render(100).map(stripVTControlCharacters);
++   expect(editor.getText()).toBe("KEEP THIS DRAFT");
++   expect(custom.some(line => line.includes("KEEP THIS DRAFT"))).toBe(true);
++   expect(custom.length).toBe(original.length);
++   expect(component.getTopBorder(100).content).toBe("");
++   expect(component.getBandTopBorder(100).content).toBe("");
++   expect(component.getStandaloneTopBorder(100).content).toBe("");
++   expect(component.render(100)).toEqual(["PAVEWAY"]);
++   component.setStatusLine(undefined);
++   expect(editor.render(100).map(stripVTControlCharacters)).toEqual(original);
++   component.dispose();
++  });
++ }
++
++ it("keeps unrelated extension statuses above the single custom bottom row and clips multiline output", () => {
++  const { component } = fixture();
++  component.setHookStatus("other-extension", "OTHER STATUS");
++  component.setStatusLine({ render: () => "PAVEWAY\nBOTTOM" });
++  expect(component.render(80)).toEqual(["OTHER STATUS", "PAVEWAY BOTTOM"]);
++  expect(component.render(4).at(-1)).toBe("PAV…");
++  component.dispose();
++ });
++
++ it("clocks only active motion frames, treats a repeated renderer as a repaint, and disposes exactly once", () => {
++  vi.useFakeTimers();
++  const { component, repaint, session } = fixture();
++  const dispose = vi.fn();
++  const renderer: StatusLineRenderer = { render: (_width, snapshot) => `phase ${snapshot.phase}`, dispose };
++  component.setStatusLine(renderer);
++  repaint.mockClear();
++  vi.advanceTimersByTime(1000);
++  expect(repaint).not.toHaveBeenCalled();
++  component.markActivityStart();
++  vi.advanceTimersByTime(124);
++  expect(component.render(80)).toEqual(["phase 0"]);
++  vi.advanceTimersByTime(1);
++  expect(component.render(80)).toEqual(["phase 1"]);
++  expect(repaint).toHaveBeenCalledTimes(1);
++  component.setStatusLine(renderer);
++  expect(dispose).not.toHaveBeenCalled();
++  expect(component.getStatusLineSnapshot().phase).toBe(1);
++  component.setMotionEnabled(false);
++  repaint.mockClear();
++  vi.advanceTimersByTime(1000);
++  expect(repaint).not.toHaveBeenCalled();
++  expect(component.getStatusLineSnapshot()).toMatchObject({ working: true, motion: false, phase: 0 });
++  component.setMotionEnabled(true);
++  vi.advanceTimersByTime(250);
++  expect(component.getStatusLineSnapshot().phase).toBe(2);
++  component.markActivityEnd();
++  repaint.mockClear();
++  vi.advanceTimersByTime(500);
++  expect(repaint).not.toHaveBeenCalled();
++  expect(component.getStatusLineSnapshot().phase).toBe(0);
++  component.markActivityStart();
++  vi.advanceTimersByTime(125);
++  component.setSession({ ...session, sessionFile: "other" });
++  expect(component.getStatusLineSnapshot().phase).toBe(0);
++  component.setStatusLine(undefined);
++  expect(dispose).toHaveBeenCalledTimes(1);
++  component.dispose();
++  component.dispose();
++  expect(dispose).toHaveBeenCalledTimes(1);
++  repaint.mockClear();
++  vi.advanceTimersByTime(1000);
++  expect(repaint).not.toHaveBeenCalled();
++ });
++
++ it("resets phase on /new when the AgentSession object is reused without disposing the renderer", () => {
++  vi.useFakeTimers();
++  const { component, session, repaint } = fixture();
++  const dispose = vi.fn();
++  const renderer: StatusLineRenderer = { render: (_width, snapshot) => `${snapshot.phase}`, dispose };
++  component.setStatusLine(renderer);
++  component.markActivityStart();
++  vi.advanceTimersByTime(375);
++  expect(component.getStatusLineSnapshot().phase).toBe(3);
++  session.sessionManager.getSessionId = () => "new-session";
++  component.setStatusLine(renderer);
++  expect(component.getStatusLineSnapshot()).toMatchObject({ phase: 0, working: false });
++  expect(dispose).not.toHaveBeenCalled();
++  repaint.mockClear();
++  vi.advanceTimersByTime(1000);
++  expect(repaint).not.toHaveBeenCalled();
++  component.markActivityStart();
++  vi.advanceTimersByTime(125);
++  expect(component.getStatusLineSnapshot().phase).toBe(1);
++  const replacementDispose = vi.fn();
++  component.setStatusLine({ render: () => "replacement", dispose: replacementDispose });
++  expect(dispose).toHaveBeenCalledTimes(1);
++  expect(component.getStatusLineSnapshot().phase).toBe(0);
++  component.dispose();
++  expect(replacementDispose).toHaveBeenCalledTimes(1);
++ });
++});

@@ -1,45 +1,21 @@
 // Thin native OMP extension. Runtime remains the owner of durable operations.
-import {createHash, randomUUID} from "node:crypto";
+import {createHash} from "node:crypto";
 import {lstatSync, readFileSync, readSync, writeFileSync, writeSync} from "node:fs";
-import {createConnection} from "node:net";
+import {runtimeRequest} from "./paveway-runtime.mjs";
 import {registerWakeups} from "./paveway-wakeup.mjs";
 import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
+import {registerMemoryContext} from "./paveway-memory-context.mjs";
+import {loadNativeTui} from "./paveway-settings.mjs";
+import {createStatusLine} from "./paveway-statusline.mjs";
+import {installComposer} from "./paveway-composer.mjs";
+import {presentationColor} from "./paveway-presentation.mjs";
 
 function stop() {
     try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
     finally { process.kill(process.pid, "SIGKILL"); }
 }
 
-export function runtimeRequest(path, command, args = {}) {
-    return new Promise((resolve, reject) => {
-        const info = lstatSync(path);
-        if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077))
-            return reject(new Error("Runtime socket is not private"));
-        const id = randomUUID();
-        const frame = JSON.stringify({api_version: 1, id, command, arguments: args}) + "\n";
-        if (Buffer.byteLength(frame) > 131072) return reject(new Error("Request too large"));
-        const socket = createConnection(path);
-        let data = Buffer.alloc(0);
-        const fail = () => { socket.destroy(); reject(new Error("Runtime unavailable; no automatic retry")); };
-        socket.setTimeout(10000, fail);
-        socket.on("error", fail);
-        socket.on("connect", () => socket.write(frame));
-        socket.on("data", chunk => {
-            data = Buffer.concat([data, chunk]);
-            if (data.length > 131072) return fail();
-            if (!data.includes(10)) return;
-            socket.destroy();
-            try {
-                const reply = JSON.parse(data.toString("utf8"));
-                if (reply.api_version !== 1 || reply.id !== id) return fail();
-                if (reply.error) return reject(new Error(reply.error.code + ": " + reply.error.message));
-                resolve(reply.result);
-            } catch { fail(); }
-        });
-        socket.on("end", () => { if (!data.includes(10)) fail(); });
-    });
-}
 
 export default async function paveway(pi) {
     try {
@@ -52,6 +28,21 @@ export default async function paveway(pi) {
         if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
+        const statusState = {coach: config.coach_id, workflow: `${config.coach_id}/${config.task_id}`};
+        let statusContext;
+        const nativeTui = await loadNativeTui();
+        const statusLine = createStatusLine(() => statusState, nativeTui,
+            {capStyle: config.statusline?.cap_style});
+        const roleColor = text => presentationColor(nativeTui, "brand", text);
+        const conversationPresentation = {
+            user: {compact: true, accent: roleColor},
+            assistant: {label: "GPT", labelColor: roleColor},
+        };
+        const publishStatus = update => {
+            if (JSON.stringify(update) === JSON.stringify({wakeup: statusState.wakeup, inbox: statusState.inbox})) return;
+            Object.assign(statusState, update);
+            statusContext?.ui.setStatusLine(statusLine);
+        };
         const management = registerManagement(pi, config, (ctx, action) => {
             if (!ctx.isIdle()) return ctx.ui.notify("Wait for the current activity before switching/restarting", "warning");
             writeFileSync(config.switch_path, JSON.stringify({nonce, ...action}), {mode: 0o600, flag: "wx"});
@@ -63,8 +54,15 @@ export default async function paveway(pi) {
             if (ctx?.model) await runtimeRequest(config.socket_path, "frontend.inference", {...bound(),
                 model: ctx.model.provider + "/" + ctx.model.id, thinking: pi.getThinkingLevel() || ""});
         };
-        const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference);
+        const wakeups = registerWakeups(pi, config, bound, runtimeRequest, captureInference, publishStatus);
         registerMemory(pi, config, bound, runtimeRequest);
+        registerMemoryContext(pi, {
+            scope: {workflow_id: config.workflow_id, task_id: config.task_id},
+            enabled: config.memory_enabled,
+            recall: known => runtimeRequest(config.socket_path, "native_memory.context",
+                {...bound(), parameters: {known}}),
+            fail: stop,
+        });
         const sessionReady = async (_event, ctx) => {
             try {
                 // OMP emits spawned-session hooks in the same extension host.
@@ -81,7 +79,14 @@ export default async function paveway(pi) {
                 const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
                 config.generation = owner.generation;
                 admitted = true;
-                ctx.ui.setStatus("paveway", `GPT · ${config.coach_id}/${config.task_id} · OMP native`);
+                if (typeof ctx.ui.setStatusLine !== "function")
+                    throw new Error("Paveway requires the pinned OMP status-line bridge; run packaging/omp/install.py");
+                if (typeof ctx.ui.setConversationPresentation !== "function")
+                    throw new Error("Paveway requires the pinned OMP conversation bridge");
+                ctx.ui.setConversationPresentation(conversationPresentation);
+                await installComposer(ctx, nativeTui);
+                statusContext = ctx;
+                ctx.ui.setStatusLine(statusLine);
                 await wakeups.refresh(ctx);
             } catch { stop(); }
         };
@@ -99,9 +104,21 @@ export default async function paveway(pi) {
             if (admitted) wakeups.refresh().catch(() => {});
         }, 10000);
         heartbeat.unref();
+        pi.on("session_shutdown", (_event, ctx) => {
+            if (ctx.agent?.kind !== "main") return;
+            clearInterval(heartbeat);
+            admitted = false;
+            statusContext = undefined;
+        });
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
             if (!admitted) stop();
             try {
+                if (args.trim() === "cache") {
+                    const usage = await runtimeRequest(config.socket_path, "cache.stats",
+                        {conversation_id: config.conversation_id});
+                    ctx.ui.notify(JSON.stringify(usage, null, 2), "info");
+                    return;
+                }
                 if (args.trim() && args.trim() !== "status") {
                     await management.run(args, ctx);
                     return;

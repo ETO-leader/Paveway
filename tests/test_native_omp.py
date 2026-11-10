@@ -7,6 +7,7 @@ from pathlib import Path
 import pty
 import select
 import shutil
+import shlex
 import struct
 import subprocess
 import sys
@@ -42,6 +43,9 @@ class NativeFixture(unittest.TestCase):
         self.env = Probe(self.root, shutil.which("omp"), self.server).env
         project = Path(__file__).resolve().parents[1]
         self.env["PYTHONPATH"] = str(project / "src")
+        # Reuse only the public host build, never the user's OMP configuration/auth.
+        self.env["PAVEWAY_OMP_CACHE"] = os.environ.get("PAVEWAY_OMP_CACHE",
+            str(Path.home() / ".cache/paveway/omp/18.16.0"))
         self.path = self.root / "config.toml"
         initialize(self.path, str(self.root / "state"), str(self.root / "workflows"))
         config = load_config(self.path)
@@ -82,7 +86,8 @@ class NativeFixture(unittest.TestCase):
     @staticmethod
     def is_prompt_request(body, text):
         """Match a submitted turn, not auxiliary requests carrying its history."""
-        messages = body.get("messages", [])
+        messages = [message for message in body.get("messages", []) if not (
+            isinstance(message.get("content"), str) and message["content"].startswith("Runtime Memory Context —"))]
         if not messages or messages[-1].get("role") != "user":
             return False
         content = messages[-1].get("content")
@@ -137,7 +142,7 @@ class NativeFixture(unittest.TestCase):
                 "\nFixture tool evidence: " + json.dumps(tools, ensure_ascii=False)[-2000:])
 
         try:
-            until("OMP native")
+            until("PAVEWAY")
             if background:
                 with self.assertRaises(RuntimeContractError):
                     request(self.config.server.socket_path, "frontend.begin", {"workflow_id": "native-test", "task_id": "training"})
@@ -161,7 +166,7 @@ class NativeFixture(unittest.TestCase):
             if switch:
                 before = request(self.config.server.socket_path, "frontend.list")[0]
                 send(b"/new\r")
-                until("OMP native", predicate=lambda: request(self.config.server.socket_path, "frontend.list")[0]["generation"] > before["generation"])
+                until("PAVEWAY", predicate=lambda: request(self.config.server.socket_path, "frontend.list")[0]["generation"] > before["generation"])
                 baseline = len(self.server.requests)
                 send(b"AFTER_NATIVE_NEW\r")
                 until("M0_REPLY", requests=baseline + 1)
@@ -197,6 +202,39 @@ class NativeOmpTests(NativeFixture):
         body = "NATIVE_HEAD " + "漢字 filler " * 6000 + " NATIVE_MIDDLE " + "漢字 filler " * 6000 + " NATIVE_TAIL"
         self.chat(body, background=True)
         self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
+
+    def test_different_worker_version_does_not_block_isolated_host(self):
+        worker = self.root / "worker-omp"
+        invocations = self.root / "worker-invocations"
+        worker.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then\n'
+            "  printf 'omp/99.0.0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            f'printf "%s\\n" "$@" >> {shlex.quote(str(invocations))}\n'
+            f'exec {shlex.quote(self.config.agent.executable)} "$@"\n')
+        worker.chmod(0o700)
+        self.stop_daemon()
+        self.config = replace(self.config, agent=replace(self.config.agent, executable=str(worker)))
+        saved_config = config_text(self.config)
+        self.path.write_text(saved_config)
+        self.daemon = subprocess.Popen(
+            [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
+            env=self.env, stdout=self.log, stderr=self.log)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                request(self.config.server.socket_path, "status")
+                break
+            except RuntimeContractError:
+                time.sleep(0.03)
+        else:
+            self.fail("isolated daemon did not restart")
+        self.chat("NATIVE_DIFFERENT_WORKER_VERSION", background=True)
+        self.assertIn("--mode\nrpc\n", invocations.read_text())
+        self.assertNotIn("--trusted-extension", invocations.read_text())
+        self.assertEqual(self.path.read_text(), saved_config)
 
     def test_native_resume_keeps_identity_and_readonly_archive(self):
         first = self.chat("FIRST_NATIVE_MESSAGE")

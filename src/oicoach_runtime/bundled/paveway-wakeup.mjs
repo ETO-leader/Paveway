@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-export function registerWakeups(pi, config, bound, request, captureInference) {
+export function registerWakeups(pi, config, bound, request, captureInference, publishStatus) {
     const call = async (operation, parameters, ctx) => {
         if (operation === "schedule" && ctx) await captureInference(ctx);
         return request(config.socket_path, "wakeup." + operation, {...bound(), parameters});
@@ -45,17 +45,30 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
     };
     let context;
     let upcoming = [];
-    let unread = 0;
+    let unread;
     let unavailable = false;
     let inboxInitialized = false;
     const observedDeliveries = new Set();
+    let clock;
     const status = () => {
         if (!context) return;
-        if (unavailable) return context.ui.setStatus("paveway-wakeup", "Runtime unavailable or owner uncertain · no automatic replay");
         const event = upcoming.find(row => row.not_before_utc);
-        const timing = event ? `${new Date(event.not_before_utc).toLocaleString()} · ` +
-            (event.status === "running" ? "executing" : `${Math.max(0, Math.ceil((Date.parse(event.not_before_utc) - Date.now()) / 1000))}s`) : "none";
-        context.ui.setStatus("paveway-wakeup", `Wakeup: ${timing} · Inbox: ${unread}`);
+        if (event && !unavailable && !clock) {
+            clock = setInterval(status, 1000);
+            clock.unref();
+        } else if ((!event || unavailable) && clock) {
+            clearInterval(clock);
+            clock = undefined;
+        }
+        const seconds = event ? Math.max(0, Math.ceil((Date.parse(event.not_before_utc) - Date.now()) / 1000)) : 0;
+        const remaining = seconds >= 86400 ? `${Math.ceil(seconds / 86400)}d` :
+            seconds >= 3600 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m` :
+            seconds >= 60 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : `${seconds}s`;
+        publishStatus({
+            wakeup: {unavailable, timing: unavailable ? undefined : event ? event.status === "running" ? "running" : remaining : "none",
+                running: !unavailable && event?.status === "running"},
+            inbox: unavailable ? undefined : unread,
+        });
     };
     const refresh = async ctx => {
         context = ctx || context;
@@ -85,8 +98,12 @@ export function registerWakeups(pi, config, bound, request, captureInference) {
             status();
         } catch (error) { unavailable = true; status(); throw error; }
     };
-    const clock = setInterval(status, 1000);
-    clock.unref();
+    pi.on("session_shutdown", (_event, ctx) => {
+        if (ctx.agent?.kind !== "main") return;
+        clearInterval(clock);
+        clock = undefined;
+        context = undefined;
+    });
     pi.registerCommand("wakeup", {description: "in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME",
         handler: async (args, ctx) => {
             try {
