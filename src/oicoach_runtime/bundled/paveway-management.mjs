@@ -227,7 +227,11 @@ export function registerManagement(pi, config, requestSwitch) {
             let offset = 0;
             while (true) {
                 const page = await cli(["sync", "sessions", "--workflow", config.workflow_id, "--offset", String(offset)]);
-                const labels = page.records.map(row => `${row.device_id.slice(0, 8)} · ${row.task_id} · ${row.session.slice(0, 8)} · ${row.message_count}`);
+                const labels = page.records.map(row => {
+                    const date = new Date(row.updated_at || row.created_at || NaN);
+                    const timestamp = Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("sv-SE", {timeZoneName: "short"});
+                    return `${timestamp} · ${row.task_id} · ${row.message_count} 条 · ${row.device_id.slice(0, 8)} · ${row.session.slice(0, 8)}`;
+                });
                 const selected = await ctx.ui.select("Synced text archives", [...labels,
                     ...(page.has_more ? ["Next page"] : []), ...(offset ? ["Previous page"] : [])]);
                 if (!selected) return;

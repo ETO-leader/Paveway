@@ -420,6 +420,22 @@ def export_history(config, repo, device):
     return len(rows)
 
 
+def archive_timestamp(value):
+    """Normalize source timestamps, never substitute export or file modification time."""
+    try:
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return None
+        elif type(value) in (int, float):
+            parsed = datetime.fromtimestamp(value / 1000, timezone.utc)  # OMP message epoch milliseconds
+        else:
+            return None
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def export_session(config, binding, device, *, root=None):
     path = Path(binding["session_file"])
     root = root or config.state_dir / "sessions" / binding["binding_id"]
@@ -427,6 +443,7 @@ def export_session(config, binding, device, *, root=None):
         raise ConflictError("Native archive escaped its assigned task")
     messages = []
     header = False
+    created_at = None
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_size > 16 * 1024 * 1024:
@@ -444,6 +461,7 @@ def export_session(config, binding, device, *, root=None):
                 if header or entry.get("id") != binding["session_id"] or entry.get("cwd") != binding["workspace"] or type(entry.get("version", 1)) is not int or entry.get("version", 1) not in (1, 2, 3):
                     raise RuntimeContractError("Native archive identity mismatch")
                 header = True
+                created_at = archive_timestamp(entry.get("timestamp"))
                 continue
             message = entry.get("message")
             if entry.get("type") != "message" or not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
@@ -458,11 +476,15 @@ def export_session(config, binding, device, *, root=None):
             if any(value is not None and (not isinstance(value, str) or len(value) > 128) for value in (entry.get("id"), entry.get("parentId"))):
                 raise RuntimeContractError("Invalid native message identity")
             messages.append({"role": message["role"], "text": content,
-                             "id": entry.get("id"), "parent_id": entry.get("parentId")})
+                             "id": entry.get("id"), "parent_id": entry.get("parentId"),
+                             "timestamp": archive_timestamp(entry.get("timestamp")) or archive_timestamp(message.get("timestamp"))})
         after = os.fstat(stream.fileno())
         if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or not header:
             raise ConflictError("Native archive changed during export")
+    times = [m["timestamp"] for m in messages if m["timestamp"]]
     return {"device_id": device, "binding_id": binding["binding_id"], "workflow_id": binding["workflow_id"],
+            "created_at": created_at or (min(times) if times else None),
+            "updated_at": max(times) if times else created_at,
             "task_id": binding["task_id"], "archive_mode": "all_branches", "messages": messages}
 
 
@@ -635,6 +657,8 @@ def sessions(config, workflow=None, offset=0):
         validate_id(item.get("task_id"))
         if workflow is None or workflow == item["workflow_id"]:
             rows.append({"device_id": device, "session": session, "workflow_id": item["workflow_id"],
-                "task_id": item["task_id"], "source": item.get("source", "omp_rpc"), "message_count": len(item["messages"])})
-    rows.sort(key=lambda row: (row["workflow_id"], row["task_id"], row["device_id"], row["session"]))
+                "task_id": item["task_id"], "source": item.get("source", "omp_rpc"), "message_count": len(item["messages"]),
+                "created_at": archive_timestamp(item.get("created_at")),
+                "updated_at": archive_timestamp(item.get("updated_at"))})
+    rows.sort(key=lambda row: (row["updated_at"] or row["created_at"] or "", row["session"]), reverse=True)
     return {"api_version": 1, "records": rows[offset:offset + 20], "has_more": len(rows) > offset + 20, "offset": offset}

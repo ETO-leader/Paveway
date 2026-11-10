@@ -234,6 +234,8 @@ class NativeOmpTests(NativeFixture):
         self.assertEqual(len(page["records"]), 1)
         found = page["records"][0]
         self.assertEqual(found["source"], "omp_native_session")
+        self.assertIsNotNone(found["created_at"])
+        self.assertIsNotNone(found["updated_at"])
         saved = git_sync.messages(config, found["device_id"], found["session"])
         self.assertIn("FIRST_NATIVE_MESSAGE", json.dumps(saved))
         self.assertIn("SECOND_NATIVE_MESSAGE", json.dumps(saved))
