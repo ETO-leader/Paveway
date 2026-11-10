@@ -197,9 +197,9 @@ class GitSyncTests(unittest.TestCase):
             binding = store.connection.execute("SELECT * FROM session_bindings WHERE binding_id=?", (row["binding_id"],)).fetchone()
             path = self.a.state_dir / "sessions" / row["binding_id"] / "session.jsonl"
             entries = [
-                {"type": "session", "id": "session-id", "version": 3, "cwd": binding["workspace"]},
-                {"type": "message", "id": "one", "parentId": None, "message": {"role": "user", "content": "long user text"}},
-                {"type": "message", "id": "two", "parentId": "one", "message": {"role": "assistant", "content": [
+                {"type": "session", "id": "session-id", "version": 3, "cwd": binding["workspace"], "timestamp": "2026-11-09T10:00:00+08:00"},
+                {"type": "message", "id": "one", "parentId": None, "timestamp": "2026-11-09T02:01:00Z", "message": {"role": "user", "content": "long user text"}},
+                {"type": "message", "id": "two", "parentId": "one", "timestamp": "2026-11-09T10:02:00+08:00", "message": {"role": "assistant", "content": [
                     {"type": "thinking", "thinking": "DO_NOT_EXPORT_THINKING"},
                     {"type": "toolCall", "name": "bash", "arguments": {"command": "DO_NOT_EXPORT_COMMAND"}},
                     {"type": "text", "text": "visible assistant text"}]}},
@@ -217,12 +217,33 @@ class GitSyncTests(unittest.TestCase):
         self.assertIn("visible assistant text", encoded)
         self.assertNotIn("DO_NOT_EXPORT", encoded)
         self.assertEqual(page["messages"][1]["parent_id"], "one")
+        self.assertEqual(page["messages"][1]["timestamp"], "2026-11-09T02:02:00+00:00")
+        session = git_sync.sessions(self.b)["records"][0]
+        self.assertEqual(session["created_at"], "2026-11-09T02:00:00+00:00")
+        self.assertEqual(session["updated_at"], "2026-11-09T02:02:00+00:00")
         previous = page["messages"]
         with path.open("a") as stream:
             stream.write('{"incomplete":')
         self.cycle(self.a)
         self.cycle(self.b)
         self.assertEqual(git_sync.messages(self.b, device, row["binding_id"])["messages"], previous)
+
+    def test_archive_timestamps_and_recent_first_with_legacy_records(self):
+        self.assertIsNone(git_sync.archive_timestamp("2026-11-09T10:00:00"))
+        self.assertIsNone(git_sync.archive_timestamp(True))
+        self.assertIsNone(git_sync.archive_timestamp(float("inf")))
+        self.assertEqual(git_sync.archive_timestamp(0), "1970-01-01T00:00:00+00:00")
+        values = git_sync.settings(self.a)
+        for index, timestamp in enumerate((None, "2026-11-08T23:00:00Z", "2026-11-09T10:00:00+08:00")):
+            session = str(index) * 64
+            record = {"device_id": values["device_id"], "binding_id": session,
+                      "workflow_id": "coach", "task_id": "test", "messages": []}
+            if timestamp:
+                record["updated_at"] = timestamp
+            git_sync.write_json(Path(values["repository"]) / "devices" / values["device_id"] / "sessions" / (session + ".json"), record)
+        rows = git_sync.sessions(self.a)["records"]
+        self.assertEqual([r["session"] for r in rows], [str(i) * 64 for i in (2, 1, 0)])
+        self.assertIsNone(rows[-1]["updated_at"])
 
     def test_unbound_remote_profile_waits_for_local_workspace(self):
         self.edit(self.a, "portable")
