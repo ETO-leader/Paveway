@@ -120,16 +120,17 @@ class Inbox:
         Tijian remains authoritative: no Inbox row or event settlement happens
         before the delivery gate re-reads the Todo. This never creates a Run.
         """
+        import json
         delivered = []
         for event in self.bound_due(limit=limit):
             try:
-                allowed = await service.gate(event)
-            except ConflictError:
-                # A CAS/source conflict only defers this occurrence. Re-read
-                # happens next pass; the binding backoff prevents a hot loop.
-                service.defer(event["payload"]["wake_binding_id"], "binding_verify_conflict")
-                continue
-            except RuntimeContractError:
+                allowed = await service.delivery_allowed(event)
+            except RuntimeContractError as error:
+                # Unexpected runtime/storage failure: report it and leave the
+                # durable event queued. Other bindings still make progress.
+                print(json.dumps({"component": "scheduler", "transition": "binding_gate_failed",
+                                  "event_id": event["event_id"],
+                                  "error_code": getattr(error, "code", type(error).__name__)}), flush=True)
                 continue
             if not allowed:
                 continue

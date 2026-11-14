@@ -37,7 +37,7 @@ class NotificationDBusTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(self.config, clock=lambda: self.now)
         self.addCleanup(self.store.close)
         bus_config = self.root / "bus.conf"
-        bus_config.write_text(f'<busconfig><type>session</type><listen>unix:tmpdir={self.root}</listen><auth>EXTERNAL</auth><policy context="default"><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>')
+        bus_config.write_text(f'<busconfig><type>session</type><listen>unix:abstract=/tmp/dbus-pw-{uuid.uuid4().hex}</listen><auth>EXTERNAL</auth><policy context="default"><allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>')
         self.bus = subprocess.Popen(["dbus-daemon", "--nofork", "--nopidfile", "--print-address=1", "--config-file=" + str(bus_config)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         self.addCleanup(self.stop, self.bus)
         self.address = self.bus.stdout.readline().strip()

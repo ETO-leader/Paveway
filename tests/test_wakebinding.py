@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -210,7 +211,7 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         first = await self.create()
         binding = self.store.wakebinding(first["binding"]["binding_id"])
         event = self.store.event(binding["event_id"])
-        configure(self.config, True)
+        configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         self.write_todo(decision="done", version=2)
         self.now += timedelta(hours=2)
@@ -235,7 +236,9 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.event(event["event_id"])["status"], "queued")
         self.assertFalse(await self.service.gate(self.store.event(event["event_id"])))
         self.assertIsNone(self.store.claim_due("worker"))
-        configure(self.config, True)
+        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+        configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         await Watcher(self.store, sender).tick()
         sender.assert_not_awaited()
@@ -250,6 +253,14 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
         self.assertIsNone(self.store.claim_due("worker"))
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+        self.assertEqual(await Inbox(self.store).project_bound_due(self.service), [])
+        reopened = Store(self.config, clock=lambda: self.now)
+        try:
+            self.assertEqual(await Inbox(reopened).project_bound_due(
+                WakeBindings(reopened)), [])
+            self.assertEqual(len(Inbox(reopened).list("example")["messages"]), 1)
+        finally:
+            reopened.close()
 
     async def test_source_change_conflicts_instead_of_retargeting_todo(self):
         first = await self.create()
@@ -290,7 +301,7 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
     async def test_notification_gate_reschedules_before_desktop_delivery(self):
         first = await self.create()
         binding = self.store.wakebinding(first["binding"]["binding_id"])
-        configure(self.config, True)
+        configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         self.write_todo(due=self.now + timedelta(hours=3), version=2)
         self.now += timedelta(hours=1, seconds=1)
@@ -302,7 +313,7 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_desktop_delivery_is_once_after_gate(self):
         first = await self.create()
-        configure(self.config, True)
+        configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         self.now += timedelta(hours=1)
         watcher = Watcher(self.store, sender)
@@ -454,29 +465,134 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
             "SELECT count(*) FROM runs WHERE status IN ('leased','running')").fetchone()[0], 0)
         self.assertIsNone(self.store.claim_due("worker"))
 
-    async def test_projection_conflict_is_isolated_and_backed_off(self):
-        await self.create()
+    async def test_gate_cas_conflict_defers_only_that_binding_and_backs_off(self):
+        first = await self.create()
+        first_id = first["binding"]["binding_id"]
+        # A pending binding takes the status-change CAS path on recovery.
+        self.assertTrue(self.service.defer(first_id, "todo_unavailable"))
+        self.now += timedelta(seconds=1)
         await self.create(name="second")
         self.now += timedelta(hours=1)
-        calls = {"n": 0}
-        original = self.service.gate
+        real = self.store.apply_wakebinding
+        failures = {"first": 0}
 
-        async def flaky(event):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise ConflictError("binding changed concurrently")
-            return await original(event)
+        def flaky(identity, expected_version, **fields):
+            # Two conflicting writes exhaust the reconciler's own CAS retry,
+            # so the gate must surface binding_conflict to the projection.
+            if identity == first_id and failures["first"] < 2:
+                failures["first"] += 1
+                raise ConflictError("concurrent binding update")
+            return real(identity, expected_version, **fields)
 
-        with patch.object(self.service, "gate", new=flaky):
+        with patch.object(self.store, "apply_wakebinding", side_effect=flaky):
             delivered = await Inbox(self.store).project_bound_due(self.service)
         self.assertEqual(len(delivered), 1)
         self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
-        deferred = [row for row in self.store.wakebindings("example") if row["status"] == "pending"]
-        self.assertEqual(len(deferred), 1)
+        deferred = self.store.wakebinding(first_id)
+        self.assertEqual(deferred["status"], "pending")
+        self.assertEqual(deferred["last_error_code"], "binding_verify_conflict")
+        self.assertIsNotNone(deferred["last_attempt_at"])
+        self.assertIsNone(self.store.claim_due("worker"))
+
+        # The binding backoff, not an exception escaping the gate, suppresses
+        # an immediate retry. Other bindings are unaffected.
+        with patch.object(self.service, "gate", new=AsyncMock(side_effect=AssertionError("gate must not run"))) as gate:
+            self.assertEqual(await Inbox(self.store).project_bound_due(self.service), [])
+            gate.assert_not_awaited()
+
+        self.now += timedelta(seconds=16)
+        delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 2)
+        recovered = self.store.wakebinding(first_id)
+        self.assertEqual(recovered["status"], "active")
+        self.assertIsNone(recovered["last_error_code"])
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+
+    async def test_defer_survives_its_own_cas_race(self):
+        first = await self.create()
+        binding_id = first["binding"]["binding_id"]
+        self.assertTrue(self.service.defer(binding_id, "todo_unavailable"))
+        self.now += timedelta(hours=1)
+        real = self.store.apply_wakebinding
+        failures = {"n": 0}
+
+        def racing(identity, expected_version, **fields):
+            # Four failures: two in the gate's reconcile, two in defer's first
+            # attempt. defer must re-read and retry rather than give up.
+            if failures["n"] < 4:
+                failures["n"] += 1
+                raise ConflictError("concurrent binding update")
+            return real(identity, expected_version, **fields)
+
+        with patch.object(self.store, "apply_wakebinding", side_effect=racing):
+            delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(delivered, [])
+        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
+        deferred = self.store.wakebinding(binding_id)
+        self.assertEqual(deferred["status"], "pending")
+        self.assertEqual(deferred["last_error_code"], "binding_verify_conflict")
         self.assertIsNone(self.store.claim_due("worker"))
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
-        # The conflicted binding is in backoff; an immediate retry is bounded.
-        self.assertEqual(await Inbox(self.store).project_bound_due(self.service), [])
+        self.now += timedelta(seconds=16)
+        delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
+        recovered = self.store.wakebinding(binding_id)
+        self.assertEqual(recovered["status"], "active")
+        self.assertIsNone(recovered["last_error_code"])
+
+    async def test_bound_reminder_delivers_while_agent_is_busy(self):
+        from dataclasses import replace
+        from oicoach_runtime.scheduler import Runtime
+        fake_omp = Path(__file__).with_name("fake_omp.py")
+        config = replace(self.config,
+                         server=replace(self.config.server, poll_interval_seconds=0.02),
+                         agent=replace(self.config.agent, executable=str(fake_omp)))
+        runtime = Runtime(config)
+        runtime.store = Store(config, clock=lambda: self.now)
+        self.addCleanup(runtime.store.close)
+        loop = asyncio.create_task(runtime.schedule_loop())
+        release = self.workspace / "fake-release"
+        self.addCleanup(loop.cancel)
+        self.addCleanup(runtime.stop_event.set)
+        self.addCleanup(lambda: release.touch(exist_ok=True))
+
+        self.write_todo(due=self.now + timedelta(minutes=30))
+        first = await self.create()
+        binding = self.store.wakebinding(first["binding"]["binding_id"])
+        self.store.enqueue("example", "training", "busy agent", "busy-agent",
+                           payload={"fake_mode": "hold"}, at="now")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            rows = self.store.connection.execute(
+                "SELECT status FROM runs ORDER BY started_at").fetchall()
+            if rows and rows[-1]["status"] == "running":
+                break
+            await asyncio.sleep(0.02)
+        else:
+            self.fail("fake agent did not start")
+
+        self.now += timedelta(minutes=31)
+        deadline = time.monotonic() + 10
+        while len(Inbox(self.store).list("example")["messages"]) < 1 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        messages = Inbox(self.store).list("example")["messages"]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(self.store.event(binding["event_id"])["status"], "succeeded")
+        self.assertEqual(self.store.connection.execute(
+            "SELECT status FROM runs ORDER BY started_at").fetchall()[-1]["status"], "running")
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 1)
+
+        release.touch()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self.store.connection.execute(
+                    "SELECT status FROM runs ORDER BY started_at").fetchall()[-1]["status"] == "succeeded":
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 1)
+        self.assertIsNone(self.store.claim_due("worker"))
 
     async def test_projection_task_failure_does_not_escape_the_scheduler(self):
         from oicoach_runtime.scheduler import Runtime

@@ -799,7 +799,7 @@ class WakeBindings:
                 results.append(self.store.wakebinding(row["binding_id"]))
         return results
 
-    def local_gate(self, event):
+    def local_gate(self, event, *, require_active=True):
         payload = event.get("payload") or {}
         binding_id = payload.get("wake_binding_id")
         if binding_id is None:
@@ -808,7 +808,7 @@ class WakeBindings:
             binding = self.store.wakebinding(binding_id)
         except (RuntimeContractError, NotFoundError):
             return False
-        if binding["status"] != "active" or binding["event_id"] != event["event_id"]:
+        if (require_active and binding["status"] != "active") or binding["event_id"] != event["event_id"]:
             return False
         if payload.get("todo_source_id") != binding["todo_source_id"] or payload.get("todo_id") != binding["todo_id"]:
             return False
@@ -866,19 +866,20 @@ class WakeBindings:
         return {"allowed": True, "action": "none", "reason": None}
 
     async def gate(self, event):
-        if not self.local_gate(event):
-            return False
         payload = event.get("payload") or {}
         binding_id = payload.get("wake_binding_id")
         if binding_id is None:
-            return True
+            return self.local_gate(event)
         if event["status"] in ("leased", "running"):
+            if not self.local_gate(event):
+                return False
             result = await self.verify(event)
             return result["allowed"]
-        try:
-            binding = await self.reconcile_binding(binding_id, reason="delivery_gate")
-        except Exception:
+        # A pending/ineligible binding may recover; only association, source
+        # identity and an enabled binding are required before re-reading Todo.
+        if not self.local_gate(event, require_active=False):
             return False
+        binding = await self.reconcile_binding(binding_id, reason="delivery_gate")
         if binding["status"] != "active" or binding["event_id"] != event["event_id"]:
             return False
         current = self.store.event(event["event_id"])
@@ -887,18 +888,45 @@ class WakeBindings:
                 and current["not_before_utc"] <= self.store.timestamp()
                 and self.local_gate(current))
 
+    async def delivery_allowed(self, event):
+        """Shared delivery decision for Scheduler projection and the notifier.
+
+        Business rejections and recorded unavailable states return False.
+        Recoverable CAS conflicts are deferred so the binding's last_attempt
+        backoff applies, while unexpected runtime errors propagate for the
+        caller to report instead of being disguised as a normal rejection.
+        """
+        payload = event.get("payload") or {}
+        binding_id = payload.get("wake_binding_id")
+        try:
+            return await self.gate(event)
+        except (ConflictError, WakeBindingError) as error:
+            if binding_id and getattr(error, "code", None) in ("conflict", "binding_conflict"):
+                if not self.defer(binding_id, "binding_verify_conflict", str(error)[:200]):
+                    raise
+            return False
+        except NotFoundError:
+            return False
+
     def defer(self, binding_id, code, message=None):
-        """Bounded backoff after a pre-dispatch verification failure.
+        """Bounded backoff after a verification failure.
 
         The binding becomes pending so claim/projection stop retrying it until
-        the periodic reconciler re-reads Tijian. CAS races are not retried here.
+        the periodic reconciler re-reads Tijian. A concurrent version change is
+        re-read once; if it still races, the competing writer owns the state.
         """
-        try:
-            binding = self.store.wakebinding(binding_id)
-            if binding["status"] == "disabled":
+        for _ in range(2):
+            try:
+                binding = self.store.wakebinding(binding_id)
+                if binding["status"] == "disabled":
+                    return False
+                self._mark(binding, status="pending", error=code,
+                           message=message or ERROR_MESSAGES.get(code, code))
+                return True
+            except (ConflictError, WakeBindingError) as error:
+                if getattr(error, "code", None) not in ("conflict", "binding_conflict"):
+                    return False
+                continue
+            except (RuntimeContractError, NotFoundError):
                 return False
-            self._mark(binding, status="pending", error=code,
-                       message=message or ERROR_MESSAGES.get(code, code))
-            return True
-        except (RuntimeContractError, NotFoundError):
-            return False
+        return False

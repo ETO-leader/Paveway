@@ -214,6 +214,7 @@ oicoach-runtime wakebinding cancel --workflow coach --task training \
 - 绑定提醒在事务中原子完成 Inbox 投影与事件结算；即使 Notification Worker 未运行也由 Runtime 持久投递。Notification Worker 只负责桌面通知，仍按 occurrence 去重。
 - Todo 已完成、删除、改期或来源变化时不投影；Todo 暂时不可用时失败关闭（fail-closed），保留绑定 `pending` 状态与退避重试，不会把查询失败当成“仍有效”。
 - 用户取消事件或绑定会禁用绑定；Reconciler 不会擅自重建。Todo 完成会取消未投递事件；重新开放仅在策略允许或显式 sync 时创建新一代事件。
+- 到期投影若与用户修改绑定并发而命中 CAS 冲突，只在该周期内退避重试一次；仍冲突则保留绑定与事件，由下一周期重新读取权威 Todo，不重复投影。
 - 已实际送达的外部通知无法撤回；但观察到失效后不会继续重复投递。事件、Inbox 与桌面通知继续使用原有 occurrence 去重与崩溃恢复语义。
 
 ### 诊断错误码

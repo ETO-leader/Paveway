@@ -247,17 +247,58 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.workspace.mkdir(mode=0o700)
         self.session_dir = self.root / "session"
         self.session_dir.mkdir(mode=0o700)
+        # Isolate OMP from the host profile and supply a local model identifier:
+        # get_state never calls it, but OMP refuses to boot without a model.
+        self.agent_dir = self.root / "agent"
+        self.agent_dir.mkdir(mode=0o700)
+        (self.agent_dir / "config.yml").write_text(json.dumps({
+            "startup": {"setupWizard": False, "showSplash": False}, "autoResume": False}))
+        (self.agent_dir / "models.yml").write_text(json.dumps({"providers": {"paveway-smoke": {
+            "baseUrl": "http://127.0.0.1:9/v1", "auth": "none", "api": "openai-completions",
+            "models": [{"id": "probe", "name": "probe", "reasoning": False,
+                        "input": ["text"], "contextWindow": 128000, "maxTokens": 64}]}}}))
+        self.model = "paveway-smoke/probe"
+        self.env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root),
+                    "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TERM": "xterm-256color",
+                    "PI_CODING_AGENT_DIR": str(self.agent_dir)}
+        for kind in ("CONFIG", "STATE", "DATA", "CACHE"):
+            self.env[f"XDG_{kind}_HOME"] = str(self.root / kind.lower())
+        for key in ("PAVEWAY_OMP_SOURCE", "PAVEWAY_PINNED_BUN", "PYTHONPATH"):
+            if key in os.environ:
+                self.env[key] = os.environ[key]
+        self.env["PAVEWAY_OMP_CACHE"] = os.environ.get(
+            "PAVEWAY_OMP_CACHE", str(Path.home() / ".cache/paveway/omp/18.16.0"))
         self.config_path = self.root / "config.toml"
         self.config = Config(
             state_dir=self.root / "state",
             workflow_root=self.root / "workflows",
             server=ServerConfig(socket_path=str(self.root / "test.sock")),
-            agent=AgentConfig(executable="omp", tools_enabled=True, skills_enabled=True),
+            agent=AgentConfig(executable="omp", model=self.model, tools_enabled=True, skills_enabled=True),
         )
         self.config_path.write_text(config_text(self.config))
 
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
+
+    async def wait_ready(self, process, timeout=30):
+        """Use OMP's explicit RPC ready frame instead of an arbitrary sleep."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                self.fail("OMP did not emit its RPC ready frame")
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), remaining)
+            except TimeoutError:
+                self.fail("OMP did not emit its RPC ready frame")
+            if not line:
+                stderr = await process.stderr.read() if process.stderr is not None else b""
+                self.fail("OMP exited before its RPC ready frame: " + stderr.decode(errors="replace")[:2000])
+            message = json.loads(line.decode())
+            if message.get("type") == "ready":
+                self.assertEqual(message.get("protocolVersion"), 1)
+                return
 
     async def test_real_omp_renders_static_layers_and_dynamic_tools(self):
         """Real OMP renders static layers and native tools without runtime memory."""
@@ -285,11 +326,12 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
 
         # Launch real OMP in rpc mode and inspect get_state
         process = await asyncio.create_subprocess_exec(
-            "omp", "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
+            "omp", "--model", self.model, "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
             "--mode", "rpc", "--no-session", "--system-prompt-template", str(template_file),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            env=self.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
+            await self.wait_ready(process)
             req = json.dumps({"id": "smoke-state", "type": "get_state"}) + "\n"
             process.stdin.write(req.encode())
             await process.stdin.drain()
@@ -364,11 +406,12 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             "{{/with}}\n"
         )
         process = await asyncio.create_subprocess_exec(
-            "omp", "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
+            "omp", "--model", self.model, "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
             "--mode", "rpc", "--no-session", "--system-prompt-template", str(test_tmpl),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            env=self.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
+            await self.wait_ready(process)
             req = json.dumps({"id": "label-check", "type": "get_state"}) + "\n"
             process.stdin.write(req.encode())
             await process.stdin.drain()
@@ -403,6 +446,7 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
+            await self.wait_ready(process_desc)
             req = json.dumps({"id": "desc-check", "type": "get_state"}) + "\n"
             process_desc.stdin.write(req.encode())
             await process_desc.stdin.drain()
@@ -449,13 +493,12 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         template_file = argv[argv.index("--system-prompt-template") + 1]
 
         process = await asyncio.create_subprocess_exec(
-            "omp", "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
+            "omp", "--model", self.model, "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
             "--mode", "rpc", "--no-session", "--system-prompt-template", str(template_file),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            env=self.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
-            # Wait for MCP initialization and query state
-            await asyncio.sleep(1)
+            await self.wait_ready(process)
             req = json.dumps({"id": "mcp-state", "type": "get_state"}) + "\n"
             process.stdin.write(req.encode())
             await process.stdin.drain()
@@ -499,12 +542,13 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         config_file = argv[argv.index("--config") + 1]
 
         process = await asyncio.create_subprocess_exec(
-            "omp", "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
+            "omp", "--model", self.model, "--cwd", str(self.workspace), "--session-dir", str(self.session_dir),
             "--mode", "rpc", "--no-session", "--system-prompt-template", str(template_file),
             "--config", str(config_file),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            env=self.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
+            await self.wait_ready(process)
             req = json.dumps({"id": "skill-state", "type": "get_state"}) + "\n"
             process.stdin.write(req.encode())
             await process.stdin.drain()
@@ -530,7 +574,7 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
                 await process.wait()
 
         # Verify omp read skill://paveway-tijian:raw can read the skill content
-        env = dict(os.environ, PI_CONFIG_FILES=str(config_file))
+        env = {**self.env, "PI_CONFIG_FILES": str(config_file)}
         read_res = subprocess.run(
             ["omp", "read", "skill://paveway-tijian:raw"],
             cwd=str(self.workspace), env=env,

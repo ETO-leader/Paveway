@@ -47,13 +47,14 @@ def settings(config):
         raise RuntimeContractError("Invalid desktop notification settings") from None
 
 
-def configure(config, enabled, backend=None, show_body=None):
+def configure(config, enabled, backend=None, show_body=None, *, now=None):
     from datetime import datetime, timezone
     if type(enabled) is not bool or (show_body is not None and type(show_body) is not bool):
         raise RuntimeContractError("Notification enabled/show_body must be boolean")
     old = settings(config)
     value = {**old, "enabled": enabled}
-    if enabled and not old["enabled"]: value["since_utc"] = utc_text(datetime.now(timezone.utc))
+    if enabled and not old["enabled"]:
+        value["since_utc"] = utc_text(now if now is not None else datetime.now(timezone.utc))
     if backend is not None:
         if backend not in ("auto", "linux", "windows"): raise RuntimeContractError("Choose auto, linux or windows notifications")
         value["backend"] = backend
@@ -196,11 +197,15 @@ class Watcher:
                 return
             event = self.store.event(row[0])
             if event["payload"].get("wake_binding_id"):
-                gate = self.gate or service.gate
+                gate = self.gate or service.delivery_allowed
                 try:
                     allowed = await gate(event)
-                except Exception:
-                    allowed = False
+                except RuntimeContractError as error:
+                    print(json.dumps({"component": "desktop-notifications",
+                                      "transition": "binding_gate_failed",
+                                      "event_id": event["event_id"],
+                                      "error_code": getattr(error, "code", type(error).__name__)}), flush=True)
+                    continue
                 if not allowed:
                     continue
             with self.store.transaction() as db:

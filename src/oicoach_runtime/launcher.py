@@ -50,6 +50,22 @@ class RuntimeHandle:
     status: dict
 
 
+def reap_detached_runtimes(timeout=0):
+    """Reap daemon handles that have already exited.
+
+    The daemon normally outlives the launcher process, so handles stay alive
+    without being waited on. Once lifecycle shutdown has stopped a daemon, its
+    Popen must be polled so an exiting test process does not warn about it.
+    The optional timeout waits for a just-signalled daemon to finish exiting.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        _DETACHED_RUNTIMES[:] = [handle for handle in _DETACHED_RUNTIMES if handle.poll() is None]
+        if not _DETACHED_RUNTIMES or time.monotonic() >= deadline:
+            return
+        time.sleep(0.02)
+
+
 def ownership_path(config):
     return config.state_dir / "launcher" / "owned-runtime.json"
 
@@ -233,7 +249,7 @@ def _start_standalone(config, config_path):
         process = subprocess.Popen(
             argv, stdin=null_fd, stdout=log_fd, stderr=log_fd,
             close_fds=True, start_new_session=True, env=environment)
-        _DETACHED_RUNTIMES[:] = [handle for handle in _DETACHED_RUNTIMES if handle.poll() is None]
+        reap_detached_runtimes()
         _DETACHED_RUNTIMES.append(process)
         pid = process.pid
         (config.state_dir / "daemon.pid").write_text(str(pid), encoding="utf-8")

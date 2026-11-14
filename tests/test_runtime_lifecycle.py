@@ -22,6 +22,7 @@ from oicoach_runtime.launcher import (
     _lifecycle_target,
     ensure_runtime,
     ownership_path,
+    reap_detached_runtimes,
     read_ownership,
     shutdown_owned_runtime,
 )
@@ -79,6 +80,7 @@ class RuntimeLifecycleTests(unittest.TestCase):
                 except RuntimeContractError:
                     break
                 time.sleep(0.05)
+        reap_detached_runtimes(5)
         self.temp_dir.cleanup()
 
     def start_stale_daemon(self):
