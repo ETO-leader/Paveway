@@ -93,6 +93,57 @@ class Inbox:
                     if complete:
                         self.store.complete_reminder(db, event)
 
+    def bound_due(self, *, limit=20, retry_after=15):
+        """Due Tijian-bound reminders that still need a gated Inbox projection.
+
+        The binding's last_attempt_at provides bounded backoff for Tijian
+        outages, so a repeated reconciliation pass cannot hammer the MCP.
+        """
+        from datetime import timedelta
+        from .models import utc_text
+        cutoff = utc_text(self.store.clock() - timedelta(seconds=retry_after))
+        rows = self.store.connection.execute("""SELECT e.event_id FROM events e
+            JOIN wake_bindings b ON b.event_id=e.event_id
+            WHERE json_extract(e.payload_json,'$.native_wakeup')=1
+            AND json_extract(e.payload_json,'$.intent')='reminder'
+            AND json_extract(e.payload_json,'$.wake_binding_id') IS NOT NULL
+            AND e.status='queued' AND e.not_before_utc<=?
+            AND b.status IN ('active','pending')
+            AND (b.last_error_code IS NULL OR b.last_attempt_at IS NULL OR b.last_attempt_at<=?)
+            ORDER BY e.not_before_utc,e.created_at,e.event_id LIMIT ?""",
+            (self.store.timestamp(), cutoff, limit)).fetchall()
+        return [self.store.event(row[0]) for row in rows]
+
+    async def project_bound_due(self, service, *, limit=20):
+        """Gate, then atomically project and settle each due bound reminder.
+
+        Tijian remains authoritative: no Inbox row or event settlement happens
+        before the delivery gate re-reads the Todo. This never creates a Run.
+        """
+        delivered = []
+        for event in self.bound_due(limit=limit):
+            try:
+                allowed = await service.gate(event)
+            except ConflictError:
+                # A CAS/source conflict only defers this occurrence. Re-read
+                # happens next pass; the binding backoff prevents a hot loop.
+                service.defer(event["payload"]["wake_binding_id"], "binding_verify_conflict")
+                continue
+            except RuntimeContractError:
+                continue
+            if not allowed:
+                continue
+            with self.store.transaction() as db:
+                current = self.store.event(event["event_id"])
+                if (current["status"] != "queued"
+                        or current["not_before_utc"] > self.store.timestamp()
+                        or not service.local_gate(current)):
+                    continue
+                delivery = self.due(current, db=db)
+                self.store.complete_reminder(db, current)
+                delivered.append(delivery["delivery_id"])
+        return delivered
+
     def collect(self):
         # Project terminal evidence only; this does not start or replay a prompt.
         rows = self.store.connection.execute("""SELECT r.run_id,r.event_id FROM runs r JOIN events e ON r.event_id=e.event_id

@@ -189,12 +189,15 @@ class Store:
             (workflow_id, workflow_id, task_id, task_id, status, status, limit, offset)).fetchall()
         return [dict(row) for row in rows]
 
-    def due_wakebindings(self, now, limit=20):
+    def due_wakebindings(self, now, limit=20, retry_after=15):
         stamp = utc_text(now)
+        cutoff = utc_text(now - timedelta(seconds=retry_after))
         rows = self.connection.execute("""SELECT b.* FROM wake_bindings b
             JOIN events e ON e.event_id=b.event_id
             WHERE b.status IN ('active','pending') AND e.status='queued' AND e.not_before_utc<=?
-            ORDER BY e.not_before_utc,b.created_at,b.binding_id LIMIT ?""", (stamp, limit)).fetchall()
+            AND (b.last_error_code IS NULL OR b.last_attempt_at IS NULL OR b.last_attempt_at<=?)
+            ORDER BY e.not_before_utc,b.created_at,b.binding_id LIMIT ?""",
+            (stamp, cutoff, limit)).fetchall()
         return [dict(row) for row in rows]
 
     def reconcile_wakebindings(self, now, active_after=60, pending_after=15, limit=20):
@@ -267,7 +270,7 @@ class Store:
 
     def update_wakebinding(self, binding_id, expected_version, fields):
         allowed = {"mode", "time_source", "offset_seconds", "reminder_at_utc", "eligibility",
-                   "resume_policy", "name"}
+                   "resume_policy"}
         if set(fields) - allowed or not fields:
             raise RuntimeContractError("Unknown WakeBinding update fields")
         with self.transaction() as db:
@@ -470,8 +473,7 @@ class Store:
         # Called with the Inbox write in the same transaction: no Run, lease,
         # dispatch intent or model completion evidence is fabricated.
         if (event["status"] == "queued" and event["not_before_utc"] <= self.timestamp() and
-                event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder" and
-                not event["payload"].get("wake_binding_id")):
+                event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder"):
             stamp = self.timestamp()
             db.execute("""UPDATE events SET status='succeeded',completed_at=?,updated_at=?,
                 lease_owner=NULL,lease_expires_utc=NULL,version=version+1 WHERE event_id=? AND status='queued'""",
@@ -498,8 +500,7 @@ class Store:
             row = db.execute("""SELECT e.event_id FROM events e
                 LEFT JOIN wake_bindings b ON b.event_id=e.event_id
                 WHERE e.status='queued' AND e.not_before_utc<=?
-                AND COALESCE(json_extract(e.payload_json,'$.native_wakeup')=1 AND json_extract(e.payload_json,'$.intent')='reminder'
-                    AND json_extract(e.payload_json,'$.wake_binding_id') IS NULL,0)=0
+                AND COALESCE(json_extract(e.payload_json,'$.native_wakeup')=1 AND json_extract(e.payload_json,'$.intent')='reminder',0)=0
                 AND (json_extract(e.payload_json,'$.wake_binding_id') IS NULL
                     OR (b.binding_id IS NOT NULL AND b.status='active' AND b.event_id=e.event_id))
                 """ + excluded + " ORDER BY e.not_before_utc,e.created_at,e.event_id LIMIT 1", parameters).fetchone()

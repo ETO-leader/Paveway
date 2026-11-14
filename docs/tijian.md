@@ -204,15 +204,15 @@ oicoach-runtime wakebinding cancel --workflow coach --task training \
   --binding BINDING_ID --expected-version VERSION --json
 ```
 
-原生会话内可使用现有 `paveway_wakeup_binding_create/list/show/update/cancel/sync/status` 工具，或 `/wakeup bind TODO_ID [name]`、`/wakeup bindings`、`/wakeup sync [ID]`、`/wakeup unbind ID VERSION`。原生调用仍要求活跃且已认证的 owner，并把操作限制在该 conversation 的 workflow/task 内；不能操作其他 Profile/Workflow 的绑定。创建必须带 `authorized_by_user=true`。
+原生会话内可使用现有 `paveway_wakeup_binding_create/list/show/update/cancel/sync/status` 工具，或 `/wakeup bind TODO_ID [name]`、`/wakeup bindings`、`/wakeup sync [ID]`、`/wakeup unbind ID VERSION`。原生调用仍要求活跃且已认证的 owner，并把操作限制在该 conversation 的 workflow/task 内；不能操作其他 Profile/Workflow 的绑定。创建必须带 `authorized_by_user=true`。`name` 参与绑定 ID 的稳定身份，创建后不可修改；需要另一条绑定请用不同 `name` 新建。
 
 ### Reconciler 与投递门禁
 
 - Runtime 启动后、低频周期、创建/修改、显式 sync、以及到期投递前都会对账；不依赖 TUI 打开或模型主动调用。
 - 对账按绑定批量、有界执行，只查询已绑定 Todo，不扫描整个题库；单个 Todo/绑定失败不会阻塞整批。
-- Scheduler 在 claim 前先对到期绑定对账；`claim_due` 只允许 `active` 且 event 与 binding 相互匹配的绑定事件。
-- 已 claim 的事件在真正 dispatch 前再次读取权威 Todo；失效、改期、来源变化时释放 claim，不可能投递过期提醒。
-- 独立 Notification Worker 在创建 Inbox 投影和桌面通知前再次过门禁；Todo 暂时不可用时失败关闭（fail-closed），不会把查询失败当成“仍有效”。
+- Scheduler 对到期绑定先读权威 Todo 再过门禁；`claim_due` 永不领取 `intent=reminder`（包括绑定提醒），因此提醒不会创建 Run、模型请求或 Agent Session。
+- 绑定提醒在事务中原子完成 Inbox 投影与事件结算；即使 Notification Worker 未运行也由 Runtime 持久投递。Notification Worker 只负责桌面通知，仍按 occurrence 去重。
+- Todo 已完成、删除、改期或来源变化时不投影；Todo 暂时不可用时失败关闭（fail-closed），保留绑定 `pending` 状态与退避重试，不会把查询失败当成“仍有效”。
 - 用户取消事件或绑定会禁用绑定；Reconciler 不会擅自重建。Todo 完成会取消未投递事件；重新开放仅在策略允许或显式 sync 时创建新一代事件。
 - 已实际送达的外部通知无法撤回；但观察到失效后不会继续重复投递。事件、Inbox 与桌面通知继续使用原有 occurrence 去重与崩溃恢复语义。
 

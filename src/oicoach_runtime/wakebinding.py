@@ -596,7 +596,10 @@ class WakeBindings:
     async def update(self, binding_id, expected_version, *, workflow_id, task_id, **changes):
         binding = self.store.wakebinding(binding_id)
         self._ensure_scope(binding, workflow_id, task_id)
-        allowed = {"mode", "time_source", "offset_seconds", "eligibility", "reminder_at", "resume_policy", "name"}
+        allowed = {"mode", "time_source", "offset_seconds", "eligibility", "reminder_at", "resume_policy"}
+        if "name" in changes:
+            raise RuntimeContractError(
+                "WakeBinding name is part of its stable identity and cannot be changed after creation; create a separate binding instead")
         if set(changes) - allowed:
             raise RuntimeContractError("Unknown WakeBinding update field")
         if not changes:
@@ -612,8 +615,6 @@ class WakeBindings:
             fields["eligibility"] = _validate_eligibility(changes["eligibility"])
         if "resume_policy" in changes:
             fields["resume_policy"] = _validate_resume(changes["resume_policy"])
-        if "name" in changes:
-            fields["name"] = _validate_name(changes["name"])
         if "reminder_at" in changes:
             fields["reminder_at_utc"] = utc_text(parse_timestamp(changes["reminder_at"]))
         merged = {**binding, **fields}
@@ -811,7 +812,7 @@ class WakeBindings:
             return False
         if payload.get("todo_source_id") != binding["todo_source_id"] or payload.get("todo_id") != binding["todo_id"]:
             return False
-        return event["status"] in ("queued", "leased", "running")
+        return event["status"] in ("queued", "leased", "running", "succeeded")
 
     async def verify(self, event):
         """Check a leased event against Tijian without mutating its event row."""
@@ -881,7 +882,23 @@ class WakeBindings:
         if binding["status"] != "active" or binding["event_id"] != event["event_id"]:
             return False
         current = self.store.event(event["event_id"])
-        return (current["status"] in ("queued", "leased", "running")
+        return (current["status"] in ("queued", "leased", "running", "succeeded")
                 and current["not_before_utc"] is not None
                 and current["not_before_utc"] <= self.store.timestamp()
                 and self.local_gate(current))
+
+    def defer(self, binding_id, code, message=None):
+        """Bounded backoff after a pre-dispatch verification failure.
+
+        The binding becomes pending so claim/projection stop retrying it until
+        the periodic reconciler re-reads Tijian. CAS races are not retried here.
+        """
+        try:
+            binding = self.store.wakebinding(binding_id)
+            if binding["status"] == "disabled":
+                return False
+            self._mark(binding, status="pending", error=code,
+                       message=message or ERROR_MESSAGES.get(code, code))
+            return True
+        except (RuntimeContractError, NotFoundError):
+            return False

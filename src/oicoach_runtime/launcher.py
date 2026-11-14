@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -31,6 +32,9 @@ STARTUP_TIMEOUT = 20
 SHUTDOWN_TIMEOUT = 30
 LAUNCHER_LOCK_TIMEOUT = 90
 OWNERSHIP_VERSION = 1
+# The daemon outlives this process; keeping the Popen handle prevents a
+# ResourceWarning on garbage collection without ever waiting on it.
+_DETACHED_RUNTIMES = []
 LIFECYCLE_TARGET_FIELDS = (
     "runtime_instance", "runtime_build_id", "runtime_version",
     "native_protocol_version", "runtime_pid", "runtime_identity",
@@ -222,15 +226,16 @@ def _start_standalone(config, config_path):
         environment = {**os.environ, **service.read_environment(config_path)}
         for key in ("PAVEWAY_SHUTDOWN_ON_EXIT", "PAVEWAY_LAUNCH_TOKEN", "PAVEWAY_RESTART_RUNTIME"):
             environment.pop(key, None)
-        pid = os.posix_spawn(
-            sys.executable, argv, environment,
-            file_actions=[
-                (os.POSIX_SPAWN_DUP2, null_fd, 0),
-                (os.POSIX_SPAWN_DUP2, log_fd, 1),
-                (os.POSIX_SPAWN_DUP2, log_fd, 2),
-                (os.POSIX_SPAWN_CLOSEFROM, 3),
-            ],
-            setsid=True)
+        # Popen with close_fds keeps Python 3.11 working (POSIX_SPAWN_CLOSEFROM
+        # only exists from 3.12) and closes every inherited descriptor except the
+        # three explicitly redirected ones, so Runtime/socket/credential locks
+        # never leak into the daemon.
+        process = subprocess.Popen(
+            argv, stdin=null_fd, stdout=log_fd, stderr=log_fd,
+            close_fds=True, start_new_session=True, env=environment)
+        _DETACHED_RUNTIMES[:] = [handle for handle in _DETACHED_RUNTIMES if handle.poll() is None]
+        _DETACHED_RUNTIMES.append(process)
+        pid = process.pid
         (config.state_dir / "daemon.pid").write_text(str(pid), encoding="utf-8")
     finally:
         os.close(null_fd)

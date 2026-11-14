@@ -105,7 +105,7 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
             "command": str(self.fake), "args": ["--write-policy=none"]}}}))
         (omp / "mcp.json").chmod(0o600)
         self.state_path = self.root / "todo-state.json"
-        self.now = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
+        self.now = datetime.now(timezone.utc).replace(microsecond=0)
         self.environment = patch.dict(os.environ, {"FAKE_TODO_STATE": str(self.state_path)})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -165,6 +165,32 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConflictError):
             await self.create(offset_seconds=-600)
 
+    async def test_rename_is_rejected_and_original_name_stays_idempotent(self):
+        first = await self.create(name="morning")
+        binding_id = first["binding"]["binding_id"]
+        with self.assertRaises(RuntimeContractError):
+            await self.service.update(binding_id, first["binding"]["version"],
+                                      workflow_id="example", task_id="training", name="evening")
+        current = self.store.wakebinding(binding_id)
+        self.assertEqual(current["name"], "morning")
+        self.assertEqual(current["event_id"], first["binding"]["event_id"])
+        repeated = await self.create(name="morning")
+        self.assertFalse(repeated["created"])
+        self.assertEqual(repeated["binding"]["binding_id"], binding_id)
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) FROM wake_bindings").fetchone()[0], 1)
+
+    async def test_distinct_names_create_distinct_bindings_without_primary_key_errors(self):
+        first = await self.create(name="morning")
+        second = await self.create(name="evening")
+        self.assertTrue(second["created"])
+        self.assertNotEqual(first["binding"]["binding_id"], second["binding"]["binding_id"])
+        self.assertNotEqual(first["binding"]["event_id"], second["binding"]["event_id"])
+        listed = await self.service.list("example", "training")
+        self.assertEqual({row["name"] for row in listed}, {"morning", "evening"})
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) FROM events").fetchone()[0], 2)
+
     async def test_todo_time_change_reschedules_the_same_event(self):
         first = await self.create()
         binding = self.store.wakebinding(first["binding"]["binding_id"])
@@ -217,10 +243,13 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         recovered = await self.service.sync(workflow_id="example", task_id="training",
                                             binding_id=binding["binding_id"])
         self.assertEqual(recovered["bindings"][0]["status"], "active")
-        self.now += timedelta(hours=2)
-        claimed = self.store.claim_due("worker")
-        self.assertEqual(claimed["event_id"], event["event_id"])
-        self.store.abort_claim(claimed["run_id"], "fixture_cleanup")
+        self.now += timedelta(hours=2, seconds=16)
+        delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(self.store.event(event["event_id"])["status"], "succeeded")
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
+        self.assertIsNone(self.store.claim_due("worker"))
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
 
     async def test_source_change_conflicts_instead_of_retargeting_todo(self):
         first = await self.create()
@@ -410,22 +439,52 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reopened["status"], "active")
         self.assertNotEqual(reopened["event_id"], binding["event_id"])
 
-    async def test_dispatch_gate_aborts_claimed_ineligible_event(self):
-        from oicoach_runtime.scheduler import Runtime
+    async def test_ineligible_todo_is_never_claimed_or_projected(self):
         first = await self.create()
         binding = self.store.wakebinding(first["binding"]["binding_id"])
         self.now += timedelta(hours=1)
-        claimed = self.store.claim_due("worker")
-        self.assertIsNotNone(claimed)
+        self.assertIsNone(self.store.claim_due("worker"))
         self.write_todo(decision="done", version=2)
-        runtime = Runtime(self.config)
-        runtime.store = self.store
-        await runtime.dispatch_event(claimed)
-        self.assertEqual(self.store.run(claimed["run_id"])["status"], "blocked")
+        delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(delivered, [])
+        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
         self.assertEqual(self.store.event(binding["event_id"])["status"], "cancelled")
+        self.assertEqual(self.store.wakebinding(binding["binding_id"])["status"], "ineligible")
         self.assertEqual(self.store.connection.execute(
             "SELECT count(*) FROM runs WHERE status IN ('leased','running')").fetchone()[0], 0)
-        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
+        self.assertIsNone(self.store.claim_due("worker"))
+
+    async def test_projection_conflict_is_isolated_and_backed_off(self):
+        await self.create()
+        await self.create(name="second")
+        self.now += timedelta(hours=1)
+        calls = {"n": 0}
+        original = self.service.gate
+
+        async def flaky(event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConflictError("binding changed concurrently")
+            return await original(event)
+
+        with patch.object(self.service, "gate", new=flaky):
+            delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1)
+        deferred = [row for row in self.store.wakebindings("example") if row["status"] == "pending"]
+        self.assertEqual(len(deferred), 1)
+        self.assertIsNone(self.store.claim_due("worker"))
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+        # The conflicted binding is in backoff; an immediate retry is bounded.
+        self.assertEqual(await Inbox(self.store).project_bound_due(self.service), [])
+
+    async def test_projection_task_failure_does_not_escape_the_scheduler(self):
+        from oicoach_runtime.scheduler import Runtime
+        runtime = Runtime(self.config)
+        runtime.store = self.store
+        with patch("oicoach_runtime.inbox.Inbox.project_bound_due",
+                   new=AsyncMock(side_effect=ConflictError("race"))):
+            await runtime._project_bound_reminders(self.service)
 
     async def test_runtime_cli_route_creates_binding(self):
         from oicoach_runtime.scheduler import Runtime

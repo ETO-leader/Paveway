@@ -64,6 +64,7 @@ class Runtime:
         self.wake_wakeup = asyncio.Event()
         self.wake_reconciler = None
         self.wake_guard_task = None
+        self.bound_task = None
         from .build_id import runtime_build_id
         self.runtime_build_id = runtime_build_id()
 
@@ -494,7 +495,7 @@ class Runtime:
                            "eligibility", "reminder_at", "resume_policy", "authorized_by_user"},
                 "list": {"status", "offset"}, "show": {"binding_id"},
                 "update": {"binding_id", "expected_version", "mode", "time_source", "offset_seconds",
-                           "eligibility", "reminder_at", "resume_policy", "name"},
+                           "eligibility", "reminder_at", "resume_policy"},
                 "cancel": {"binding_id", "expected_version"},
                 "sync": {"binding_id"},
                 "status": set(),
@@ -518,7 +519,7 @@ class Runtime:
                 "show": {"workflow_id", "task_id", "binding_id"},
                 "update": {"workflow_id", "task_id", "binding_id", "expected_version", "mode",
                            "time_source", "offset_seconds", "eligibility", "reminder_at",
-                           "resume_policy", "name"},
+                           "resume_policy"},
                 "cancel": {"workflow_id", "task_id", "binding_id", "expected_version"},
                 "sync": {"workflow_id", "task_id", "binding_id"},
                 "status": {"workflow_id", "task_id"},
@@ -611,25 +612,52 @@ class Runtime:
     async def dispatch_event(self, event):
         run_id = event["run_id"]
         payload = event.get("payload") or {}
+        if payload.get("native_wakeup") and payload.get("intent") == "reminder":
+            # Pure reminders never start a model. claim_due excludes them; if a
+            # stale or externally created claim reaches here, release it and let
+            # the durable reminder projection deliver without ever creating a
+            # prompt. The event stays queued so no schedule is lost.
+            try:
+                self.store.abort_claim(run_id, "reminder_not_dispatchable", keep_event=True)
+            except ConflictError:
+                return
+            from .inbox import Inbox
+            Inbox(self.store).project_due(complete=True)
+            return
         if payload.get("wake_binding_id"):
             from .wakebinding import WakeBindings
             service = self.wake_reconciler or WakeBindings(self.store)
-            result = await service.verify(event)
+            try:
+                result = await service.verify(event)
+            except (RuntimeContractError, OSError) as error:
+                # A CAS/source failure only defers this event. Bindings are put
+                # into a bounded reconcile backoff; the Scheduler keeps running.
+                code = "binding_verify_conflict" if isinstance(error, ConflictError) else "binding_verify_failed"
+                try:
+                    self.store.abort_claim(run_id, code, keep_event=True)
+                except ConflictError:
+                    pass
+                service.defer(payload["wake_binding_id"], code, str(error)[:200])
+                print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
+                                  "event_id": event["event_id"], "run_id": run_id,
+                                  "transition": "blocked", "error_code": code,
+                                  "error": type(error).__name__}), flush=True)
+                return
             if not result["allowed"]:
-                self.store.abort_claim(run_id, result["reason"],
-                                       keep_event=result["action"] in ("reschedule", "defer"))
+                try:
+                    self.store.abort_claim(run_id, result["reason"],
+                                           keep_event=result["action"] in ("reschedule", "defer"))
+                except ConflictError:
+                    return
                 if result["action"] == "reschedule":
                     try:
                         await service.reconcile_binding(payload["wake_binding_id"], reason="claim_released")
-                    except Exception:
+                    except RuntimeContractError:
                         pass
                 print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
                                   "event_id": event["event_id"], "run_id": run_id,
                                   "transition": "blocked", "error_code": result["reason"]}), flush=True)
                 return
-        if payload.get("native_wakeup") and payload.get("intent") == "reminder":
-            from .inbox import Inbox
-            Inbox(self.store).due(event)
         agent = OmpRpc(self.config, self.lock_fds, self.config_path)
         terminal = False
         failure_code = "dispatch_interrupted"
@@ -800,6 +828,26 @@ class Runtime:
                 print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler", "event_id": event["event_id"],
                                   "run_id": run_id, "transition": run["status"], "error_code": run["error_code"]}), flush=True)
 
+    async def _project_bound_reminders(self, service):
+        from .inbox import Inbox
+        try:
+            await Inbox(self.store).project_bound_due(service)
+        except Exception as error:
+            # One broken binding must not stop the Scheduler. The durable event
+            # stays queued and the binding's last_attempt_at backoff applies.
+            print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
+                              "transition": "reminder_projection_failed",
+                              "error_code": type(error).__name__}), flush=True)
+
+    def _start_bound_projection(self):
+        if self.bound_task is not None and not self.bound_task.done():
+            return
+        service = self.wake_reconciler
+        if service is None:
+            from .wakebinding import WakeBindings
+            service = self.wake_reconciler = WakeBindings(self.store)
+        self.bound_task = asyncio.create_task(self._project_bound_reminders(service))
+
     async def schedule_loop(self):
         while not self.stop_event.is_set():
             if self.draining:
@@ -810,6 +858,7 @@ class Runtime:
                 continue
             from .inbox import Inbox
             Inbox(self.store).project_due(complete=True)
+            self._start_bound_projection()
             Inbox(self.store).collect()
             self.changed.clear()
             if self.pending_restart:
@@ -840,6 +889,7 @@ class Runtime:
                 try:
                     while not self.active_dispatch.done():
                         Inbox(self.store).project_due(complete=True)
+                        self._start_bound_projection()
                         await asyncio.wait((self.active_dispatch,), timeout=self.config.server.poll_interval_seconds)
                     await asyncio.shield(self.active_dispatch)
                 except asyncio.CancelledError:
@@ -1019,8 +1069,11 @@ class Runtime:
                 waiter.cancel()
                 if self.wake_guard_task is not None:
                     self.wake_guard_task.cancel()
+                if self.bound_task is not None:
+                    self.bound_task.cancel()
                 await asyncio.gather(scheduler, synchronizer, reconciler, waiter,
                                      *([self.wake_guard_task] if self.wake_guard_task else []),
+                                     *([self.bound_task] if self.bound_task else []),
                                      return_exceptions=True)
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.remove_signal_handler(sig)
