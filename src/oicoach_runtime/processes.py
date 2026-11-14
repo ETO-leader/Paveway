@@ -3,6 +3,7 @@
 import fcntl
 import os
 import stat
+import time
 import ctypes
 from pathlib import Path
 
@@ -15,13 +16,21 @@ def enable_subreaper():
 
 
 class InstanceLock:
-    def __init__(self, path):
+    def __init__(self, path, timeout=0.0):
         self.fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             info = os.fstat(self.fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise ConflictError("Lock file must be privately owned and regular")
-            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deadline = time.monotonic() + timeout if timeout else None
+            while True:
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if deadline is None or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
         except BaseException:
             os.close(self.fd)
             raise ConflictError("Another daemon or managed agent owns the runtime/socket lock") from None

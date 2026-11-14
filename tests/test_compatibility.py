@@ -1,7 +1,6 @@
 """Runtime compatibility tests use real startup/IPC and the shared fake OMP executable."""
 
 import asyncio
-import hashlib
 import os
 import select
 import shutil
@@ -22,7 +21,7 @@ from oicoach_runtime.compatibility import (
     probe_daemon,
     restart_guidance,
 )
-from oicoach_runtime.config import AgentConfig, Config, ServerConfig, config_text, ensure_private_directory, defaults
+from oicoach_runtime.config import AgentConfig, Config, ServerConfig, config_text, ensure_private_directory, defaults, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.scheduler import Runtime
@@ -392,52 +391,53 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         self.assertNotIn("正在启动后台 Runtime…", output2)
         self.assertEqual(pid_file.read_text().strip(), pid1)
 
-    def test_case_d_incompatible_build_id_rejects_and_does_not_modify_state(self):
-        """Case D: Reject a mismatched client build without changing the live daemon or persisted state."""
-        # Freeze this isolated fixture's independent Git writer before taking a
-        # byte-for-byte snapshot; otherwise its first cycle races the assertion.
-        from oicoach_runtime import git_sync
-        git_sync.ensure_local(self.config)
-        git_sync.set_enabled(self.config, False)
-        # Start daemon normally
-        code1, _ = self._run_paveway()
-        self.assertEqual(code1, 0)
+    def test_case_d_incompatible_build_id_automatically_restarts_idle_daemon(self):
+        """Case D: An idle daemon running stale code is handed off and replaced."""
+        # Start a daemon that reports a frozen pre-upgrade build fingerprint but
+        # still implements the lifecycle protocol.
+        log_path = self.root / "stale-daemon.log"
+        with log_path.open("w") as log:
+            stale = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import oicoach_runtime.build_id as b; b._CURRENT_BUILD_ID='0'*64; "
+                 "from oicoach_runtime.cli import main; raise SystemExit(main())",
+                 "serve", "--config", str(self.config_path)],
+                stdout=log, stderr=log, start_new_session=True, close_fds=True)
+        deadline = time.monotonic() + 20
+        old = None
+        self.addCleanup(lambda: stale.poll() is None and (stale.kill(), stale.wait()))
+        while time.monotonic() < deadline:
+            old = probe_daemon(self.config.server.socket_path)
+            if old is not None:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(old, "Stale daemon did not become ready")
+        self.assertEqual(old["runtime_build_id"], "0" * 64)
 
-        # Wrap python binary with a small script that injects mismatched build_id
-        fake_python = self.root / "fake_python.sh"
-        fake_python.write_text(
-            f"#!/usr/bin/env bash\n"
-            f"exec {sys.executable} -c '\n"
-            f"import sys\n"
-            f"import oicoach_runtime.build_id as b\n"
-            f"b.runtime_build_id = lambda: \"mismatched_build_id_hash\"\n"
-            f"code = sys.argv[2]\n"
-            f"sys.argv = [sys.argv[0]] + sys.argv[3:]\n"
-            f"exec(code)\n"
-            f"' \"$@\"\n",
-            encoding="utf-8",
-        )
-        fake_python.chmod(0o755)
+        code, output = self._run_paveway()
+        self.assertEqual(code, 0, f"Expected 0, got {code}. Output:\n{output}")
+        self.assertIn("正在检查活动状态并安全重启", output)
+        self.assertIn("Runtime 已使用当前代码重启", output)
+        stale.wait(timeout=10)
+        self.assertEqual(stale.returncode, 0)
+        current = probe_daemon(self.config.server.socket_path)
+        self.assertIsNotNone(current)
+        self.assertEqual(current["runtime_build_id"], runtime_build_id())
+        self.assertNotEqual(current["runtime_instance"], old["runtime_instance"])
 
-        status_before = probe_daemon(self.config.server.socket_path)
-        self.assertIsNotNone(status_before)
-        socket_inode = Path(self.config.server.socket_path).stat().st_ino
-
-        def persisted_files():
-            # SQLite's shared-memory read marks are not persisted application state.
-            return {path.relative_to(self.root): hashlib.sha256(path.read_bytes()).hexdigest()
-                    for path in self.root.rglob("*") if path.is_file() and not path.name.endswith("-shm")}
-
-        files_before = persisted_files()
-        code2, output2 = self._run_paveway(extra_env={"PAVEWAY_PYTHON": str(fake_python)})
-        self.assertNotEqual(code2, 0)
-        self.assertIn("检测到运行中的 Paveway daemon 与当前代码不一致", output2)
-        self.assertIn("当前版本与 daemon 版本相同，但代码构建指纹不同", output2)
-        self.assertIn("pgrep -fa \"oicoach_runtime serve\"", output2)
-        self.assertNotIn("正在启动后台 Runtime…", output2)
-        self.assertEqual(probe_daemon(self.config.server.socket_path), status_before)
-        self.assertEqual(Path(self.config.server.socket_path).stat().st_ino, socket_inode)
-        self.assertEqual(persisted_files(), files_before)
+    def test_old_daemon_without_handoff_protocol_is_not_force_killed(self):
+        """A daemon that cannot prove quiescence falls back to explicit manual guidance."""
+        fake_status = {"daemon": "running", "runtime_version": __version__,
+                       "runtime_build_id": "mismatched", "native_protocol_version": 1}
+        from oicoach_runtime import launcher
+        with patch.object(launcher, "probe_daemon", return_value=fake_status), \
+                patch.object(launcher.service, "status", return_value={"managed": False}):
+            with self.assertRaises(RuntimeContractError) as ctx:
+                launcher.ensure_runtime(load_config(self.config_path), self.config_path)
+        message = str(ctx.exception)
+        self.assertIn("不支持空闲检查与安全交接协议", message)
+        self.assertIn("未发送终止信号", message)
+        self.assertIn("pgrep -fa \"oicoach_runtime serve\"", message)
 
 
 if __name__ == "__main__":

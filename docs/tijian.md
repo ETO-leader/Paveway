@@ -154,7 +154,7 @@ Paveway 提供内置 Skill `paveway-tijian`（位于 `src/oicoach_runtime/bundle
 
 - **Skill 定位**：业务编排与上下文指导层，协助 Agent 识别何种训练场景应采用何种能力（如题面读取、状态登记、相似题检索等）。
 - **工具契约**：工具具体名称、参数、返回值及错误信息由运行中的原生 MCP 动态提供，Skill 不复刻工具 Schema。
-- **未支持能力**：在已知基线 `90e2c75` 下，**Note、Todo、Folder 的原生 MCP 尚未实现**，Agent 严格根据实际 `tools/list` 结果使用工具，不调用虚构接口。
+- **能力发现**：不同 Tijian 构建可能暴露 Problem、Folder、Note、Todo 等不同工具；以当前 `tools/list` 为准。Todo 原生只读工具（如 `tijian_todo_get`）已用于 WakeBinding，但 Agent 仍不得调用未发现的接口或复刻 Schema。
 - **异步 AI Ensure 的区别**：
   - `tijian_problem_ensure`：同步收录或补齐题面。
   - `tijian_problem_content_ensure`：提交异步 AI 译文/摘要 Job。
@@ -166,7 +166,63 @@ Paveway 提供内置 Skill `paveway-tijian`（位于 `src/oicoach_runtime/bundle
 
 ---
 
-## 6. VJudge 登录与会话管理
+## 6. Todo WakeBinding（定时提醒绑定）
+
+Paveway 可以把一个**经用户明确授权**的 Tijian Todo 时间绑定为持久提醒。Tijian 仍是 Todo 正文、状态、计划时间与截止时间的事实源；Paveway 只持久化绑定、排程事件、投递状态和诊断。该功能不复制 Todo 存储，不向 Todo 写入绑定信息，也不新增第二套定时器。
+
+### 数据与时间契约
+
+- 通过原生 `tijian-mcp` 的只读工具 `tijian_todo_get` 读取；优先 `view=metadata`，仅在字段过大时按 `view=field` 有界续读。长正文不会整体进入模型上下文。
+- 可用时间字段：
+  - `dueAt`：UTC Unix 毫秒，可直接排程；默认 `time_source=due`。
+  - `scheduledFor.kind=at`：UTC Unix 毫秒，可直接排程；`time_source=scheduled`。
+  - `scheduledFor.kind=day`：只是训练逻辑日，没有唯一绝对时刻；不能作为定时提醒来源，会返回 `todo_time_missing`，不会把“今天”当成当前时间。
+- 所有 Paveway 事件时间规范化为带显式时区的 RFC3339 UTC 文本。`offset_seconds` 允许 `-2678400..2678400`（±31 天）。
+- 绑定记录 Todo 的 `version`、字段指纹、数据和来源身份。来源身份由 MCP 可执行文件、启动参数、`TIJIAN_RUNTIME_MODE`、`TIJIAN_PROFILE_ROOT`、XDG/HOME 与 WSL 环境共同哈希；配置变化后会报 `todo_source_mismatch`，不会把同名 Todo ID 静默指向另一个 profile。
+
+### 三种模式
+
+| 模式 | 排程来源 | Todo 时间变化 | 完成状态检查 |
+| --- | --- | --- | --- |
+| `independent` | 绑定的 `reminder_at` | 不跟随 | 按 eligibility |
+| `linked` | 绑定的 `reminder_at` | 不跟随 | 按 eligibility |
+| `follow` | `scheduledFor.at` 或 `dueAt` + offset | 通过 Reconciler 改期同一事件 | 按 eligibility |
+
+`eligibility=open` 要求 `decision=open`；`open_and_incomplete` 还要求未手工完成且未自动达成。`done`、`dropped`、删除或读取失败都不会被当作“仍有效”。`resume_policy=manual` 时重新开放后不会自动复活；`when_eligible` 才允许 Reconciler 在退避后恢复。
+
+### 创建与管理
+
+```bash
+# 明确建立一个跟随 dueAt 的提醒；省略 --mode 默认 follow
+oicoach-runtime wakebinding create --workflow coach --task training \
+  --todo-id TODO_ID --time-source due --offset-seconds -300 --json
+
+oicoach-runtime wakebinding list --workflow coach --task training --json
+oicoach-runtime wakebinding status --workflow coach --task training --json
+oicoach-runtime wakebinding sync --workflow coach --task training --binding BINDING_ID --json
+oicoach-runtime wakebinding cancel --workflow coach --task training \
+  --binding BINDING_ID --expected-version VERSION --json
+```
+
+原生会话内可使用现有 `paveway_wakeup_binding_create/list/show/update/cancel/sync/status` 工具，或 `/wakeup bind TODO_ID [name]`、`/wakeup bindings`、`/wakeup sync [ID]`、`/wakeup unbind ID VERSION`。原生调用仍要求活跃且已认证的 owner，并把操作限制在该 conversation 的 workflow/task 内；不能操作其他 Profile/Workflow 的绑定。创建必须带 `authorized_by_user=true`。
+
+### Reconciler 与投递门禁
+
+- Runtime 启动后、低频周期、创建/修改、显式 sync、以及到期投递前都会对账；不依赖 TUI 打开或模型主动调用。
+- 对账按绑定批量、有界执行，只查询已绑定 Todo，不扫描整个题库；单个 Todo/绑定失败不会阻塞整批。
+- Scheduler 在 claim 前先对到期绑定对账；`claim_due` 只允许 `active` 且 event 与 binding 相互匹配的绑定事件。
+- 已 claim 的事件在真正 dispatch 前再次读取权威 Todo；失效、改期、来源变化时释放 claim，不可能投递过期提醒。
+- 独立 Notification Worker 在创建 Inbox 投影和桌面通知前再次过门禁；Todo 暂时不可用时失败关闭（fail-closed），不会把查询失败当成“仍有效”。
+- 用户取消事件或绑定会禁用绑定；Reconciler 不会擅自重建。Todo 完成会取消未投递事件；重新开放仅在策略允许或显式 sync 时创建新一代事件。
+- 已实际送达的外部通知无法撤回；但观察到失效后不会继续重复投递。事件、Inbox 与桌面通知继续使用原有 occurrence 去重与崩溃恢复语义。
+
+### 诊断错误码
+
+`todo_unavailable`、`todo_not_found`、`todo_ineligible`、`todo_time_missing`、`todo_time_invalid`、`todo_source_missing`、`todo_source_unavailable`、`todo_source_mismatch`、`binding_conflict`、`event_conflict`、`reconcile_deferred`。`wakebinding status` 同时返回绑定状态、对应 event、最后成功/尝试对账时间、最后错误，以及 Todo 数据源配置是否可用（`configured`；`live_check=not_probed`，实时失败以绑定的 `last_error_code` 为准）。
+
+尚无 Todo 原生 MCP 的环境会得到 `todo_source_missing`/`todo_source_unavailable`，而不是空任务列表。真实环境验收需要已配置可执行的 `tijian-mcp`；测试中的 MCP fixture 只验证协议和生命周期，不等价于真实 Tijian profile 验收。
+
+## 7. VJudge 登录与会话管理
 
 VJudge 认证功能已从旧 `tijian` 命令组解耦，迁移为独立的 `vjudge auth` CLI 命令，所有认证逻辑与文件安全性完整保留。
 

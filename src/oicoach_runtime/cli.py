@@ -158,6 +158,32 @@ def parser() -> argparse.ArgumentParser:
             child.add_argument("delivery")
         if name == "acknowledge":
             child.add_argument("--expected-version", type=int, required=True)
+    binding = commands.add_parser("wakebinding", help="Bind an explicitly authorized Tijian Todo time to a Paveway reminder")
+    binding_operations = binding.add_subparsers(dest="operation", required=True)
+    for name in ("create", "list", "show", "update", "cancel", "sync", "status"):
+        child = binding_operations.add_parser(name)
+        common(child)
+        child.add_argument("--workflow", required=True)
+        child.add_argument("--task", default="training")
+        if name in ("show", "update", "cancel"):
+            child.add_argument("binding")
+        if name == "sync":
+            child.add_argument("binding", nargs="?")
+        if name in ("update", "cancel"):
+            child.add_argument("--expected-version", type=int, required=True)
+        if name == "list":
+            child.add_argument("--status", choices=("active", "pending", "ineligible", "disabled", "conflict"))
+            child.add_argument("--offset", type=int, default=0)
+        if name == "create":
+            child.add_argument("--todo-id", required=True)
+            child.add_argument("--name", default="default")
+        if name in ("create", "update"):
+            child.add_argument("--mode", choices=("independent", "linked", "follow"))
+            child.add_argument("--time-source", choices=("scheduled", "due"))
+            child.add_argument("--offset-seconds", type=int)
+            child.add_argument("--eligibility", choices=("open", "open_and_incomplete"))
+            child.add_argument("--reminder-at")
+            child.add_argument("--resume-policy", choices=("manual", "when_eligible"))
     service = commands.add_parser("service", help="Render, install and manage owned systemd user units")
     service_commands = service.add_subparsers(dest="operation", required=True)
     for name in ("render", "install", "status", "logs", "start", "stop", "restart", "enable", "disable", "uninstall"):
@@ -463,6 +489,27 @@ def remote_arguments(args):
         return "schedule", raw
     if args.command == "status":
         return "status", {}
+    if args.command == "wakebinding":
+        raw = {"workflow_id": args.workflow, "task_id": args.task}
+        operation = args.operation
+        if operation in ("show", "update", "cancel"):
+            raw["binding_id"] = args.binding
+        if operation == "sync" and args.binding:
+            raw["binding_id"] = args.binding
+        if operation in ("update", "cancel"):
+            raw["expected_version"] = args.expected_version
+        if operation == "list":
+            raw["offset"] = args.offset
+            if args.status:
+                raw["status"] = args.status
+        if operation == "create":
+            raw["todo_id"] = args.todo_id
+        if operation in ("create", "update"):
+            for key in ("mode", "time_source", "offset_seconds", "eligibility", "reminder_at", "resume_policy"):
+                value = getattr(args, key)
+                if value is not None:
+                    raw[key] = value
+        return "wakebinding." + operation, raw
     if args.command == "agent":
         if args.operation == "show":
             return "agent.show", {"restart_id": args.identifier}
@@ -515,6 +562,18 @@ def wait_for_event(config, event_id, timeout, *, with_output=False):
         time.sleep(min(0.2, remaining))
 
 
+def finish_owned_runtime(config, path, code):
+    """Close only the independent Runtime created by this launcher invocation."""
+    if code != 0:
+        return
+    from .launcher import shutdown_owned_runtime
+    try:
+        shutdown_owned_runtime(config, path)
+    except (RuntimeContractError, OSError) as error:
+        # A lifecycle diagnostic must never turn a normal UI exit into failure.
+        print(f"--shutdown-on-exit：{error}；已保留 Runtime。", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -547,10 +606,13 @@ def main(argv: list[str] | None = None) -> int:
                     workflow_id = radiolist_dialog(title="GPT profiles", text="Select a profile (arrows / Enter)",
                         values=[(row["runtime_workflow_id"], row["coach_id"]) for row in rows]).run()
                     if workflow_id is None:
+                        finish_owned_runtime(config, path, 0)
                         return 0
             recent = next((row for row in previous if row["workflow_id"] == workflow_id), None)
             task = args.task or (recent["task_id"] if recent else "training")
-            return run(config, path, workflow_id, task, args.conversation, args.new)
+            code = run(config, path, workflow_id, task, args.conversation, args.new)
+            finish_owned_runtime(config, path, code)
+            return code
         elif args.command == "coach":
             from . import coaches, customization
             config = load_config(path)
@@ -598,7 +660,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 raise RuntimeContractError("The terminal UI is interactive; use the individual CLI commands for JSON")
             from .tui import run
-            return run(path, workflow=args.workflow, task=args.task)
+            config = load_config(path)
+            code = run(path, workflow=args.workflow, task=args.task)
+            finish_owned_runtime(config, path, code)
+            return code
         elif args.command == "init":
             report = initialize(path, args.state_dir, args.workflow_root)
         elif args.command == "doctor":
@@ -788,7 +853,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.command == "ask" and args.wait and (not math.isfinite(args.timeout) or not 0 < args.timeout <= 86400):
                     raise RuntimeContractError("Wait timeout must be finite and between 0 and 86400 seconds")
                 command, raw = remote_arguments(args)
-                result = request(config.server.socket_path, command, raw)
+                timeout = 60 if command.startswith("wakebinding.") else 10
+                result = request(config.server.socket_path, command, raw, timeout=timeout)
                 report = wait_for_event(config, result["event_id"], args.timeout, with_output=True) if args.command == "ask" and args.wait else {"api_version": 1, "result": result}
         if args.command == "service" and args.operation == "render" and not args.json:
             print(report["unit_text"], end="")

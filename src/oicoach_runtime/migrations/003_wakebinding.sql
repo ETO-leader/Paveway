@@ -1,0 +1,36 @@
+CREATE TABLE wake_bindings (
+    binding_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    owner_conversation_id TEXT,
+    todo_source_id TEXT NOT NULL CHECK (length(todo_source_id) = 64),
+    todo_source_label TEXT NOT NULL CHECK (length(todo_source_label) BETWEEN 1 AND 1024),
+    todo_id TEXT NOT NULL CHECK (length(todo_id) BETWEEN 1 AND 512),
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
+    mode TEXT NOT NULL CHECK (mode IN ('independent','linked','follow')),
+    time_source TEXT NOT NULL CHECK (time_source IN ('scheduled','due')),
+    offset_seconds INTEGER NOT NULL DEFAULT 0 CHECK (offset_seconds BETWEEN -2678400 AND 2678400),
+    reminder_at_utc TEXT,
+    eligibility TEXT NOT NULL CHECK (eligibility IN ('open','open_and_incomplete')),
+    resume_policy TEXT NOT NULL CHECK (resume_policy IN ('manual','when_eligible')),
+    status TEXT NOT NULL CHECK (status IN ('active','pending','ineligible','disabled','conflict')),
+    event_id TEXT REFERENCES events(event_id),
+    schedule_generation INTEGER NOT NULL DEFAULT 1 CHECK (schedule_generation >= 1),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    todo_version INTEGER,
+    todo_fingerprint TEXT,
+    todo_title TEXT CHECK (todo_title IS NULL OR length(todo_title) <= 1024),
+    observed_at_utc TEXT,
+    last_reconciled_at TEXT,
+    last_attempt_at TEXT,
+    last_error_code TEXT,
+    last_error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (workflow_id, task_id, todo_id, name),
+    CHECK (mode = 'follow' OR reminder_at_utc IS NOT NULL),
+    CHECK (mode = 'follow' OR offset_seconds = 0)
+);
+CREATE INDEX wake_bindings_scope ON wake_bindings(workflow_id, task_id, status);
+CREATE INDEX wake_bindings_sweep ON wake_bindings(status, last_attempt_at);
+CREATE UNIQUE INDEX wake_bindings_event_unique ON wake_bindings(event_id) WHERE event_id IS NOT NULL;

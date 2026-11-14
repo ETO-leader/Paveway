@@ -198,7 +198,7 @@ Agent 可用 `paveway_wakeup_schedule/list/cancel/reschedule`；工具绑定当�
 
 原生前台优先使用这些工具；旧流程中 `schedule --after-turn` 只能绑定 Runtime 提供的真实后台 run_id，不能拿原生 Session/Conversation ID 代替。Composer v3 明确覆盖这项运行边界，不改写旧 event.md。已排程的 Agent Wake 直接校验固定设置快照，不先加载后来编辑的用户设置；Workflow manifest、模板与 revision 仍会正常校验。纯 reminder 不需要模型快照。
 
-更新代码后仍运行的旧 daemon 不会自动重载 Python。保存草稿并退出原生 UI 后，在空闲时重启 Runtime 再进入界面；`invalid_workflow` 等 blocked 事件需要核查并明确重新安排，不因服务升级自动重发。
+更新代码后仍运行的旧 daemon 不会自动重载 Python。再次执行 `./paveway.sh` 时，启动器通过 Runtime 的 `lifecycle.*` IPC 原子地进入 draining：拒绝新的后台任务与前台租约，把尚未 dispatch 的租约退回持久队列，确认没有活动 Run、实时前台会话或其他未释放 owner 后，才请求旧实例退出并等待 `runtime.lock`、socket lock 与进程身份全部释放，再用当前代码启动新实例。持久提醒、`/wakeup`、未读 Inbox 和已释放 Session 不会阻止或丢失；存在活动工作时保留旧实例并输出 Run/Conversation 标识及安全处理方式。旧 daemon 若没有该交接协议，则回退到明确的手动指引，不盲目 kill。
 
 `/reminder` 到期本地持久化 Inbox 正文并结算事件，不创建 Run、不启动 OMP RPC、不调用模型；没有桌面服务也能完成，不占用正在执行的 Agent 槽位。`/wakeup` 仅为 agent_wake，继续使用固定配置、Workflow、Memory 与后台 RPC，结果进入 Inbox，不弹普通提醒。没有旧提醒别名。两种命令的 list 只列各自类型，cancel/reschedule 校验类型、作用域与 CAS；已结算 reminder 可改期，Agent Wake 的既有终态编辑限制保持不变。
 
@@ -224,8 +224,10 @@ oicoach-runtime sync sessions --config /absolute/config.toml --json
 
 空闲界面的 Ctrl+D 和 `/exit` 走同一所有权收尾路径：按键透传给 OMP，等待 OMP 与 guardian 退出并回收子进程，关闭本次 `owner.lock` 描述符，再以最后一次已认证的 generation/token 提交 `frontend.finish`。Runtime 校验进程已退出、读取已落盘 Session 后，提交 `released` 与 `exit_code=0`。`session_shutdown` 只是观察记录，不能代替 finish；已释放记录在 Runtime 重启后仍可直接续接。
 
-如果收尾请求失败，入口报告 `native_finish_failed`，区分 `daemon_unavailable`、`conflict`、`internal_error` 及具体 `native_session_*`／锁错误，并单独显示 OMP 的退出码（或 unknown）；不回显请求载荷、token 或 Session 正文。OMP 正常退出但释放未确认时，入口返回非零；原有非零退出码／启动异常优先保留，并额外报告收尾失败。退出与恢复使用流式 Session 安全校验，完整文字导出的 16 MiB 上限不再阻止有效会话释放；物理锁未释放或文件安全校验失败仍 fail-closed。根因、确定性复现和保留边界见 [生命周期审查](native-lifecycle-review.md)。
+如果收尾请求失败，入口报告 `native_finish_failed`，其中 `release_diagnostic` 给出 `daemon_unavailable`、`conflict`、`internal_error`、`native_archive_failed` 及具体 `native_session_*`／锁错误等类别，并单独显示 OMP 的退出码（或 unknown）；不回显请求载荷、token 或 Session 正文。OMP 正常退出但释放未确认时，入口返回非零；原有非零退出码／启动异常优先保留，并额外报告收尾失败。归档校验未通过时也不宣称成功释放。退出与恢复使用流式 Session 安全校验，完整文字导出的 16 MiB 上限不再阻止有效会话释放；物理锁未释放或文件安全校验失败仍 fail-closed。根因、确定性复现和保留边界见 [生命周期审查](native-lifecycle-review.md)。
 
 遇到此诊断，先用同一配置启动 Runtime，再用 `frontend show/list` 查看持久化状态。仅对 `uncertain` 且确认旧进程、锁和副作用安全的记录显式 `frontend recover`；也可 `--new` 保留旧历史继续。不会自动 recover、重试退出提交或重发模型请求。Runtime 失联时可能连 finish 都未提交，重启时仍按原有规则保留 `uncertain`，不从关闭事件或心跳推断成功。
+
+`--shutdown-on-exit` 复用同一条收尾路径，但只对本次启动创建、非 systemd 托管且所有权记录（实例 ID、进程身份、配置与 socket）匹配的独立 Runtime 生效；还需通过 Runtime 的活动检查。共享 Runtime、其他活动会话、活动后台 Run 或释放失败都会保留实例并说明原因。默认仍保留后台 Runtime 以支持提醒、唤醒和跨会话续接。
 
 使用 `--legacy-ui` 或 `PAVEWAY_UI=legacy` 可切回原界面；旧 CLI/RPC 保留。这里没有 schema migration，旧表语义不变。回退 UI 与降级旧二进制不同：新增 Persona/coach 设置字段需要新版本读取；要使用旧二进制须先停服务并从私密配置备份恢复，不能删除用户数据或重试 uncertain 来“修复”。

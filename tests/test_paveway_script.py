@@ -261,6 +261,8 @@ if sys.argv[1] == "-c" and sys.argv[6]:
         self.assertIn("--conversation ID", output)
         self.assertIn("不可同时", output)
         self.assertIn("原生", output)
+        self.assertIn("--shutdown-on-exit", output)
+        self.assertIn("--restart-runtime", output)
         self.assertEqual(calls, [])
 
     def test_legacy_tijian_table_does_not_block_startup_or_get_rewritten(self):

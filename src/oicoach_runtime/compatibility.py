@@ -1,6 +1,5 @@
 """Compatibility checks between client launcher and running runtime daemon."""
 
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,20 @@ from .ipc import request
 from . import service
 
 EXPECTED_NATIVE_PROTOCOL_VERSION = 1
+EXPECTED_LIFECYCLE_PROTOCOL_VERSION = 1
+
+
+def compatibility_problem(status: dict[str, Any]) -> str | None:
+    """Return the first blocking incompatibility, or None when the daemon is reusable."""
+    if status.get("native_protocol_version") != EXPECTED_NATIVE_PROTOCOL_VERSION:
+        return "native_protocol_version"
+    if status.get("runtime_version") != __version__:
+        return "runtime_version"
+    if not status.get("runtime_build_id"):
+        return "runtime_build_id_missing"
+    if status.get("runtime_build_id") != runtime_build_id():
+        return "runtime_build_id"
+    return None
 
 
 def check_runtime_compatibility(status: dict[str, Any], config_path: Path) -> None:
@@ -19,25 +32,23 @@ def check_runtime_compatibility(status: dict[str, Any], config_path: Path) -> No
 
     Raises RuntimeContractError with explicit, actionable instructions if incompatible.
     """
+    problem = compatibility_problem(status)
+    if problem is None:
+        return
     daemon_version = status.get("runtime_version")
     current_version = __version__
 
-    daemon_build_id = status.get("runtime_build_id")
-    current_build_id = runtime_build_id()
-
-    daemon_protocol = status.get("native_protocol_version")
-
     # 1. Native protocol version check (Case F)
-    if daemon_protocol != EXPECTED_NATIVE_PROTOCOL_VERSION:
+    if problem == "native_protocol_version":
         guidance = restart_guidance(config_path)
         raise RuntimeContractError(
-            f"运行中的 Paveway daemon 原生协议版本 ({daemon_protocol}) 与当前客户端要求 ({EXPECTED_NATIVE_PROTOCOL_VERSION}) 不匹配。\n\n"
+            f"运行中的 Paveway daemon 原生协议版本 ({status.get('native_protocol_version')}) 与当前客户端要求 ({EXPECTED_NATIVE_PROTOCOL_VERSION}) 不匹配。\n\n"
             f"已有任务不会被中断或修改。\n\n"
             f"{guidance}"
         )
 
     # 2. Version mismatch check (Case C)
-    if daemon_version != current_version:
+    if problem == "runtime_version":
         guidance = restart_guidance(config_path)
         raise RuntimeContractError(
             f"运行中的 Paveway daemon 版本与当前客户端不一致：\n"
@@ -48,7 +59,7 @@ def check_runtime_compatibility(status: dict[str, Any], config_path: Path) -> No
         )
 
     # 3. Missing runtime_build_id (Case E)
-    if not daemon_build_id:
+    if problem == "runtime_build_id_missing":
         guidance = restart_guidance(config_path)
         raise RuntimeContractError(
             "运行中的 Paveway daemon 不支持当前版本的构建指纹检查，\n"
@@ -58,15 +69,14 @@ def check_runtime_compatibility(status: dict[str, Any], config_path: Path) -> No
         )
 
     # 4. Same version but different build ID (Case D)
-    if daemon_build_id != current_build_id:
-        guidance = restart_guidance(config_path)
-        raise RuntimeContractError(
-            "检测到运行中的 Paveway daemon 与当前代码不一致。\n\n"
-            "当前版本与 daemon 版本相同，但代码构建指纹不同。\n"
-            "这通常发生在 Git pull、源码修改或更新安装包后未重启 daemon。\n\n"
-            "请确认没有正在执行的任务，然后重启 Paveway Runtime。\n\n"
-            f"{guidance}"
-        )
+    guidance = restart_guidance(config_path)
+    raise RuntimeContractError(
+        "检测到运行中的 Paveway daemon 与当前代码不一致。\n\n"
+        "当前版本与 daemon 版本相同，但代码构建指纹不同。\n"
+        "这通常发生在 Git pull、源码修改或更新安装包后未重启 daemon。\n\n"
+        "请确认没有正在执行的任务，然后重启 Paveway Runtime。\n\n"
+        f"{guidance}"
+    )
 
 
 def restart_guidance(config_path: Path) -> str:
@@ -97,14 +107,14 @@ def restart_guidance(config_path: Path) -> str:
     )
 
 
-def probe_daemon(socket_path: str) -> dict[str, Any] | None:
+def probe_daemon(socket_path: str, timeout: float = 10) -> dict[str, Any] | None:
     """Query daemon status via IPC.
 
     Returns the status dict if running, or None if the daemon is unavailable.
     Raises RuntimeContractError on unexpected IPC failures.
     """
     try:
-        data = request(socket_path, "status")
+        data = request(socket_path, "status", timeout=timeout)
         if data.get("daemon") == "running":
             return data
         return None

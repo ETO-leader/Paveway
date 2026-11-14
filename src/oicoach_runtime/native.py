@@ -145,7 +145,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
             ) else "runtime_error"
             outcome = f"OMP exit_code={code}" if code is not None else "OMP exit_code=unknown"
             failure = RuntimeContractError(
-                f"Native ownership release not confirmed ({category}; {outcome}). "
+                f"Native ownership release not confirmed (release_diagnostic={category}; {outcome}). "
                 "Start Runtime with the same config, inspect frontend show/list, and only use "
                 "frontend recover for an uncertain conversation after checking old processes "
                 "and side effects; --new preserves the old history. No automatic retry.")

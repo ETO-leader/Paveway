@@ -9,18 +9,22 @@ requested_workflow=""
 requested_coach=""
 requested_new=0
 requested_conversation=""
+requested_shutdown=0
+requested_restart=0
 ui_entry="${PAVEWAY_UI:-native}"
 ui_args=()
 
 usage() {
     cat <<'EOF'
-用法：./paveway.sh [--native|--legacy-ui] [--config PATH] [--workflow ID|--coach ID] [--task ID] [--new|--conversation ID]
+用法：./paveway.sh [--native|--legacy-ui] [--config PATH] [--workflow ID|--coach ID] [--task ID] [--new|--conversation ID] [--shutdown-on-exit] [--restart-runtime]
 
 检查/安装本地 .venv，初始化缺少的配置，启动 Runtime 并进入终端 UI。
 默认使用项目 .runtime/config.toml；已有设置、会话和活动请求继续沿用。
 首次启动且无 Workflow 时，将提示输入第一个 Workflow 的名称（或使用 --workflow 预先指定）。
-退出 UI 不会停止后台 Runtime。OMP 需要事先安装并完成模型认证。
-默认打开 OMP 原生界面；--legacy-ui 保留原管理界面。
+退出 UI 默认保留后台 Runtime。运行时版本、构建指纹或协议不兼容时，会在确认没有活动工作后自动安全重启；存在活动工作时明确报告并保留旧实例。
+--shutdown-on-exit 仅当 Runtime 由本次启动创建、非 systemd 托管、没有其他活动会话/后台工作且前台会话已释放时，才在退出时关闭它。
+--restart-runtime 主动请求安全重启现有 Runtime；通常不需要，因为不兼容时会自动处理。
+OMP 需要事先安装并完成模型认证。默认打开 OMP 原生界面；--legacy-ui 保留原管理界面。
 --new 新建 Conversation；--conversation ID 选择已有 Conversation，二者不可同时使用。
 以上两个会话选项仅适用于原生界面，不可与 --legacy-ui（含 PAVEWAY_UI=legacy）一起使用。
 未指定会话选项时沿用原生界面的默认选择，不自动新建 Conversation。
@@ -32,6 +36,8 @@ while (($#)); do
         -h|--help) usage; exit 0 ;;
         --native) ui_entry="native"; shift ;;
         --legacy-ui) ui_entry="legacy"; shift ;;
+        --shutdown-on-exit) requested_shutdown=1; shift ;;
+        --restart-runtime) requested_restart=1; shift ;;
         --new)
             requested_new=1
             ui_args+=("$1")
@@ -111,23 +117,19 @@ else
     python="$PAVEWAY_PYTHON"
 fi
 workflow_file="$(mktemp -t paveway-workflow-XXXXXX)"
-trap 'rm -f "$workflow_file"' EXIT
+launch_file="$(mktemp -t paveway-launch-XXXXXX)"
+trap 'rm -f "$workflow_file" "$launch_file"' EXIT
 
 python_code="$(cat <<'PY'
 import os
 import shutil
-import stat
-import subprocess
 import sys
-import time
 from pathlib import Path
 
-from oicoach_runtime import service
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import ensure_private_directory, load_config
 from oicoach_runtime.errors import RuntimeContractError
-from oicoach_runtime.ipc import request
-from oicoach_runtime.compatibility import check_runtime_compatibility, probe_daemon
+from oicoach_runtime.launcher import ensure_runtime
 from oicoach_runtime.models import validate_id
 from oicoach_runtime.workflow_setup import create
 
@@ -135,6 +137,7 @@ path = Path(sys.argv[1]).absolute()
 requested_workflow = sys.argv[2] if len(sys.argv) > 2 else ""
 workflow_file = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
 requested_coach = sys.argv[4] if len(sys.argv) > 4 else ""
+launch_file = Path(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else None
 
 try:
     if not path.exists():
@@ -187,32 +190,9 @@ try:
                 f"指定的 Workflow 不存在：{requested_workflow}。已有 Workflow：{', '.join(existing_workflows)}。"
             )
 
-    daemon_status = probe_daemon(config.server.socket_path)
-    if daemon_status is None:
-        if service.status(path).get("managed"):
-            print("正在启动已有的 systemd 用户服务…", flush=True)
-            service.control(path, "start")
-        else:
-            ensure_private_directory(config.state_dir)
-            log_path = config.state_dir / "startup.log"
-            fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "ab") as log:
-                info = os.fstat(log.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                    raise RuntimeContractError("后台启动日志必须是当前用户拥有的私密普通文件。")
-                daemon_proc = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)],
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True,
-                    env={**os.environ, **service.read_environment(path)})
-                (config.state_dir / "daemon.pid").write_text(str(daemon_proc.pid), encoding="utf-8")
-            print("正在启动后台 Runtime…", flush=True)
-        deadline = time.monotonic() + 20
-        while daemon_status is None:
-            if time.monotonic() >= deadline:
-                raise RuntimeContractError("Runtime 启动未就绪；请使用 doctor 或 service logs 检查，不会自动重发请求。")
-            time.sleep(0.1)
-            daemon_status = probe_daemon(config.server.socket_path)
-
-    check_runtime_compatibility(daemon_status, path)
+    handle = ensure_runtime(config, path, restart=os.environ.get("PAVEWAY_RESTART_RUNTIME") == "1")
+    if launch_file:
+        launch_file.write_text(handle.launch_token or "", encoding="utf-8")
 except RuntimeContractError as error:
     print(f"启动失败：{error}", file=sys.stderr)
     sys.exit(1)
@@ -221,12 +201,31 @@ except OSError:
     sys.exit(1)
 PY
 )"
-"$python" -c "$python_code" "$config_path" "$requested_workflow" "$workflow_file" "$requested_coach"
+if ((requested_restart)); then
+    export PAVEWAY_RESTART_RUNTIME=1
+else
+    unset PAVEWAY_RESTART_RUNTIME
+fi
+if ((requested_shutdown)); then
+    export PAVEWAY_SHUTDOWN_ON_EXIT=1
+else
+    unset PAVEWAY_SHUTDOWN_ON_EXIT PAVEWAY_LAUNCH_TOKEN
+fi
+"$python" -c "$python_code" "$config_path" "$requested_workflow" "$workflow_file" "$requested_coach" "$launch_file"
 
 if [[ -z "$requested_workflow" && -s "$workflow_file" ]]; then
     created_id="$(cat "$workflow_file")"
     if [[ -n "$created_id" ]]; then
         ui_args+=("--workflow" "$created_id")
+    fi
+fi
+
+if ((requested_shutdown)); then
+    launch_token="$(<"$launch_file")"
+    if [[ -n "$launch_token" ]]; then
+        export PAVEWAY_LAUNCH_TOKEN="$launch_token"
+    else
+        unset PAVEWAY_LAUNCH_TOKEN
     fi
 fi
 

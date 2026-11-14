@@ -18,6 +18,7 @@ Python 3.11+、Linux；终端编辑器依赖 prompt_toolkit，上下文预算使
 | `scheduler.py` | 單一 run、workflow envelope、先 commit intent 再送 prompt |
 | `adapters/omp_rpc.py` | RPC v1、獨立超時、stderr drain、ack/result/settled |
 | `processes.py`、`child.py` | flock、持鎖 guardian、Linux parent-death 程序組清理 |
+| `compatibility.py`、`launcher.py` | 版本／Build ID／協議檢查、launcher 協調鎖、`lifecycle.*` 原子 quiesce／drain、獨立實例所有權記錄與安全替換 |
 | `smoke.py` | 真實 OMP transport／三回合模型驗證，暫存 workspace 與 daemon |
 | `supervisor.py` | 可注入時間／亂數的退避、冷卻與熔斷策略；Store 原子持久化 |
 | `integrations/tijian*.py` | 外置 Tijian 操作/schema、JSON CLI 進程適配與可選 stdio MCP bridge；不存取 Tijian DB |
@@ -81,6 +82,8 @@ M3 的 systemd 部署驗收已在 M4 補齊。每次 wake 建立新 OMP 進程�
 Runtime 與 guardian 都使用 Linux subreaper；OMP root 在 guardian 死亡時也收到 parent-death signal，並保留 Runtime flock 直到退出。adapter 用 pidfd 對自有 guardian 發送信號，監控 returncode 避免孤兒工具持有 pipe 導致長時間漏判退出，並清理收養的同組後代。此機制針對受管程序組；M4 仍需 service cgroup 的完整服務生命週期邊界。
 
 每個 adapter 共享一個 cancellation-shielded cleanup task；restart 或 shutdown 取消派發等待時，後續清理會等待同一個有界 stop，避免重複讀 pipe、提前關閉 pidfd 或讓前後兩個進程重疊。
+
+Runtime 生命週期由 `launcher.py` 與 daemon 內的 `lifecycle.*` IPC 共同協調。launcher 以獨立 `launcher.lock` 序列化並發啟動器，daemon 仍以 `runtime.lock` 與 socket lock 作為唯一實例權威。檢查版本／Build ID／原生協議後，若需替換，daemon 在單一 quiesce 區段內先設 draining、拒絕新工作，再檢查 leased/running run 與實時前台 owner；有 dispatch intent 或活動模型工作時 fail-closed，只有未派發租約會退回 queued（不記為完成或失敗）。確認安全後才排程停止，launcher 等進程身份與兩個鎖真正釋放（zombie 視為已退出）再啟動新實例；超時或舊 daemon 缺少交接協議時不啟動競爭實例。`--shutdown-on-exit` 另以私密所有權記錄（runtime instance、pid identity、config、socket、一次性 token）證明本次啟動擁有獨立實例，systemd 托管與共享實例永不取得該所有權。
 
 0.11.0 的 Git 同步任务独立于前景 scheduler，在后台线程用独立只读 SQLite 事务导出终态记录。共享配置按父版本图识别冲突，导入只通过 customization 的锁/CAS，不写活动队列。同步设置可热加载；网络失败保留本地提交并记录独立状态，不修改 Agent 熔断器。详见 [Git 同步](git-sync.md)。
 

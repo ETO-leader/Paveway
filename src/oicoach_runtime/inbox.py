@@ -61,6 +61,15 @@ class Inbox:
         if event["payload"].get("native_wakeup") and event["payload"].get("intent") == "reminder":
             value = event["payload"].get("message")
             text = value if isinstance(value, str) and value else event["reason"]
+            binding_id = event["payload"].get("wake_binding_id")
+            if binding_id:
+                try:
+                    binding = self.store.wakebinding(binding_id)
+                except Exception:
+                    binding = None
+                if binding is not None:
+                    title = binding.get("todo_title") or binding.get("todo_id")
+                    text = f"Tijian Todo：{title}\n计划提醒：{event['not_before_utc']}"
             if db is None:
                 with self.store.transaction() as db:
                     return self.due(event, db=db)
@@ -71,6 +80,7 @@ class Inbox:
     def project_due(self, *, complete=False):
         rows = self.store.connection.execute("""SELECT event_id FROM events e
             WHERE json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder'
+            AND json_extract(payload_json,'$.wake_binding_id') IS NULL
             AND status!='cancelled' AND not_before_utc<=?
             AND ((? AND status='queued') OR NOT EXISTS(SELECT 1 FROM runtime_metadata m WHERE m.key='inbox-due:v1:' || e.event_id
                 AND json_extract(m.value,'$')=e.not_before_utc))

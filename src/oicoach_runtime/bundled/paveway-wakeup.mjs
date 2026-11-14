@@ -6,27 +6,51 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
         return request(config.socket_path, "wakeup." + operation, {...bound(), parameters});
     };
     const inboxCall = (operation, parameters = {}) => request(config.socket_path, "inbox.bound-" + operation, {...bound(), parameters});
+    const bindingCall = (operation, parameters = {}) => request(config.socket_path, "wakebinding." + operation, {...bound(), parameters});
     const z = pi.zod;
     const when = z.union([
         z.object({kind: z.literal("at"), at: z.string()}),
         z.object({kind: z.literal("after_now"), seconds: z.number().min(0).max(31536000)}),
     ]);
+    const bindingBase = {
+        mode: z.enum(["independent", "linked", "follow"]).optional(),
+        time_source: z.enum(["scheduled", "due"]).optional(),
+        offset_seconds: z.number().int().min(-2678400).max(2678400).optional(),
+        eligibility: z.enum(["open", "open_and_incomplete"]).optional(),
+        reminder_at: z.string().optional(),
+        resume_policy: z.enum(["manual", "when_eligible"]).optional(),
+    };
     const definitions = {
         schedule: z.object({when, reason: z.string().min(1).max(4096), dedupe_key: z.string().min(1).max(256),
             intent: z.enum(["reminder", "agent_wake"]), authorized_by_user: z.boolean()}),
         list: z.object({intent: z.enum(["reminder", "agent_wake"]).optional()}),
         cancel: z.object({event_id: z.string(), expected_version: z.number().int().min(1), intent: z.enum(["reminder", "agent_wake"]).optional()}),
         reschedule: z.object({event_id: z.string(), expected_version: z.number().int().min(1), at: z.string(), intent: z.enum(["reminder", "agent_wake"]).optional()}),
+        binding_create: z.object({todo_id: z.string().min(1).max(512), name: z.string().min(1).max(64).optional(),
+            ...bindingBase, authorized_by_user: z.boolean()}),
+        binding_list: z.object({status: z.enum(["active", "pending", "ineligible", "disabled", "conflict"]).optional()}),
+        binding_show: z.object({binding_id: z.string().min(1)}),
+        binding_update: z.object({binding_id: z.string().min(1), expected_version: z.number().int().min(1), ...bindingBase,
+            name: z.string().min(1).max(64).optional()}),
+        binding_cancel: z.object({binding_id: z.string().min(1), expected_version: z.number().int().min(1)}),
+        binding_sync: z.object({binding_id: z.string().min(1).optional()}),
+        binding_status: z.object({}),
     };
     if (config.tools_enabled) for (const [operation, parameters] of Object.entries(definitions)) {
+        const binding = operation.startsWith("binding_");
         pi.registerTool({name: "paveway_wakeup_" + operation, label: "Paveway wakeup " + operation,
-            description: operation === "schedule" ?
+            description: binding ?
+                "Manage an explicitly authorized Tijian Todo WakeBinding in the current workflow/task. A follow binding uses the Todo time and is reconciled by the Runtime even while the TUI is closed. Todo data is read through native tijian-mcp; no Todo content is written." :
+                operation === "schedule" ?
                 "Choose intent=reminder for 'remind me': durable Inbox and optional desktop notification, no model or Agent start. Choose agent_wake only when the user explicitly wants future AI work/checks/decisions or has opted in; it runs a background Agent and saves its result to Inbox, without a reminder popup. after_now starts at Runtime receipt; native after_turn_settled is unavailable. Never create an autonomous loop. Reuse the same dedupe_key for an uncertain identical request; inspect list before retrying. Scheduling is not delivery or user-seen evidence." :
                 "Manage current bound workflow/task events; filter intent to distinguish reminder from agent_wake. Mutations require the event CAS version; pass intent to prevent changing another type. Do not supply another scope.",
-            parameters, approval: operation === "list" ? "read" : "write", loadMode: "essential",
+            parameters, approval: ["list", "binding_list", "binding_show", "binding_status"].includes(operation) ? "read" : "write", loadMode: "essential",
             async execute(_id, args, _signal, _update, ctx) {
                 if (ctx?.agent?.kind !== "main") return {content: [{type: "text", text: "Only the main GPT may use its managed wakeup capability"}], isError: true};
-                try { return {content: [{type: "text", text: JSON.stringify(await call(operation, args, ctx))}]}; }
+                try {
+                    const result = binding ? await bindingCall(operation.slice("binding_".length), args) : await call(operation, args, ctx);
+                    return {content: [{type: "text", text: JSON.stringify(result)}]};
+                }
                 catch (error) { return {content: [{type: "text", text: error.message}], isError: true}; }
             }});
     }
@@ -105,7 +129,7 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
         context = undefined;
     });
     for (const [command, intent] of [["reminder", "reminder"], ["wakeup", "agent_wake"]]) pi.registerCommand(command, {
-        description: (intent === "reminder" ? "纯提醒，不调用模型；" : "唤醒后台 GPT 执行任务；") + "in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME",
+        description: (intent === "reminder" ? "纯提醒，不调用模型；" : "唤醒后台 GPT 执行任务；") + "in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME | bind TODO_ID [name] | bindings | sync [ID] | unbind ID VERSION",
         handler: async (args, ctx) => {
             try {
                 let result;
@@ -115,6 +139,16 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
                 else if (operation === "cancel") result = await call("cancel", {event_id: value, expected_version: Number(parts[2]), intent});
                 else if (operation === "reschedule") result = await call("reschedule", {event_id: value,
                     expected_version: Number(parts[2]), at: parseAt(parts[3] || ""), intent});
+                else if (operation === "bind") {
+                    if (!value) throw new Error(`Use /${command} bind TODO_ID [name]`);
+                    result = await bindingCall("create", {todo_id: value, name: parts[2] || "default",
+                        mode: "follow", time_source: "due", eligibility: "open_and_incomplete",
+                        resume_policy: "manual", authorized_by_user: true});
+                }
+                else if (operation === "bindings") result = await bindingCall("list", {});
+                else if (operation === "sync") result = await bindingCall("sync", value ? {binding_id: value} : {});
+                else if (operation === "unbind") result = await bindingCall("cancel", {binding_id: value,
+                    expected_version: Number(parts[2])});
                 else if (operation === "in" || operation === "at") {
                     let timing;
                     if (operation === "in") {
@@ -124,7 +158,7 @@ export function registerWakeups(pi, config, bound, request, captureInference, pu
                     } else timing = {kind: "at", at: parseAt(value || "")};
                     result = await call("schedule", {when: timing, reason: parts.slice(2).join(" "),
                         dedupe_key: "native-user-" + randomUUID(), intent, authorized_by_user: true}, ctx);
-                } else throw new Error(`/${command} in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME`);
+                } else throw new Error(`/${command} in 10m TEXT | at HH:mm TEXT | list | cancel ID VERSION | reschedule ID VERSION TIME | bind TODO_ID [name] | bindings | sync [ID] | unbind ID VERSION`);
                 ctx.ui.notify(JSON.stringify(result, null, 2), "info");
                 await refresh(ctx);
             } catch (error) { ctx.ui.notify(error.message, "error"); }

@@ -13,6 +13,8 @@ import threading
 
 from test_native_omp import NativeFixture
 from oicoach_runtime import coaches, customization
+from oicoach_runtime.compatibility import probe_daemon
+from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 
 from test_native_mcp import FAKE_MCP_SERVER_CODE
@@ -136,6 +138,11 @@ class NativeManagementTests(NativeFixture):
                 if text.encode() in raw and predicate(): return
                 pump()
             self.fail("Native management did not reach state: " + raw.decode(errors="replace")[-3000:])
+        def frontend_rows():
+            try:
+                return request(self.config.server.socket_path, "frontend.list")
+            except RuntimeContractError:
+                return []
         def send(text):
             pending = text if isinstance(text, bytes) else text.encode()
             deadline = time.monotonic() + 20
@@ -159,7 +166,7 @@ class NativeManagementTests(NativeFixture):
             until("Session recovery")
             send(b" \t\r")
         until("", lambda: any(row["status"] == "idle" and row.get("session_id")
-            for row in request(self.config.server.socket_path, "frontend.list")))
+            for row in frontend_rows()))
         pump(.15)
         return process, raw, send, until, pump, exit_ui
 
@@ -505,6 +512,18 @@ class NativeManagementTests(NativeFixture):
         self.assertIn("旧 [tijian] 配置已保留但不再执行".encode(), raw)
         self.assertEqual(self.path.read_text(), original)
         self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
+
+    def test_shutdown_on_exit_closes_a_launcher_created_runtime(self):
+        # No pre-existing daemon: the one-key launcher creates and owns it.
+        self.stop_daemon()
+        process, raw, send, until, pump, exit_ui = self.open_ui(
+            launcher=True, args=("--shutdown-on-exit",))
+        self.assertEqual(request(self.config.server.socket_path, "status")["daemon"], "running")
+        exit_ui()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and probe_daemon(self.config.server.socket_path) is not None:
+            time.sleep(0.05)
+        self.assertIsNone(probe_daemon(self.config.server.socket_path), raw.decode(errors="replace")[-2000:])
 
     def test_due_inbox_notice_preserves_draft_and_does_not_ack_or_replay(self):
         def response(body):

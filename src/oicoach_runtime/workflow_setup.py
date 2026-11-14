@@ -198,6 +198,16 @@ def show_tijian(config, workflow_id):
     return _tijian_report(current, *_tijian_server(current))
 
 
+def tijian_server(config, workflow_id):
+    """Return the validated native Tijian server for headless read-only Todo access."""
+    current = _read_mcp(config, workflow_id)
+    server, permission = _tijian_server(current)
+    if server is None:
+        return None
+    return {"executable": server["command"], "args": list(server["args"]),
+            "permission": permission, "config_path": str(current.path)}
+
+
 def _tijian_executable(executable):
     executable_path = Path(executable).expanduser().resolve()
     if not executable_path.is_file() or not os.access(executable_path, os.X_OK):

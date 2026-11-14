@@ -141,7 +141,7 @@ class InitTests(TemporaryCase):
                                  "--config", str(self.config_path), "--state-dir", str(self.state),
                                  "--workflow-root", str(self.workflows)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["schema_version"], 2)
+        self.assertEqual(json.loads(result.stdout)["schema_version"], 3)
         err_res = subprocess.run([sys.executable, "-m", "oicoach_runtime", "doctor", "--json",
                                   "--config", str(self.root / "missing")], capture_output=True, text=True)
         self.assertEqual(err_res.returncode, 1)
@@ -155,10 +155,10 @@ class DatabaseTests(TemporaryCase):
 
     def test_schema_and_read_only_inspection(self):
         report = initialize_database(self.database)
-        self.assertEqual(report, {"schema_version": 2, "integrity": "ok", "journal_mode": "wal"})
+        self.assertEqual(report, {"schema_version": 3, "integrity": "ok", "journal_mode": "wal"})
         with sqlite3.connect(self.database) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertTrue({"events", "runs", "session_bindings", "runtime_metadata", "audit_log"} <= tables)
+        self.assertTrue({"events", "runs", "session_bindings", "runtime_metadata", "audit_log", "wake_bindings"} <= tables)
         with self.assertRaises(StorageError):
             inspect_database(self.root / "absent.sqlite3")
         self.assertFalse((self.root / "absent.sqlite3").exists())
@@ -191,7 +191,7 @@ class DatabaseTests(TemporaryCase):
         with sqlite3.connect(self.database) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
-        self.assertEqual(initialize_database(self.database)["schema_version"], 2)
+        self.assertEqual(initialize_database(self.database)["schema_version"], 3)
 
     def test_database_symlink_is_rejected(self):
         initialize_database(self.database)

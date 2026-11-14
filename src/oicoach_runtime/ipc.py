@@ -1,6 +1,7 @@
 """One bounded versioned JSON request/response per private Unix connection."""
 
 import asyncio
+import inspect
 import json
 import inspect
 import os
@@ -17,7 +18,7 @@ MAX_REQUEST = 131072
 MAX_RESPONSE = 131072
 
 
-def request(socket_path, command, arguments=None):
+def request(socket_path, command, arguments=None, timeout=10):
     request_id = str(uuid.uuid4())
     payload = {"api_version": 1, "id": request_id, "command": command, "arguments": arguments or {}}
     encoded = (canonical_json(payload) + "\n").encode()
@@ -28,7 +29,7 @@ def request(socket_path, command, arguments=None):
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise DaemonError("Control socket is not private and owned by the current user")
         with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(10)
+            client.settimeout(timeout)
             client.connect(str(socket_path))
             client.sendall(encoded)
             data = bytearray()

@@ -22,7 +22,7 @@ omp --version
 ./paveway.sh
 ```
 
-一键脚本可从任意目录运行，会检查项目 `.venv`、初始化缺失配置、启动 Runtime 并进入原生界面；首次询问 Workflow 名称，已有配置、Prompt、Skills、历史和活动请求继续沿用。退出 UI 不停止后台 Runtime。
+一键脚本可从任意目录运行，会检查项目 `.venv`、初始化缺失配置、启动 Runtime 并进入原生界面；首次询问 Workflow 名称，已有配置、Prompt、Skills、历史和活动请求继续沿用。退出 UI 默认保留后台 Runtime。再次启动时，版本、构建指纹与原生协议一致则直接复用；不一致时先经 IPC 原子确认没有活动前台会话或后台 Run，再把未派发的租约退回持久队列并安全重启。存在活动工作时只报告阻塞类型、Run/Conversation 标识和安全处理方式，不会强制 kill、启动第二个实例或重放模型请求。
 
 ```bash
 ./paveway.sh --workflow test01
@@ -31,7 +31,11 @@ omp --version
 ./paveway.sh --conversation CONVERSATION_ID
 ./paveway.sh --config /absolute/config.toml --workflow test01 --task training
 ./paveway.sh --legacy-ui
+./paveway.sh --shutdown-on-exit
+./paveway.sh --restart-runtime
 ```
+
+`--shutdown-on-exit` 只在本次启动创建了独立（非 systemd）Runtime、没有其他活动会话/后台工作、前台会话已释放且进程身份与所有权记录一致时，才在正常退出后关闭它；共享 Runtime 不会被取得所有权。`--restart-runtime` 用于主动安全重启，平时不需要。
 
 `--new` 显式新建 Conversation；`--conversation ID` 选择已有 Conversation。两者不可同时使用，且仅适用于原生界面；与 `--legacy-ui`（包括 `PAVEWAY_UI=legacy` 默认值）一起使用会在启动 Runtime 前报错。未指定时沿用原生界面的默认会话选择，不自动添加 `--new`。`--workflow`／`--coach`、`--task` 和 `--config` 的用法不变。
 
@@ -233,7 +237,8 @@ flowchart LR
 
 ## 故障恢复与回退
 
-- `daemon_unavailable`：确认 CLI/UI 使用同一配置，检查 `service status/logs` 或前台 `serve`。升级旧 daemon 时应先确认空闲，再重启；不打断活动请求来加载新协议。
+- `daemon_unavailable`：确认 CLI/UI 使用同一配置，检查 `service status/logs` 或前台 `serve`。新版本启动器会在确认空闲后自动安全重启旧构建；若旧 daemon 不支持交接协议，或仍有活动 Run／前台会话，则只给出明确诊断，不强制终止。
+- 自动重启被拒绝：输出会列出阻塞的 Run/Conversation、状态和安全处理方式。排队中的提醒、`/wakeup`、未读 Inbox 与已释放 Session 不是活动工作，不会阻止重启；不要通过删除锁文件或 `pkill -f` 绕过。
 - 旧 `[tijian]` 配置：0.21.1 起兼容读取并在配置重写时保留已有字段，但不启动已删除的 CLI 桥接器。一键启动会提示停用状态；通过 `/paveway tijian` 或 `workflow connect-tijian` 配置原生 MCP，不需要删除整份旧配置或重建历史。
 - `uncertain`：先检查历史及外部副作用，不自动重发。`frontend list/show/recover` 在验证旧进程死亡及锁释放后显式恢复原生所有权；若 Session 未落盘／损坏，保留旧记录并用 `native --new`。
 - 默认接续遇到旧 owner 未释放时，启动器提供恢复／新建／取消选择；仍活跃的 owner 不提供恢复接管。恢复需用户明确选择并经过上述检查，避免反复只报抽象的 conflict。

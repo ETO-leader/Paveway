@@ -8,9 +8,10 @@ from pathlib import Path
 
 from .errors import StorageError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 V1_TABLES = {"runtime_metadata", "session_bindings", "events", "runs", "audit_log"}
-REQUIRED_TABLES = V1_TABLES | {"memory_notes"}
+V2_TABLES = V1_TABLES | {"memory_notes"}
+REQUIRED_TABLES = V2_TABLES | {"wake_bindings"}
 
 
 def inspect_database(path: Path) -> dict:
@@ -49,10 +50,12 @@ def initialize_database(path: Path) -> dict:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         names = {row[0] for row in tables}
-        required = REQUIRED_TABLES if version == 2 else V1_TABLES
-        if version not in (0, 1, 2) or (version == 0 and tables) or (version > 0 and not required <= names):
+        if version not in (0, 1, 2, 3):
             raise StorageError("Refusing an unknown or newer database schema; no migration applied")
-        for target, filename in ((1, "001_initial.sql"), (2, "002_memory.sql")):
+        required = {0: V1_TABLES, 1: V1_TABLES, 2: V2_TABLES, 3: REQUIRED_TABLES}[version]
+        if (version == 0 and tables) or (version > 0 and not required <= names):
+            raise StorageError("Refusing an unknown or newer database schema; no migration applied")
+        for target, filename in ((1, "001_initial.sql"), (2, "002_memory.sql"), (3, "003_wakebinding.sql")):
             if target <= version:
                 continue
             sql = files("oicoach_runtime").joinpath("migrations/" + filename).read_text(encoding="utf-8")

@@ -170,27 +170,44 @@ async def send(backend="auto", title="Paveway · 定时提醒", body="定时任�
 
 
 class Watcher:
-    def __init__(self, store, sender=send, *, retry_window_seconds=120):
-        self.store, self.sender = store, sender
+    def __init__(self, store, sender=send, *, gate=None, retry_window_seconds=120):
+        self.store, self.sender, self.gate = store, sender, gate
         self.retry_window_seconds = retry_window_seconds
 
     async def tick(self, stop=None):
         Inbox(self.store).project_due()
         values = settings(self.store.config)
         if not values["enabled"]: return
-        rows = self.store.connection.execute("""SELECT event_id FROM events e
-            WHERE json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder'
-            AND status!='cancelled' AND not_before_utc>=? AND not_before_utc<=?
+        rows = self.store.connection.execute("""SELECT e.event_id FROM events e
+            LEFT JOIN wake_bindings b ON b.event_id=e.event_id
+            WHERE json_extract(e.payload_json,'$.native_wakeup')=1 AND json_extract(e.payload_json,'$.intent')='reminder'
+            AND e.status!='cancelled' AND e.not_before_utc>=? AND e.not_before_utc<=?
+            AND (json_extract(e.payload_json,'$.wake_binding_id') IS NULL
+                OR (b.binding_id IS NOT NULL AND b.status='active' AND b.event_id=e.event_id))
             AND NOT EXISTS(SELECT 1 FROM runtime_metadata m WHERE m.key=? || e.event_id
                 AND json_extract(m.value,'$.not_before_utc')=e.not_before_utc
                 AND (json_extract(m.value,'$.status')!='retry_wait' OR json_extract(m.value,'$.next_attempt_at')>?))
-            ORDER BY not_before_utc,created_at,event_id LIMIT 20""", (values["since_utc"], self.store.timestamp(), PREFIX, self.store.timestamp())).fetchall()
+            ORDER BY e.not_before_utc,e.created_at,e.event_id LIMIT 20""", (values["since_utc"], self.store.timestamp(), PREFIX, self.store.timestamp())).fetchall()
+        from .wakebinding import WakeBindings
+        service = WakeBindings(self.store)
         for row in rows:
             values = settings(self.store.config)
-            if not values["enabled"] or (stop is not None and stop.is_set()): return
+            if not values["enabled"] or (stop is not None and stop.is_set()):
+                return
+            event = self.store.event(row[0])
+            if event["payload"].get("wake_binding_id"):
+                gate = self.gate or service.gate
+                try:
+                    allowed = await gate(event)
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    continue
             with self.store.transaction() as db:
-                event = self.store.event(row[0])
-                if event["status"] == "cancelled" or not values["since_utc"] <= event["not_before_utc"] <= self.store.timestamp(): continue
+                # Recheck cancellation, binding fencing and due time immediately before intent.
+                current = self.store.event(event["event_id"])
+                if current["status"] == "cancelled" or not service.local_gate(current) or not values["since_utc"] <= current["not_before_utc"] <= self.store.timestamp(): continue
+                event = current
                 identity = occurrence_id(event)
                 history_key = "desktop-history:v1:" + identity
                 legacy_key = "desktop-history:v1:" + hashlib.sha256((event["event_id"] + event["not_before_utc"]).encode()).hexdigest()

@@ -244,8 +244,8 @@ class MemoryMigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
                 self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='partial_v2'").fetchone())
-            self.assertEqual(initialize_database(path)["schema_version"], 2)
-            self.assertEqual(initialize_database(path)["schema_version"], 2)
+            self.assertEqual(initialize_database(path)["schema_version"], 3)
+            self.assertEqual(initialize_database(path)["schema_version"], 3)
             with sqlite3.connect(path) as connection:
                 self.assertEqual(connection.execute("SELECT value FROM runtime_metadata WHERE key='keep'").fetchone()[0], '"private-value"')
                 for table, rows in preserved.items():

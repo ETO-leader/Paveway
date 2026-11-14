@@ -13,6 +13,7 @@ import uuid
 from contextlib import ExitStack
 from pathlib import Path
 
+from . import __version__
 from .adapters.omp_rpc import OmpRpc
 from .config import ensure_private_directory
 from .db import initialize_database
@@ -20,9 +21,15 @@ from .errors import AgentError, ConflictError, SessionConflictError, RuntimeCont
 from .ipc import MAX_REQUEST, handle_connection
 from .models import parse_timestamp, utc_text
 from .memory import Memory, History
-from .processes import InstanceLock, enable_subreaper
-from .store import Store
+from .processes import InstanceLock, enable_subreaper, process_identity
+from .store import Store, bounded_text
+from .compatibility import EXPECTED_LIFECYCLE_PROTOCOL_VERSION, EXPECTED_NATIVE_PROTOCOL_VERSION
 from .workflows import WorkflowProvider
+
+LIFECYCLE_TARGET_FIELDS = (
+    "runtime_instance", "runtime_build_id", "runtime_version",
+    "native_protocol_version", "runtime_pid", "runtime_identity",
+)
 
 
 def arguments(raw, allowed, required=()):
@@ -43,14 +50,29 @@ class Runtime:
         self.lock_fds = ()
         self.clients = set()
         self.active_dispatch = None
+        self.active_run_id = None
         self.active_scope = None
         self.pending_restart = None
+        self.draining = False
+        self.stopping = False
+        self.stop_timer = None
+        self.lifecycle_lock = None
+        self.runtime_pid = os.getpid()
+        self.runtime_identity = process_identity(self.runtime_pid)
         self.execution_progress = None
         self.sync_wakeup = asyncio.Event()
+        self.wake_wakeup = asyncio.Event()
+        self.wake_reconciler = None
+        self.wake_guard_task = None
         from .build_id import runtime_build_id
         self.runtime_build_id = runtime_build_id()
 
     def dispatch_api(self, command, raw):
+        if self.draining and command in (
+                "schedule", "agent.restart", "frontend.begin", "frontend.started",
+                "frontend.attest", "frontend.inference", "frontend.recover"):
+            raise ConflictError(
+                "Runtime 正在安全收尾（draining）；新的工作已暂时拒绝，已有持久排程和会话保持不变。")
         if command == "cache.stats":
             from .cache_usage import session_usage
             from .frontend import Frontend
@@ -188,9 +210,13 @@ class Runtime:
             arguments(raw, ())
             supervisor = self.store.status()
             health = "degraded" if supervisor["supervisor"]["phase"] in ("backoff", "open") else self.agent_health
-            from . import __version__
             return {"daemon": "running", "runtime_version": __version__, "runtime_build_id": self.runtime_build_id,
-                    "native_protocol_version": 1, "milestone": "M4", "agent_health": health, **supervisor}
+                    "native_protocol_version": EXPECTED_NATIVE_PROTOCOL_VERSION,
+                    "lifecycle_protocol_version": EXPECTED_LIFECYCLE_PROTOCOL_VERSION,
+                    "runtime_instance": self.owner, "runtime_pid": self.runtime_pid,
+                    "runtime_identity": self.runtime_identity, "draining": self.draining,
+                    "stopping": self.stopping,
+                    "milestone": "M4", "agent_health": health, **supervisor}
         if command == "schedule":
             arguments(raw, ("workflow_id", "task_id", "reason", "dedupe_key", "payload", "at", "after_turn", "run_id"),
                       ("workflow_id", "task_id", "reason", "dedupe_key"))
@@ -270,6 +296,280 @@ class Runtime:
         self.changed.set()
         return result
 
+    async def dispatch_async(self, command, raw):
+        if command.startswith("lifecycle."):
+            return await self.lifecycle_api(command, raw)
+        if command.startswith("wakebinding."):
+            return await self.wakebinding_api(command, raw)
+        return await self.dispatch_control(command, raw)
+
+    def _lifecycle_target(self, raw, *, require_reason):
+        fields = (*LIFECYCLE_TARGET_FIELDS, "lifecycle_protocol_version") + (("reason",) if require_reason else ())
+        arguments(raw, fields, fields)
+        if raw.get("lifecycle_protocol_version") != EXPECTED_LIFECYCLE_PROTOCOL_VERSION:
+            raise ConflictError("Runtime 生命周期协议版本不匹配；拒绝自动操作")
+        if (raw["runtime_instance"] != self.owner
+                or raw["runtime_build_id"] != self.runtime_build_id
+                or raw["runtime_version"] != __version__
+                or raw["native_protocol_version"] != EXPECTED_NATIVE_PROTOCOL_VERSION
+                or type(raw["runtime_pid"]) is not int or raw["runtime_pid"] != self.runtime_pid
+                or raw["runtime_identity"] != self.runtime_identity):
+            raise ConflictError("Runtime 实例已变化；拒绝在另一个实例上执行生命周期操作")
+        if require_reason:
+            bounded_text(raw["reason"], 256, "reason")
+
+    def _active_runs(self):
+        rows = self.store.connection.execute(
+            """SELECT r.run_id, r.status, r.dispatch_intent_at, e.workflow_id, e.task_id, e.event_id
+               FROM runs r JOIN events e ON e.event_id=r.event_id
+               WHERE r.status IN ('leased','running') ORDER BY r.started_at""").fetchall()
+        return [{"run_id": row["run_id"], "status": row["status"],
+                 "dispatch_intent_at": row["dispatch_intent_at"],
+                 "workflow_id": row["workflow_id"], "task_id": row["task_id"],
+                 "event_id": row["event_id"],
+                 "safe_to_abort": row["status"] == "leased" and row["dispatch_intent_at"] is None}
+                for row in rows]
+
+    def _live_frontends(self):
+        from .frontend import Frontend, alive
+        rows = []
+        for record in Frontend(self.store).records():
+            if record.get("status") == "released":
+                continue
+            guardian_alive = alive(record.get("guardian_pid"), record.get("guardian_identity"))
+            omp_alive = alive(record.get("omp_pid"), record.get("omp_identity"))
+            # A launch between frontend.begin and the guardian's admitted start
+            # has no PID yet. Treat a recent admission window as activity so a
+            # restart cannot race it; stale starting records age out.
+            starting = False
+            if record.get("status") == "starting":
+                try:
+                    age = (self.store.clock() - parse_timestamp(record.get("updated_at") or record["created_at"])).total_seconds()
+                    starting = age < 60
+                except (KeyError, TypeError, ValueError):
+                    starting = True
+            if guardian_alive or omp_alive or starting:
+                rows.append({"conversation_id": record["conversation_id"],
+                             "workflow_id": record["workflow_id"], "task_id": record["task_id"],
+                             "status": record.get("status"), "guardian_alive": guardian_alive,
+                             "omp_alive": omp_alive, "starting_window": starting})
+        return rows
+
+    def _event_counts(self):
+        rows = self.store.connection.execute(
+            "SELECT status,count(*) FROM events WHERE status IN ('queued','waiting_anchor') GROUP BY status").fetchall()
+        counts = {row[0]: row[1] for row in rows}
+        return {"queued_events": counts.get("queued", 0),
+                "waiting_anchor_events": counts.get("waiting_anchor", 0)}
+
+    def _lifecycle_blockers(self):
+        blockers = []
+        for run in self._active_runs():
+            if run["safe_to_abort"]:
+                continue
+            blockers.append({"kind": "background_run", "blocking": "active_dispatch", **run,
+                             "safe_handling": "等待该后台运行自然结束；用 events show/status 检查进度，"
+                                              "不要强制取消或重发不确定的模型请求。"})
+        for frontend in self._live_frontends():
+            blockers.append({"kind": "frontend", "blocking": "live_session", **frontend,
+                             "safe_handling": "在对应终端正常退出该会话（Ctrl+D 或 /exit），然后重试。"})
+        if self.agent_health == "restarting":
+            blockers.append({"kind": "agent_restart", "blocking": "agent_restart",
+                             "safe_handling": "等待当前 agent restart 探测结束；它不会重发旧 prompt。"})
+        return blockers
+
+    def _lifecycle_result(self, accepted, blockers, *, already=False):
+        return {"api_version": 1, "accepted": accepted, "draining": self.draining,
+                "stopping": self.stopping, "already_draining": already, "blockers": blockers,
+                **self._event_counts(),
+                "runtime_instance": self.owner, "runtime_build_id": self.runtime_build_id,
+                "runtime_version": __version__, "native_protocol_version": EXPECTED_NATIVE_PROTOCOL_VERSION,
+                "lifecycle_protocol_version": EXPECTED_LIFECYCLE_PROTOCOL_VERSION}
+
+    async def quiesce(self, raw):
+        """Atomically stop admitting work and prove that no execution is in flight."""
+        self._lifecycle_target(raw, require_reason=True)
+        if self.lifecycle_lock is None:
+            self.lifecycle_lock = asyncio.Lock()
+        async with self.lifecycle_lock:
+            if self.draining:
+                return self._lifecycle_result(True, [], already=True)
+            self.draining = True
+            try:
+                blockers = self._lifecycle_blockers()
+                if blockers:
+                    self.draining = False
+                    return self._lifecycle_result(False, blockers)
+                task = self.active_dispatch
+                active_run_id = self.active_run_id
+                if task is not None and not task.done():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
+                    except TimeoutError:
+                        self.draining = False
+                        return self._lifecycle_result(False, [{
+                            "kind": "background_run", "blocking": "drain_timeout",
+                            "run_id": active_run_id, "status": "cancelling",
+                            "safe_handling": "后台任务未在限时内停止；已取消自动重启，请检查 daemon 日志。"}])
+                if active_run_id is not None:
+                    # Re-check after cancellation: dispatch intent may have been
+                    # committed just before the task observed cancellation.
+                    raced = self.store.run(active_run_id)
+                    if raced["dispatch_intent_at"] is not None or raced["status"] == "uncertain":
+                        self.draining = False
+                        return self._lifecycle_result(False, [{
+                            "kind": "background_run", "blocking": "dispatch_race",
+                            "run_id": active_run_id, "status": raced["status"],
+                            "dispatch_intent_at": raced["dispatch_intent_at"],
+                            "event_id": raced["event_id"],
+                            "safe_handling": "停止请求与后台派发发生竞争，结果已标记 uncertain；"
+                                             "请检查 events show 的外部副作用，不自动重发。"}])
+                # Cancel-safe leased runs are returned to the durable queue, not
+                # completed or failed, even if their dispatch task was not owned
+                # by this loop iteration.
+                for run in self._active_runs():
+                    if run["safe_to_abort"]:
+                        try:
+                            self.store.abort_claim(run["run_id"], "runtime_drain", keep_event=True)
+                        except ConflictError:
+                            pass
+                blockers = self._lifecycle_blockers()
+                if blockers:
+                    self.draining = False
+                    return self._lifecycle_result(False, blockers)
+            except BaseException:
+                self.draining = False
+                raise
+            return self._lifecycle_result(True, [])
+
+    async def lifecycle_api(self, command, raw):
+        if command == "lifecycle.inspect":
+            arguments(raw, ())
+            return {"api_version": 1, "draining": self.draining, "stopping": self.stopping,
+                    "active_runs": self._active_runs(), "live_frontends": self._live_frontends(),
+                    "blockers": self._lifecycle_blockers(), **self._event_counts(),
+                    "runtime_instance": self.owner, "runtime_build_id": self.runtime_build_id,
+                    "runtime_version": __version__, "native_protocol_version": EXPECTED_NATIVE_PROTOCOL_VERSION,
+                    "lifecycle_protocol_version": EXPECTED_LIFECYCLE_PROTOCOL_VERSION}
+        if command == "lifecycle.resume":
+            self._lifecycle_target(raw, require_reason=True)
+            if self.stop_timer is not None:
+                self.stop_timer.cancel()
+                self.stop_timer = None
+            self.stopping = False
+            self.draining = False
+            return {"api_version": 1, "draining": False, "stopping": False, "resumed": True}
+        if command == "lifecycle.drain":
+            return await self.quiesce(raw)
+        if command == "lifecycle.shutdown":
+            result = await self.quiesce(raw)
+            if result["accepted"]:
+                # Let this response reach the client before the server closes.
+                self.stopping = True
+                self.stop_timer = asyncio.get_running_loop().call_later(0.2, self.stop_event.set)
+                result["stopping"] = True
+            return result
+        raise RuntimeContractError("Unknown lifecycle command")
+
+    async def wakebinding_api(self, command, raw):
+        from .frontend import Frontend, alive
+        from .wakebinding import WakeBindings
+        operation = command.removeprefix("wakebinding.")
+        native = any(key in raw for key in ("conversation_id", "generation", "owner_token"))
+        if native:
+            arguments(raw, ("conversation_id", "generation", "owner_token", "parameters"),
+                      ("conversation_id", "generation", "owner_token", "parameters"))
+            owner = {key: raw[key] for key in ("conversation_id", "generation", "owner_token")}
+            record = Frontend(self.store).authenticate(**owner)
+            if record["status"] not in ("active", "idle") or not alive(record.get("omp_pid"), record.get("omp_identity")):
+                raise ConflictError("WakeBinding requires a live, attested native owner")
+            if not isinstance(raw["parameters"], dict):
+                raise RuntimeContractError("WakeBinding parameters must be an object")
+            parameters = dict(raw["parameters"])
+            workflow_id, task_id = record["workflow_id"], record["task_id"]
+            conversation_id = record["conversation_id"]
+            allowed = {
+                "create": {"todo_id", "name", "mode", "time_source", "offset_seconds",
+                           "eligibility", "reminder_at", "resume_policy", "authorized_by_user"},
+                "list": {"status", "offset"}, "show": {"binding_id"},
+                "update": {"binding_id", "expected_version", "mode", "time_source", "offset_seconds",
+                           "eligibility", "reminder_at", "resume_policy", "name"},
+                "cancel": {"binding_id", "expected_version"},
+                "sync": {"binding_id"},
+                "status": set(),
+            }
+            if operation not in allowed:
+                raise RuntimeContractError("Unknown WakeBinding operation")
+            required = {
+                "create": {"todo_id"}, "show": {"binding_id"},
+                "update": {"binding_id", "expected_version"},
+                "cancel": {"binding_id", "expected_version"},
+                "list": set(), "sync": set(), "status": set(),
+            }[operation]
+            arguments(parameters, allowed[operation], required)
+            if operation == "create" and parameters.get("authorized_by_user") is not True:
+                raise RuntimeContractError("Creating a WakeBinding requires explicit user authorization")
+        else:
+            allowed = {
+                "create": {"workflow_id", "task_id", "todo_id", "name", "mode", "time_source",
+                           "offset_seconds", "eligibility", "reminder_at", "resume_policy"},
+                "list": {"workflow_id", "task_id", "status", "offset"},
+                "show": {"workflow_id", "task_id", "binding_id"},
+                "update": {"workflow_id", "task_id", "binding_id", "expected_version", "mode",
+                           "time_source", "offset_seconds", "eligibility", "reminder_at",
+                           "resume_policy", "name"},
+                "cancel": {"workflow_id", "task_id", "binding_id", "expected_version"},
+                "sync": {"workflow_id", "task_id", "binding_id"},
+                "status": {"workflow_id", "task_id"},
+            }
+            if operation not in allowed:
+                raise RuntimeContractError("Unknown WakeBinding operation")
+            required = {
+                "create": {"workflow_id", "todo_id"}, "list": {"workflow_id"},
+                "show": {"workflow_id", "binding_id"},
+                "update": {"workflow_id", "binding_id", "expected_version"},
+                "cancel": {"workflow_id", "binding_id", "expected_version"},
+                "sync": {"workflow_id"}, "status": {"workflow_id"},
+            }[operation]
+            arguments(raw, allowed[operation], required)
+            parameters = {key: value for key, value in raw.items() if key not in ("workflow_id", "task_id")}
+            workflow_id = raw["workflow_id"]
+            task_id = raw.get("task_id", "training")
+            conversation_id = None
+            if operation == "create":
+                parameters["authorized_by_user"] = True
+        service = WakeBindings(self.store)
+        if operation == "create":
+            self.wake_reconciler = service
+            result = await service.create(workflow_id=workflow_id, task_id=task_id,
+                                          owner_conversation_id=conversation_id, **parameters)
+        elif operation == "list":
+            result = {"api_version": 1, "bindings": await service.list(
+                workflow_id, task_id, parameters.get("status"), parameters.get("offset", 0))}
+        elif operation == "show":
+            result = {"api_version": 1, "binding": await service.show(
+                parameters["binding_id"], workflow_id, task_id)}
+        elif operation == "update":
+            identity = parameters.pop("binding_id")
+            version = parameters.pop("expected_version")
+            result = {"api_version": 1, "binding": await service.update(
+                identity, version, workflow_id=workflow_id, task_id=task_id, **parameters)}
+        elif operation == "cancel":
+            result = {"api_version": 1, "binding": await service.cancel(
+                parameters["binding_id"], parameters["expected_version"],
+                workflow_id=workflow_id, task_id=task_id)}
+        elif operation == "sync":
+            result = await service.sync(workflow_id=workflow_id, task_id=task_id,
+                                        binding_id=parameters.get("binding_id"))
+        else:
+            rows = await service.list(workflow_id, task_id, offset=0)
+            result = {"api_version": 1, "bindings": rows, "counts": self.store.wakebinding_counts(),
+                      "source": service.source_status(workflow_id)}
+        self.wake_wakeup.set()
+        self.changed.set()
+        return result
+
     async def sync_loop(self):
         from . import git_sync
         due = 0
@@ -310,6 +610,26 @@ class Runtime:
 
     async def dispatch_event(self, event):
         run_id = event["run_id"]
+        payload = event.get("payload") or {}
+        if payload.get("wake_binding_id"):
+            from .wakebinding import WakeBindings
+            service = self.wake_reconciler or WakeBindings(self.store)
+            result = await service.verify(event)
+            if not result["allowed"]:
+                self.store.abort_claim(run_id, result["reason"],
+                                       keep_event=result["action"] in ("reschedule", "defer"))
+                if result["action"] == "reschedule":
+                    try:
+                        await service.reconcile_binding(payload["wake_binding_id"], reason="claim_released")
+                    except Exception:
+                        pass
+                print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
+                                  "event_id": event["event_id"], "run_id": run_id,
+                                  "transition": "blocked", "error_code": result["reason"]}), flush=True)
+                return
+        if payload.get("native_wakeup") and payload.get("intent") == "reminder":
+            from .inbox import Inbox
+            Inbox(self.store).due(event)
         agent = OmpRpc(self.config, self.lock_fds, self.config_path)
         terminal = False
         failure_code = "dispatch_interrupted"
@@ -454,15 +774,26 @@ class Runtime:
             finally:
                 if not terminal:
                     run = self.store.run(run_id)
-                    if self.stop_event.is_set() or (self.pending_restart and self.active_scope == (self.pending_restart["workflow_id"], self.pending_restart["task_id"])):
+                    restart_scope = bool(self.pending_restart and self.active_scope == (
+                        self.pending_restart["workflow_id"], self.pending_restart["task_id"]))
+                    graceful = self.stop_event.is_set() or self.draining or restart_scope
+                    if graceful and run["status"] == "leased" and run["dispatch_intent_at"] is None:
+                        # No prompt was sent: return the durable event to the queue
+                        # instead of reporting a failure or losing the schedule.
+                        code = "runtime_drain" if self.draining and not self.stop_event.is_set() else "daemon_shutdown"
+                        self.store.abort_claim(run_id, code, keep_event=True)
                         interrupted, retryable = True, False
-                        failure_code = "daemon_shutdown" if self.stop_event.is_set() else "agent_restart_requested"
-                        failure_message = None
-                    self.store.finish(run_id, "uncertain" if run["dispatch_intent_at"] else ("failed" if retryable else "blocked"),
-                                      error=failure_code, error_message=failure_message,
-                                      exit_code=agent.process.returncode if agent.process else None,
-                                      automatic_retry=retryable and not run["dispatch_intent_at"],
-                                      record_failure=not interrupted and (retryable or bool(run["dispatch_intent_at"])))
+                        failure_code, failure_message = code, None
+                    else:
+                        if self.stop_event.is_set() or restart_scope:
+                            interrupted, retryable = True, False
+                            failure_code = "daemon_shutdown" if self.stop_event.is_set() else "agent_restart_requested"
+                            failure_message = None
+                        self.store.finish(run_id, "uncertain" if run["dispatch_intent_at"] else ("failed" if retryable else "blocked"),
+                                          error=failure_code, error_message=failure_message,
+                                          exit_code=agent.process.returncode if agent.process else None,
+                                          automatic_retry=retryable and not run["dispatch_intent_at"],
+                                          record_failure=not interrupted and (retryable or bool(run["dispatch_intent_at"])))
                 self.agent_health = "idle" if terminal else "degraded"
                 self.execution_progress = None
                 run = self.store.run(run_id)
@@ -471,6 +802,12 @@ class Runtime:
 
     async def schedule_loop(self):
         while not self.stop_event.is_set():
+            if self.draining:
+                try:
+                    await asyncio.wait_for(self.changed.wait(), self.config.server.poll_interval_seconds)
+                except TimeoutError:
+                    pass
+                continue
             from .inbox import Inbox
             Inbox(self.store).project_due(complete=True)
             Inbox(self.store).collect()
@@ -479,11 +816,26 @@ class Runtime:
                 await self.restart_agent(self.pending_restart)
                 self.pending_restart = None
                 continue
+            service = self.wake_reconciler
+            if service is None:
+                from .wakebinding import WakeBindings
+                service = self.wake_reconciler = WakeBindings(self.store)
+            if self.wake_guard_task is None or self.wake_guard_task.done():
+                if self.wake_guard_task is not None:
+                    try:
+                        self.wake_guard_task.result()
+                    except Exception:
+                        pass
+                # Do not block the foreground queue on MCP I/O. The authoritative
+                # gate is repeated in dispatch_event immediately before dispatch.
+                self.wake_guard_task = asyncio.create_task(service.reconcile_due())
+            if self.draining:
+                continue
             event = self.store.claim_due(self.owner)
             if event:
-                Inbox(self.store).due(event)
                 native = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
                 self.active_scope = (event["workflow_id"], native["binding_task_id"] if native else event["task_id"])
+                self.active_run_id = event["run_id"]
                 self.active_dispatch = asyncio.create_task(self.dispatch_event(event))
                 try:
                     while not self.active_dispatch.done():
@@ -491,19 +843,39 @@ class Runtime:
                         await asyncio.wait((self.active_dispatch,), timeout=self.config.server.poll_interval_seconds)
                     await asyncio.shield(self.active_dispatch)
                 except asyncio.CancelledError:
-                    if self.stop_event.is_set():
+                    if self.stop_event.is_set() or self.draining:
                         if not self.active_dispatch.done() and not self.active_dispatch.cancelling():
                             self.active_dispatch.cancel()
                         await asyncio.gather(self.active_dispatch, return_exceptions=True)
-                        raise
+                        if self.stop_event.is_set():
+                            raise
+                        continue
                     if self.pending_restart is None:
                         raise
                 finally:
                     self.active_dispatch = None
                     self.active_scope = None
+                    self.active_run_id = None
                 continue
             try:
                 await asyncio.wait_for(self.changed.wait(), self.config.server.poll_interval_seconds)
+            except TimeoutError:
+                pass
+
+    async def wakebinding_loop(self):
+        from .wakebinding import WakeBindings
+        service = self.wake_reconciler or WakeBindings(self.store)
+        self.wake_reconciler = service
+        while not self.stop_event.is_set():
+            self.wake_wakeup.clear()
+            try:
+                await service.reconcile_all(limit=10, reason="periodic")
+            except Exception:
+                # Reconciliation is independent of the foreground queue. A broken
+                # binding must not stop the runtime or other reminders.
+                pass
+            try:
+                await asyncio.wait_for(self.wake_wakeup.wait(), 60)
             except TimeoutError:
                 pass
 
@@ -574,7 +946,7 @@ class Runtime:
             return
         self.clients.add(task)
         try:
-            await handle_connection(reader, writer, self.dispatch_control, lambda: not self.stop_event.is_set())
+            await handle_connection(reader, writer, self.dispatch_async, lambda: not self.stop_event.is_set())
         finally:
             self.clients.discard(task)
             writer.close()
@@ -601,6 +973,8 @@ class Runtime:
             self.store.reconcile()
             from .frontend import Frontend
             Frontend(self.store).reconcile()
+            from .wakebinding import WakeBindings
+            self.wake_reconciler = WakeBindings(self.store)
             if socket_path.exists() or socket_path.is_symlink():
                 info = socket_path.lstat()
                 if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
@@ -625,6 +999,7 @@ class Runtime:
                 loop.add_signal_handler(sig, self.stop_event.set)
             scheduler = asyncio.create_task(self.schedule_loop())
             synchronizer = asyncio.create_task(self.sync_loop())
+            reconciler = asyncio.create_task(self.wakebinding_loop())
             waiter = asyncio.create_task(self.stop_event.wait())
             print(json.dumps({"component": "daemon", "transition": "ready", "api_version": 1}), flush=True)
             try:
@@ -640,8 +1015,13 @@ class Runtime:
                 await asyncio.gather(*self.clients, return_exceptions=True)
                 scheduler.cancel()
                 synchronizer.cancel()
+                reconciler.cancel()
                 waiter.cancel()
-                await asyncio.gather(scheduler, synchronizer, waiter, return_exceptions=True)
+                if self.wake_guard_task is not None:
+                    self.wake_guard_task.cancel()
+                await asyncio.gather(scheduler, synchronizer, reconciler, waiter,
+                                     *([self.wake_guard_task] if self.wake_guard_task else []),
+                                     return_exceptions=True)
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.remove_signal_handler(sig)
                 if socket_path.exists() and socket_path.lstat().st_ino == inode:
