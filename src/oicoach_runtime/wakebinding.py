@@ -52,6 +52,26 @@ ERROR_MESSAGES = {
 }
 
 
+async def _close_source(source):
+    """Close a Todo MCP client without blocking the event loop.
+
+    A cancelled caller still awaits the bounded close so the child is reaped;
+    close() itself only waits for short, fixed timeouts and force-kills.
+    """
+    close = getattr(source, "close", None)
+    if close is None:
+        return
+    task = asyncio.ensure_future(asyncio.to_thread(close))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+        raise
+
+
 class WakeBindingError(RuntimeContractError):
     def __init__(self, code, message=None):
         self.code = code
@@ -89,6 +109,7 @@ def _epoch_millis(value, field):
 
 
 def _source_fingerprint(server):
+    """Runtime-only identity for the Tijian source used by a binding."""
     environment = os.environ
     material = {
         "executable": str(Path(server["executable"]).resolve()),
@@ -537,9 +558,7 @@ class WakeBindings:
         try:
             facts = await self._fetch(source, todo_id)
         finally:
-            close = getattr(source, "close", None)
-            if close:
-                close()
+            await _close_source(source)
         if not eligible(facts, eligibility):
             raise WakeBindingError("todo_ineligible")
         candidate = {"mode": mode, "time_source": time_source, "offset_seconds": offset_seconds,
@@ -681,9 +700,7 @@ class WakeBindings:
             return self._mark(binding, status="conflict", error=error.code,
                               message=str(error), event_action="cancel")
         finally:
-            close = getattr(source, "close", None)
-            if close:
-                close()
+            await _close_source(source)
         if not eligible(facts, binding["eligibility"]):
             return self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts,
                               message=ERROR_MESSAGES["todo_ineligible"], event_action="cancel")
@@ -844,9 +861,7 @@ class WakeBindings:
             self._mark(binding, status="conflict", error=error.code, message=str(error))
             return {"allowed": False, "action": "cancel", "reason": error.code}
         finally:
-            close = getattr(source, "close", None)
-            if close:
-                close()
+            await _close_source(source)
         if not eligible(facts, binding["eligibility"]):
             self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts,
                        message=ERROR_MESSAGES["todo_ineligible"])

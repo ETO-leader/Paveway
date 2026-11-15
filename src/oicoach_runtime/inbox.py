@@ -1,5 +1,6 @@
 """Persistent message projection. Offering a message never completes its Run."""
 
+import asyncio
 import hashlib
 
 from .errors import ConflictError, NotFoundError, RuntimeContractError
@@ -77,6 +78,27 @@ class Inbox:
             self.store._set_metadata(db, "inbox-due:v1:" + event["event_id"], event["not_before_utc"])
             return delivery
 
+    def authorized(self, event):
+        """Return the Runtime-committed Inbox delivery for a bound reminder.
+
+        Only the Runtime writes a bound reminder Inbox row and settles its
+        event, in one transaction. A bare due event is not authorization.
+        """
+        if not (event["payload"].get("native_wakeup")
+                and event["payload"].get("intent") == "reminder"
+                and event["payload"].get("wake_binding_id")):
+            return None
+        if event["status"] != "succeeded":
+            return None
+        identity = occurrence_id(event)
+        delivery = self.store.metadata(PREFIX + identity)
+        if (delivery is None or delivery.get("event_id") != event["event_id"]
+                or delivery.get("not_before_utc") != event["not_before_utc"]):
+            return None
+        if self.store.metadata("inbox-due:v1:" + event["event_id"]) != event["not_before_utc"]:
+            return None
+        return delivery
+
     def project_due(self, *, complete=False):
         rows = self.store.connection.execute("""SELECT event_id FROM events e
             WHERE json_extract(payload_json,'$.native_wakeup')=1 AND json_extract(payload_json,'$.intent')='reminder'
@@ -119,31 +141,37 @@ class Inbox:
 
         Tijian remains authoritative: no Inbox row or event settlement happens
         before the delivery gate re-reads the Todo. This never creates a Run.
+        Gates run concurrently within a small bound so one slow MCP shutdown
+        cannot delay unrelated bindings; each commit still rechecks locally.
         """
         import json
-        delivered = []
-        for event in self.bound_due(limit=limit):
-            try:
-                allowed = await service.delivery_allowed(event)
-            except RuntimeContractError as error:
-                # Unexpected runtime/storage failure: report it and leave the
-                # durable event queued. Other bindings still make progress.
-                print(json.dumps({"component": "scheduler", "transition": "binding_gate_failed",
-                                  "event_id": event["event_id"],
-                                  "error_code": getattr(error, "code", type(error).__name__)}), flush=True)
-                continue
-            if not allowed:
-                continue
-            with self.store.transaction() as db:
-                current = self.store.event(event["event_id"])
-                if (current["status"] != "queued"
-                        or current["not_before_utc"] > self.store.timestamp()
-                        or not service.local_gate(current)):
-                    continue
-                delivery = self.due(current, db=db)
-                self.store.complete_reminder(db, current)
-                delivered.append(delivery["delivery_id"])
-        return delivered
+        events = self.bound_due(limit=limit)
+        slots = asyncio.Semaphore(4)
+
+        async def project(event):
+            async with slots:
+                try:
+                    allowed = await service.delivery_allowed(event)
+                except RuntimeContractError as error:
+                    # Unexpected runtime/storage failure: report it and leave the
+                    # durable event queued. Other bindings still make progress.
+                    print(json.dumps({"component": "scheduler", "transition": "binding_gate_failed",
+                                      "event_id": event["event_id"],
+                                      "error_code": getattr(error, "code", type(error).__name__)}), flush=True)
+                    return None
+                if not allowed:
+                    return None
+                with self.store.transaction() as db:
+                    current = self.store.event(event["event_id"])
+                    if (current["status"] != "queued"
+                            or current["not_before_utc"] > self.store.timestamp()
+                            or not service.local_gate(current)):
+                        return None
+                    delivery = self.due(current, db=db)
+                    self.store.complete_reminder(db, current)
+                    return delivery["delivery_id"]
+
+        return [item for item in await asyncio.gather(*(project(event) for event in events)) if item]
 
     def collect(self):
         # Project terminal evidence only; this does not start or replay a prompt.

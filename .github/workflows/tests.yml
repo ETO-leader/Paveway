@@ -65,6 +65,7 @@ jobs:
             test_native_management.NativeManagementTests.test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings \
             test_native_management.NativeManagementTests.test_memory_context_explicit_off_and_on_changes_next_model_request \
             test_system_prompt_template.RealOmpTemplateSmokeTests.test_skills_indexed_and_content_readable_without_full_injection \
+            test_system_prompt_template.RealOmpTemplateSmokeTests.test_tool_inventory_label_rendering_and_descriptors_mode \
             test_native_recovery \
             test_native_capabilities.NativeCapabilityTests.test_native_memory_tool_persists_scoped_fact_and_reports_version \
             test_native_capabilities.NativeCapabilityTests.test_training_checkpoint_reads_latest_task_note_after_native_exit

@@ -42,6 +42,8 @@ oicoach-runtime service disable --now --name paveway-notifications.service --con
 
 设置位于私密 state_dir/desktop-notifications.json，默认正文显示任务提示的短预览。不能将私密配置和通知状态加入源码 Git。它是设备本地设置，不借源码 origin 同步。
 
+Tijian 绑定的提醒由 Runtime 完成权威 Todo 校验、Inbox 投影与事件结算；独立 Worker 只消费这类已结算 occurrence，不读取 Tijian、不修改 WakeBinding。Runtime 停机时到期的绑定事件保持待投影，恢复后才进入桌面通知；Worker 自身缺少 `TIJIAN_*` 环境不会取消或冲突化有效绑定。
+
 服务退出／异常重启按事件与到期时间去重；同一到期时间不重复发送。用户明确重新安排到另一个时间可产生新的到期通知；取消或尚未到期时不弹窗。通知意图和 Inbox 提醒先在同一事务持久化，再请求系统显示。外部调用中断／结果未知时不盲目重复，status 会保留 unknown；失败时 Inbox 仍保存提醒，模型执行不受影响。
 
 Inbox 到期投递独立于模型领取和桌面开关。`/reminder` 为纯提醒：Runtime 在等待一个长 Run 时仍投递并结算其他到期提醒，绝不为提醒启动模型；桌面 Worker 只投递 Inbox／弹窗，通知失败不影响 Runtime 的本地结算。到期提醒、Agent Wake 的 Run 结果、用户已读分别保存。提醒使用事件 ID 与规范化到期时间的同一 occurrence 身份：旧提醒读过后改期，会生成新的未读提醒；旧已读记录保留。已结算的明确提醒也可在 `/reminder` 改期。`/wakeup` 只安排后台 Agent 工作，不弹普通提醒。

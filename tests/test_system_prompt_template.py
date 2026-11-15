@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -255,8 +256,14 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             "startup": {"setupWizard": False, "showSplash": False}, "autoResume": False}))
         (self.agent_dir / "models.yml").write_text(json.dumps({"providers": {"paveway-smoke": {
             "baseUrl": "http://127.0.0.1:9/v1", "auth": "none", "api": "openai-completions",
-            "models": [{"id": "probe", "name": "probe", "reasoning": False,
-                        "input": ["text"], "contextWindow": 128000, "maxTokens": 64}]}}}))
+            "models": [
+                {"id": "probe", "name": "probe", "reasoning": False,
+                 "input": ["text"], "contextWindow": 128000, "maxTokens": 64},
+                # OMP renders inline descriptors only when native tool calling
+                # is unavailable; supportsTools=false selects that branch.
+                {"id": "descriptors", "name": "descriptors", "reasoning": False,
+                 "input": ["text"], "supportsTools": False,
+                 "contextWindow": 128000, "maxTokens": 64}]}}}))
         self.model = "paveway-smoke/probe"
         self.env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root),
                     "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TERM": "xterm-256color",
@@ -294,7 +301,8 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
                 self.fail("OMP did not emit its RPC ready frame")
             if not line:
                 stderr = await process.stderr.read() if process.stderr is not None else b""
-                self.fail("OMP exited before its RPC ready frame: " + stderr.decode(errors="replace")[:2000])
+                detail = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", stderr.decode(errors="replace")).strip()
+                self.fail("OMP exited before its RPC ready frame: " + detail[:2000])
             message = json.loads(line.decode())
             if message.get("type") == "ready":
                 self.assertEqual(message.get("protocolVersion"), 1)
@@ -430,7 +438,7 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
                 process.kill()
                 await process.wait()
 
-        # 2. Test when not toolListMode (Gemini model activates inline descriptors mode -> toolInventory)
+        # 2. Test when not toolListMode (supportsTools=false activates inline descriptors -> toolInventory)
         settings = {
             "schema_version": 1,
             "revision": 1,
@@ -440,10 +448,10 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         argv = customization.snapshot(settings, self.session_dir, "descriptors_run", True, base="oi-coach")
         template_file = argv[argv.index("--system-prompt-template") + 1]
         process_desc = await asyncio.create_subprocess_exec(
-            "omp", "--model", "gemini-2.5-flash", "--cwd", str(self.workspace),
+            "omp", "--model", "paveway-smoke/descriptors", "--cwd", str(self.workspace),
             "--session-dir", str(self.session_dir), "--mode", "rpc", "--no-session",
             "--system-prompt-template", str(template_file),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            env=self.env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         try:
             await self.wait_ready(process_desc)

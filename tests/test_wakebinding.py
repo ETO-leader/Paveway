@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -17,12 +18,12 @@ from oicoach_runtime.frontend import Frontend
 from oicoach_runtime.inbox import Inbox
 from oicoach_runtime.notifications import Watcher, configure
 from oicoach_runtime.store import Store
-from oicoach_runtime.wakebinding import WakeBindingError, WakeBindings
+from oicoach_runtime.wakebinding import TodoFacts, WakeBindingError, WakeBindings
 from oicoach_runtime.workflow_setup import create
 
 
 FAKE_MCP = r'''#!/usr/bin/env python3
-import hashlib, json, os, sys
+import hashlib, json, os, signal, sys, time
 
 def descriptor(value):
     if isinstance(value, str):
@@ -83,6 +84,11 @@ for line in sys.stdin:
         data = {"detail": {"todo": todo}, "evidenceTotal": 0, "evidenceTruncated": False}
     response(identity, {"isError": False, "content": [], "structuredContent": {
         "ok": True, "data": data, "warnings": [], "revision": None}})
+
+state = json.load(open(os.environ["FAKE_TODO_STATE"]))
+if state.get("ignore_eof"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(30)
 '''
 
 
@@ -298,24 +304,154 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         await self.service.sync(workflow_id="example", task_id="training")
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
 
-    async def test_notification_gate_reschedules_before_desktop_delivery(self):
+    def facts(self, due):
+        return TodoFacts("todo-1", 1, self.now, "open", "at",
+                         int(due.timestamp() * 1000), due, due, None,
+                         False, False, None, "fixture", False, None)
+
+    async def test_mcp_close_does_not_block_the_event_loop(self):
+        due = self.now + timedelta(hours=2)
+        facts = self.facts(due)
+        started, release = threading.Event(), threading.Event()
+        class Source:
+            def get(self, todo_id):
+                return facts
+            def close(self):
+                started.set()
+                release.wait(5)
+        service = WakeBindings(self.store, source_factory=lambda *_: Source())
+        ticks = 0
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(.01)
+                ticks += 1
+        beat = asyncio.create_task(heartbeat())
+        try:
+            task = asyncio.create_task(service.create(
+                workflow_id="example", task_id="training", todo_id="todo-1",
+                authorized_by_user=True, time_source="due"))
+            deadline = time.monotonic() + 2
+            while not started.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
+            self.assertTrue(started.is_set(), "fake MCP close was not reached")
+            baseline = ticks
+            await asyncio.sleep(.1)
+            self.assertGreater(ticks, baseline + 3, "event loop stalled during MCP close")
+            self.assertFalse(task.done())
+            release.set()
+            result = await asyncio.wait_for(task, 3)
+        finally:
+            release.set()
+            beat.cancel()
+            await asyncio.gather(beat, return_exceptions=True)
+        self.assertTrue(result["created"])
+
+    async def test_force_killed_mcp_close_does_not_block_the_event_loop(self):
+        due = self.now + timedelta(hours=2)
+        self.write_todo(due=due, ignore_eof=True)
+        ticks = 0
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(.01)
+                ticks += 1
+        beat = asyncio.create_task(heartbeat())
+        try:
+            result = await asyncio.wait_for(self.service.create(
+                workflow_id="example", task_id="training", todo_id="todo-1",
+                authorized_by_user=True, time_source="due"), 5)
+        finally:
+            beat.cancel()
+            await asyncio.gather(beat, return_exceptions=True)
+        self.assertTrue(result["created"])
+        self.assertGreater(ticks, 20, "event loop stalled while force-killing MCP")
+
+    async def test_cancelled_mcp_close_still_reaps_the_client(self):
+        first = await self.create()
+        binding = self.store.wakebinding(first["binding"]["binding_id"])
+        event = self.store.event(binding["event_id"])
+        facts = self.facts(self.now + timedelta(hours=1))
+        started, release, closed = threading.Event(), threading.Event(), threading.Event()
+        class Source:
+            def get(self, todo_id):
+                return facts
+            def close(self):
+                started.set()
+                release.wait(5)
+                closed.set()
+        service = WakeBindings(self.store, source_factory=lambda *_: Source())
+        task = asyncio.create_task(service.verify(event))
+        deadline = time.monotonic() + 2
+        while not started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertTrue(started.is_set(), "fake MCP close was not reached")
+        task.cancel()
+        await asyncio.sleep(.05)
+        self.assertFalse(task.done(), "cancellation escaped before cleanup")
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(closed.is_set(), "cancelled task left the MCP client unreaped")
+
+    async def test_worker_never_reschedules_or_sends_an_unprojected_bound_event(self):
         first = await self.create()
         binding = self.store.wakebinding(first["binding"]["binding_id"])
         configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         self.write_todo(due=self.now + timedelta(hours=3), version=2)
         self.now += timedelta(hours=1, seconds=1)
+        before = self.store.event(binding["event_id"])
         await Watcher(self.store, sender).tick()
         sender.assert_not_awaited()
-        self.assertEqual(self.store.event(binding["event_id"])["status"], "queued")
-        self.assertGreater(self.store.event(binding["event_id"])["not_before_utc"], self.store.timestamp())
+        after = self.store.event(binding["event_id"])
+        self.assertEqual(after["status"], "queued")
+        self.assertEqual(after["not_before_utc"], before["not_before_utc"])
+        self.assertEqual(self.store.wakebinding(binding["binding_id"])["status"], "active")
         self.assertEqual(Inbox(self.store).list("example")["messages"], [])
 
-    async def test_desktop_delivery_is_once_after_gate(self):
+    async def test_worker_environment_cannot_revoke_runtime_authorized_reminder(self):
+        with patch.dict(os.environ, {"TIJIAN_PROFILE_ROOT": "/runtime-profile"}):
+            first = await self.create()
+        binding = self.store.wakebinding(first["binding"]["binding_id"])
+        configure(self.config, True, now=self.now)
+        self.now += timedelta(hours=1)
+        sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
+        worker = Store(self.config, clock=lambda: self.now)
+        self.addCleanup(worker.close)
+        with patch.dict(os.environ, {"TIJIAN_PROFILE_ROOT": "/worker-only-profile"}):
+            os.environ.pop("FAKE_TODO_STATE", None)
+            # No Runtime projection: a bare due event is not authorization and
+            # the Worker must not gate, cancel or send it.
+            await Watcher(worker, sender).tick()
+            sender.assert_not_awaited()
+            self.assertEqual(self.store.event(binding["event_id"])["status"], "queued")
+            self.assertEqual(self.store.wakebinding(binding["binding_id"])["status"], "active")
+            self.assertEqual(Inbox(worker).list("example")["messages"], [])
+        # Runtime, with its own environment, commits the occurrence.
+        with patch.dict(os.environ, {"TIJIAN_PROFILE_ROOT": "/runtime-profile"}):
+            delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(self.store.event(binding["event_id"])["status"], "succeeded")
+        with patch.dict(os.environ, {"TIJIAN_PROFILE_ROOT": "/worker-only-profile"}):
+            # The differently-configured Worker consumes the authorized
+            # occurrence without touching binding identity or state.
+            await Watcher(worker, sender).tick()
+        sender.assert_awaited_once()
+        current = self.store.wakebinding(binding["binding_id"])
+        self.assertEqual(current["status"], "active")
+        self.assertIsNone(current["last_error_code"])
+        self.assertEqual(self.store.event(binding["event_id"])["status"], "succeeded")
+        self.assertEqual(len(Inbox(worker).list("example")["messages"]), 1)
+
+    async def test_desktop_delivery_is_once_after_runtime_authorization(self):
         first = await self.create()
+        binding = self.store.wakebinding(first["binding"]["binding_id"])
         configure(self.config, True, now=self.now)
         sender = AsyncMock(return_value={"status": "accepted", "backend": "linux", "code": None})
         self.now += timedelta(hours=1)
+        delivered = await Inbox(self.store).project_bound_due(self.service)
+        self.assertEqual(len(delivered), 1)
         watcher = Watcher(self.store, sender)
         await watcher.tick()
         await watcher.tick()
@@ -323,6 +459,13 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         messages = Inbox(self.store).list("example")["messages"]
         self.assertEqual(len(messages), 1)
         self.assertIn("Finish the fixture task", messages[0]["text"])
+        self.assertEqual(self.store.event(binding["event_id"])["status"], "succeeded")
+        reopened = Store(self.config, clock=lambda: self.now)
+        try:
+            await Watcher(reopened, sender).tick()
+        finally:
+            reopened.close()
+        self.assertEqual(sender.await_count, 1)
 
     async def test_independent_binding_does_not_follow_todo_time(self):
         reminder = self.now + timedelta(minutes=30)
@@ -508,6 +651,31 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered["status"], "active")
         self.assertIsNone(recovered["last_error_code"])
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+
+    async def test_projection_does_not_wait_for_one_binding_close(self):
+        first = await self.create(name="one")
+        second = await self.create(name="two")
+        self.now += timedelta(hours=1)
+        blocked, release = asyncio.Event(), asyncio.Event()
+        async def gate(event):
+            if event["event_id"] == first["binding"]["event_id"]:
+                blocked.set()
+                await release.wait()
+            return True
+        with patch.object(self.service, "delivery_allowed", side_effect=gate):
+            task = asyncio.create_task(Inbox(self.store).project_bound_due(self.service))
+            await asyncio.wait_for(blocked.wait(), 2)
+            deadline = time.monotonic() + 2
+            while len(Inbox(self.store).list("example")["messages"]) < 1 and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
+            self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 1,
+                             "another binding waited for a slow MCP close")
+            release.set()
+            delivered = await asyncio.wait_for(task, 3)
+        self.assertEqual(len(delivered), 2)
+        self.assertEqual(len(Inbox(self.store).list("example")["messages"]), 2)
+        self.assertEqual({self.store.event(second["binding"]["event_id"])["status"],
+                          self.store.event(first["binding"]["event_id"])["status"]}, {"succeeded"})
 
     async def test_defer_survives_its_own_cas_race(self):
         first = await self.create()

@@ -215,6 +215,8 @@ oicoach-runtime wakebinding cancel --workflow coach --task training \
 - Todo 已完成、删除、改期或来源变化时不投影；Todo 暂时不可用时失败关闭（fail-closed），保留绑定 `pending` 状态与退避重试，不会把查询失败当成“仍有效”。
 - 用户取消事件或绑定会禁用绑定；Reconciler 不会擅自重建。Todo 完成会取消未投递事件；重新开放仅在策略允许或显式 sync 时创建新一代事件。
 - 到期投影若与用户修改绑定并发而命中 CAS 冲突，只在该周期内退避重试一次；仍冲突则保留绑定与事件，由下一周期重新读取权威 Todo，不重复投影。
+- Tijian 来源身份（可执行文件、启动参数、`TIJIAN_*`、HOME/XDG）只由 Runtime 计算。Notification Worker 不加载 Runtime 的模型环境文件，也不读取 Tijian 或修改绑定；它只消费 Runtime 已在同一事务中写入 Inbox 并结算为 `succeeded` 的 occurrence。Runtime 停机期间到期的绑定提醒保持 `queued`，恢复后再投影。
+- 已由 Runtime 授权并写入 Inbox 的 occurrence 是历史提醒证据：之后 Todo 完成、来源变化或绑定停用不会追溯取消该 Inbox 记录或撤回已显示结果；尚未发出的桌面通知仍可按 occurrence 去重补发，事件被显式取消则不再发送。
 - 已实际送达的外部通知无法撤回；但观察到失效后不会继续重复投递。事件、Inbox 与桌面通知继续使用原有 occurrence 去重与崩溃恢复语义。
 
 ### 诊断错误码

@@ -171,48 +171,42 @@ async def send(backend="auto", title="Paveway · 定时提醒", body="定时任�
 
 
 class Watcher:
-    def __init__(self, store, sender=send, *, gate=None, retry_window_seconds=120):
-        self.store, self.sender, self.gate = store, sender, gate
+    def __init__(self, store, sender=send, *, retry_window_seconds=120):
+        self.store, self.sender = store, sender
         self.retry_window_seconds = retry_window_seconds
 
     async def tick(self, stop=None):
         Inbox(self.store).project_due()
         values = settings(self.store.config)
         if not values["enabled"]: return
+        # Bound reminders are consumed only after Runtime committed their Inbox
+        # occurrence; this process never reads Tijian or mutates a WakeBinding.
         rows = self.store.connection.execute("""SELECT e.event_id FROM events e
-            LEFT JOIN wake_bindings b ON b.event_id=e.event_id
             WHERE json_extract(e.payload_json,'$.native_wakeup')=1 AND json_extract(e.payload_json,'$.intent')='reminder'
             AND e.status!='cancelled' AND e.not_before_utc>=? AND e.not_before_utc<=?
-            AND (json_extract(e.payload_json,'$.wake_binding_id') IS NULL
-                OR (b.binding_id IS NOT NULL AND b.status='active' AND b.event_id=e.event_id))
+            AND (json_extract(e.payload_json,'$.wake_binding_id') IS NULL OR e.status='succeeded')
             AND NOT EXISTS(SELECT 1 FROM runtime_metadata m WHERE m.key=? || e.event_id
                 AND json_extract(m.value,'$.not_before_utc')=e.not_before_utc
                 AND (json_extract(m.value,'$.status')!='retry_wait' OR json_extract(m.value,'$.next_attempt_at')>?))
             ORDER BY e.not_before_utc,e.created_at,e.event_id LIMIT 20""", (values["since_utc"], self.store.timestamp(), PREFIX, self.store.timestamp())).fetchall()
-        from .wakebinding import WakeBindings
-        service = WakeBindings(self.store)
+        inbox = Inbox(self.store)
         for row in rows:
             values = settings(self.store.config)
             if not values["enabled"] or (stop is not None and stop.is_set()):
                 return
             event = self.store.event(row[0])
-            if event["payload"].get("wake_binding_id"):
-                gate = self.gate or service.delivery_allowed
-                try:
-                    allowed = await gate(event)
-                except RuntimeContractError as error:
-                    print(json.dumps({"component": "desktop-notifications",
-                                      "transition": "binding_gate_failed",
-                                      "event_id": event["event_id"],
-                                      "error_code": getattr(error, "code", type(error).__name__)}), flush=True)
-                    continue
-                if not allowed:
-                    continue
+            if event["payload"].get("wake_binding_id") and inbox.authorized(event) is None:
+                continue
             with self.store.transaction() as db:
-                # Recheck cancellation, binding fencing and due time immediately before intent.
+                # Recheck cancellation, Runtime authorization and due time immediately before intent.
                 current = self.store.event(event["event_id"])
-                if current["status"] == "cancelled" or not service.local_gate(current) or not values["since_utc"] <= current["not_before_utc"] <= self.store.timestamp(): continue
+                if current["status"] == "cancelled" or not values["since_utc"] <= current["not_before_utc"] <= self.store.timestamp(): continue
                 event = current
+                if event["payload"].get("wake_binding_id"):
+                    delivery = inbox.authorized(event)
+                    if delivery is None: continue
+                else:
+                    delivery = inbox.due(event, db=db)
                 identity = occurrence_id(event)
                 history_key = "desktop-history:v1:" + identity
                 legacy_key = "desktop-history:v1:" + hashlib.sha256((event["event_id"] + event["not_before_utc"]).encode()).hexdigest()
@@ -230,7 +224,6 @@ class Watcher:
                     self.store._set_metadata(db, PREFIX + event["event_id"], terminal)
                     self.store._set_metadata(db, history_key, terminal)
                     continue
-                delivery = Inbox(self.store).due(event, db=db)
                 attempt = {"event_id": event["event_id"], "occurrence_id": identity, "not_before_utc": event["not_before_utc"],
                     "status": "unknown", "attempted_at": self.store.timestamp(), "code": "notification_interrupted",
                     "delivery_id": delivery["delivery_id"], "attempt": (previous or {}).get("attempt", 0) + 1,
