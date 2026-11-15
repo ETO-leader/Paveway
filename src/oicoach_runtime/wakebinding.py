@@ -32,6 +32,7 @@ ELIGIBILITY = ("open", "open_and_incomplete")
 RESUME_POLICIES = ("manual", "when_eligible")
 MAX_OFFSET_SECONDS = 31 * 86400
 MCP_TIMEOUT_SECONDS = 10.0
+MCP_CLOSE_LOCK_TIMEOUT = 2.0
 MCP_MAX_LINE = 2 * 1024 * 1024
 TODO_ID_PATTERN = re.compile(r"[^\s]+")
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
@@ -179,6 +180,7 @@ class TijianTodoSource:
         self.buffer = b""
         self.next_id = 0
         self.lock = threading.Lock()
+        self._closing = threading.Event()
 
     def __enter__(self):
         return self
@@ -187,6 +189,33 @@ class TijianTodoSource:
         self.close()
 
     def close(self):
+        """Close permanently and stop any request that still holds the lock.
+
+        The request loop polls the closing flag between short I/O waits, so a
+        normal shutdown acquires the lock promptly. If a request is wedged
+        outside that loop, killing the child is the only bounded fallback; the
+        closing flag still prevents a later _start() from creating another.
+        """
+        self._closing.set()
+        if not self.lock.acquire(timeout=MCP_CLOSE_LOCK_TIMEOUT):
+            process = self.process
+            if process is not None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            return
+        try:
+            self._close_locked()
+        finally:
+            self.lock.release()
+
+    def _close_locked(self):
+        # Caller holds self.lock, or is the only lifecycle owner before start.
         process, self.process = self.process, None
         self.buffer = b""
         if process is None:
@@ -212,9 +241,11 @@ class TijianTodoSource:
                 pass
 
     def _start(self):
+        if self._closing.is_set():
+            raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"])
         if self.process is not None and self.process.poll() is None:
             return
-        self.close()
+        self._close_locked()
         executable = Path(self.server["executable"])
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise TodoUnavailable(ERROR_MESSAGES["todo_source_unavailable"])
@@ -227,6 +258,11 @@ class TijianTodoSource:
                 stderr=subprocess.DEVNULL, env=os.environ.copy(), bufsize=0)
         except OSError:
             raise TodoUnavailable(ERROR_MESSAGES["todo_source_unavailable"]) from None
+        if self._closing.is_set():
+            # close() may have timed out waiting for this lock. Never leave a
+            # process behind when the close flag was set during startup.
+            self._close_locked()
+            raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"])
         self.buffer = b""
         try:
             self._request("initialize", {
@@ -234,7 +270,7 @@ class TijianTodoSource:
                 "clientInfo": {"name": "paveway-runtime", "version": "1"}})
             self._notify("notifications/initialized", {})
         except BaseException:
-            self.close()
+            self._close_locked()
             raise
 
     def _send(self, message):
@@ -247,7 +283,7 @@ class TijianTodoSource:
                 data = data[written:]
             self.process.stdin.flush()
         except (AttributeError, OSError, ValueError):
-            self.close()
+            self._close_locked()
             raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"]) from None
 
     def _notify(self, method, params):
@@ -256,34 +292,37 @@ class TijianTodoSource:
     def _read_message(self, timeout):
         deadline = time.monotonic() + timeout
         while b"\n" not in self.buffer:
+            if self._closing.is_set():
+                self._close_locked()
+                raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"])
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.close()
+                self._close_locked()
                 raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"])
             try:
-                ready, _, _ = select.select([self.process.stdout], [], [], remaining)
+                ready, _, _ = select.select([self.process.stdout], [], [], min(remaining, 0.1))
             except (OSError, ValueError):
-                self.close()
+                self._close_locked()
                 raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"]) from None
             if not ready:
                 continue
             try:
                 chunk = os.read(self.process.stdout.fileno(), 65536)
             except OSError:
-                self.close()
+                self._close_locked()
                 raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"]) from None
             if not chunk:
-                self.close()
+                self._close_locked()
                 raise TodoUnavailable(ERROR_MESSAGES["todo_unavailable"])
             self.buffer += chunk
             if len(self.buffer) > MCP_MAX_LINE:
-                self.close()
+                self._close_locked()
                 raise TodoSourceInvalid()
         line, self.buffer = self.buffer.split(b"\n", 1)
         try:
             return json.loads(line)
         except (ValueError, UnicodeError):
-            self.close()
+            self._close_locked()
             raise TodoSourceInvalid() from None
 
     def _request(self, method, params):

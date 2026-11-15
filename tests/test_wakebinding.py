@@ -18,7 +18,9 @@ from oicoach_runtime.frontend import Frontend
 from oicoach_runtime.inbox import Inbox
 from oicoach_runtime.notifications import Watcher, configure
 from oicoach_runtime.store import Store
-from oicoach_runtime.wakebinding import TodoFacts, WakeBindingError, WakeBindings
+from oicoach_runtime import wakebinding
+from oicoach_runtime.wakebinding import (TijianTodoSource, TodoFacts,
+                                         WakeBindingError, WakeBindings)
 from oicoach_runtime.workflow_setup import create
 
 
@@ -304,10 +306,150 @@ class WakeBindingTests(unittest.IsolatedAsyncioTestCase):
         await self.service.sync(workflow_id="example", task_id="training")
         self.assertEqual(self.store.connection.execute("SELECT count(*) FROM events").fetchone()[0], 1)
 
+    @staticmethod
+    def stop_source(source):
+        process = getattr(source, "process", None)
+        if process is not None:
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
     def facts(self, due):
         return TodoFacts("todo-1", 1, self.now, "open", "at",
                          int(due.timestamp() * 1000), due, due, None,
                          False, False, None, "fixture", False, None)
+
+    async def test_cancelled_fetch_cannot_restart_a_closed_mcp(self):
+        due = self.now + timedelta(hours=2)
+        entered, release, close_started, finished = (
+            threading.Event(), threading.Event(), threading.Event(), threading.Event())
+        self.addCleanup(release.set)
+
+        class GatedSource(TijianTodoSource):
+            def _start(self):
+                entered.set()
+                release.wait(5)
+                super()._start()
+
+            def get(self, todo_id):
+                try:
+                    return super().get(todo_id)
+                finally:
+                    finished.set()
+
+            def close(self):
+                close_started.set()
+                super().close()
+
+        source = None
+        def factory(server, workspace):
+            nonlocal source
+            source = GatedSource(server, workspace)
+            return source
+
+        service = WakeBindings(self.store, source_factory=factory)
+        self.addCleanup(lambda: self.stop_source(source))
+        task = asyncio.create_task(service.create(
+            workflow_id="example", task_id="training", todo_id="todo-1",
+            authorized_by_user=True, time_source="due"))
+        deadline = time.monotonic() + 2
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertTrue(entered.is_set(), "MCP read thread never entered _start")
+        task.cancel()
+        deadline = time.monotonic() + 2
+        while not close_started.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertTrue(close_started.is_set(), "cancel did not request an MCP close")
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+        deadline = time.monotonic() + 2
+        while not finished.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        process = source.process
+        if process is not None:
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        self.assertTrue(finished.is_set(), "cancelled read thread did not finish")
+        self.assertIsNone(process, "closed client restarted an MCP process after close returned")
+
+    async def test_cancel_during_mcp_request_reaps_after_the_lock(self):
+        due = self.now + timedelta(hours=2)
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        class GatedRequestSource(TijianTodoSource):
+            def _request(self, method, params):
+                if method == "tools/call":
+                    entered.set()
+                    release.wait(5)
+                return super()._request(method, params)
+
+        source = None
+        def factory(server, workspace):
+            nonlocal source
+            source = GatedRequestSource(server, workspace)
+            return source
+
+        service = WakeBindings(self.store, source_factory=factory)
+        self.addCleanup(lambda: self.stop_source(source))
+        task = asyncio.create_task(service.create(
+            workflow_id="example", task_id="training", todo_id="todo-1",
+            authorized_by_user=True, time_source="due"))
+        deadline = time.monotonic() + 2
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertTrue(entered.is_set(), "MCP tools/call was not reached")
+        self.assertIsNotNone(source.process)
+        task.cancel()
+        await asyncio.sleep(.05)
+        self.assertFalse(task.done(), "close returned while the request still held the lock")
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+        self.assertIsNone(source.process, "MCP process survived cancelled request cleanup")
+
+    async def test_close_is_bounded_when_a_read_never_releases_its_lock(self):
+        due = self.now + timedelta(hours=2)
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        class StuckSource(TijianTodoSource):
+            def _start(self):
+                entered.set()
+                release.wait(5)
+                super()._start()
+
+        source = None
+        def factory(server, workspace):
+            nonlocal source
+            source = StuckSource(server, workspace)
+            return source
+
+        service = WakeBindings(self.store, source_factory=factory)
+        self.addCleanup(lambda: self.stop_source(source))
+        task = asyncio.create_task(service.create(
+            workflow_id="example", task_id="training", todo_id="todo-1",
+            authorized_by_user=True, time_source="due"))
+        deadline = time.monotonic() + 2
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertTrue(entered.is_set())
+        started = time.monotonic()
+        task.cancel()
+        with patch.object(wakebinding, "MCP_CLOSE_LOCK_TIMEOUT", 0.2):
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+        self.assertLess(time.monotonic() - started, 1.5)
+        release.set()
+        await asyncio.sleep(.05)
+        self.assertIsNone(source.process, "read thread restarted MCP after bounded close")
 
     async def test_mcp_close_does_not_block_the_event_loop(self):
         due = self.now + timedelta(hours=2)
