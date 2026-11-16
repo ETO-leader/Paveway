@@ -50,7 +50,7 @@ class ConfigTests(TemporaryCase):
         text = config_text(Config(self.state, self.workflows))
         cases = [text.replace("schema_version = 1", "schema_version = true"),
                  text.replace("schema_version = 1", "schema_version = 2"),
-                 text.replace("max_concurrent_runs = 1", "max_concurrent_runs = 2"),
+                 text.replace("max_concurrent_runs = 1", "max_concurrent_runs = 5"),
                  text.replace("max_concurrent_runs = 1", "max_concurrent_runs = true"),
                  text.replace("poll_interval_seconds = 1", "poll_interval_seconds = nan"),
                  text.replace("poll_interval_seconds = 1", "poll_interval_seconds = 0"),
@@ -141,7 +141,7 @@ class InitTests(TemporaryCase):
                                  "--config", str(self.config_path), "--state-dir", str(self.state),
                                  "--workflow-root", str(self.workflows)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["schema_version"], 3)
+        self.assertEqual(json.loads(result.stdout)["schema_version"], 5)
         err_res = subprocess.run([sys.executable, "-m", "oicoach_runtime", "doctor", "--json",
                                   "--config", str(self.root / "missing")], capture_output=True, text=True)
         self.assertEqual(err_res.returncode, 1)
@@ -155,7 +155,7 @@ class DatabaseTests(TemporaryCase):
 
     def test_schema_and_read_only_inspection(self):
         report = initialize_database(self.database)
-        self.assertEqual(report, {"schema_version": 3, "integrity": "ok", "journal_mode": "wal"})
+        self.assertEqual(report, {"schema_version": 5, "integrity": "ok", "journal_mode": "wal"})
         with sqlite3.connect(self.database) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"events", "runs", "session_bindings", "runtime_metadata", "audit_log", "wake_bindings"} <= tables)
@@ -191,7 +191,7 @@ class DatabaseTests(TemporaryCase):
         with sqlite3.connect(self.database) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
-        self.assertEqual(initialize_database(self.database)["schema_version"], 3)
+        self.assertEqual(initialize_database(self.database)["schema_version"], 5)
 
     def test_database_symlink_is_rejected(self):
         initialize_database(self.database)
@@ -200,17 +200,25 @@ class DatabaseTests(TemporaryCase):
         with self.assertRaises(StorageError):
             initialize_database(link)
 
-    def test_run_requires_completion_and_settlement_and_single_active_run(self):
+    def test_run_requires_completion_and_settlement_and_scope_exclusivity(self):
         initialize_database(self.database)
         with sqlite3.connect(self.database) as connection:
             # Direct insertion tests the schema backstop, not a queue API.
-            base = "INSERT INTO runs(run_id,event_id,request_id,status,started_at,prompt_result_status,settled_at) VALUES (?,?,?,?,?,?,?)"
+            base = ("INSERT INTO runs(run_id,event_id,request_id,status,started_at,"
+                    "prompt_result_status,settled_at,execution_scope) VALUES (?,?,?,?,?,?,?,?)")
             for result, settled in ((None, None), (None, "time"), ("completed", None), ("error", "time")):
                 with self.assertRaises(sqlite3.IntegrityError):
-                    connection.execute(base, ("r", "fixture", "r", "succeeded", "time", result, settled))
-            connection.execute(base, ("one", "fixture", "one", "leased", "time", None, None))
+                    connection.execute(base, ("r", "fixture", "r", "succeeded", "time", result, settled, "a"))
+            connection.execute(base, ("one", "fixture", "one", "leased", "time", None, None, "scope:a"))
+            # Independent physical sessions may be active at the same time.
+            connection.execute(base, ("two", "fixture", "two", "running", "time", None, None, "scope:b"))
+            # The same physical session may never have two active Runs.
             with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(base, ("two", "fixture", "two", "running", "time", None, None))
+                connection.execute(base, ("three", "fixture", "three", "leased", "time", None, None, "scope:a"))
+            # A terminal historical Run does not occupy its scope any more.
+            connection.execute("UPDATE runs SET status='succeeded',prompt_result_status='completed',"
+                               "settled_at='time' WHERE run_id='one'")
+            connection.execute(base, ("four", "fixture", "four", "leased", "time", None, None, "scope:a"))
 
 
 class ModelTests(unittest.TestCase):

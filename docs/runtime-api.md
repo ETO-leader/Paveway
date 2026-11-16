@@ -129,7 +129,7 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 
 `native [--workflow ID | --coach ID] [--task ID] [--conversation ID | --new]` 打开受管 OMP 原生界面，不接受 `--json`。`status` 新增 `runtime_version` 与 `native_protocol_version=1`；旧 daemon 缺少此协议时拒绝启动新前台，不终止已有任务。其他 IPC envelope 仍为 v1，无 schema migration。
 
-公开诊断：`frontend list [--workflow ID] [--task ID]`、`frontend show CONVERSATION`、`frontend messages CONVERSATION [--query TEXT] [--offset N]`、`frontend recover CONVERSATION`。messages 每页 20 条只读 user/assistant 文字、最大 2048 字节片段，附来源 Session/entry/parent ID；不修改 OMP 分支或恢复 prompt。recover 只允许 uncertain，须验证 PID/启动身份死亡与 owner.lock 已释放；文件未落盘或损坏时拒绝并保留记录，允许显式新建 Conversation。
+公开诊断：`frontend list [--workflow ID] [--task ID]`、`frontend show CONVERSATION`、`frontend messages CONVERSATION [--query TEXT] [--offset N]`、`frontend recover CONVERSATION`。messages 每页 20 条只读 user/assistant 文字、最大 2048 字节片段，附来源 Session/entry/parent ID；不修改 OMP 分支或恢复 prompt。该查询按行流式扫描全部来源，只保留当前页（`has_more` 由扫描中多看到的一条命中决定），不受 Git 导出的 16 MiB 上限约束；扫描在带独立 SQLite 连接的工作线程执行，`status` 等轻量 IPC 不被长历史查询阻塞。recover 只允许 uncertain，须验证 PID/启动身份死亡与 owner.lock 已释放；文件未落盘或损坏时拒绝并保留记录，允许显式新建 Conversation。
 
 受管扩展使用 `frontend.begin/started/attest/observe/inference/finish` 及版本化 `frontend:v1:` 元数据登记。绑定作用域、generation 与 owner_token 校验；owner_token 仅通过私密启动配置及本地 socket 传递，公开记录不返回 token_hash。`agent_end` 的 `observed_loop_only` 不代表严格 settled。前后台物理 Session 分离，原 RPC 完成契约不变。
 

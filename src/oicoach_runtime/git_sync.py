@@ -546,6 +546,52 @@ def validate_session(config, binding, *, root=None):
     return _read_session(binding, root, lambda _entry: None)
 
 
+def conversation_message(entry):
+    """Visible user/assistant text from one Session entry.
+
+    Thinking blocks, tool arguments and tool results are never conversation
+    text, even though they live in the same JSONL file.
+    """
+    if entry.get("type") != "message":
+        return None
+    message = entry.get("message")
+    if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+        return None
+    content = message.get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
+    if not isinstance(content, str) or not content:
+        return None
+    return {"role": message["role"], "text": content,
+            "id": entry.get("id"), "parent_id": entry.get("parentId"),
+            "timestamp": archive_timestamp(entry.get("timestamp")) or archive_timestamp(message.get("timestamp"))}
+
+
+def search_session(binding, root, query="", offset=0, limit=20, project=None):
+    """Stream one local Session and return at most ``limit`` matches.
+
+    The whole file is read once with the same integrity rules as the archive
+    path but without the 16 MiB export budget. Only the requested page is
+    retained; matches outside it are counted, never buffered.
+    """
+    needle = query.lower()
+    state = {"matched": 0}
+    page = []
+
+    def consume(entry):
+        message = conversation_message(entry)
+        if message is None or needle not in message["text"].lower():
+            return
+        position = state["matched"]
+        state["matched"] = position + 1
+        if position < offset or len(page) >= limit:
+            return
+        page.append(project(message) if project else message)
+
+    _read_session(binding, root, consume)
+    return page, state["matched"]
+
+
 def export_session(config, binding, device, *, root=None):
     root = root or config.state_dir / "sessions" / binding["binding_id"]
     messages = []
@@ -555,16 +601,9 @@ def export_session(config, binding, device, *, root=None):
         if entry.get("type") == "session":
             created_at = archive_timestamp(entry.get("timestamp"))
             return
-        message = entry.get("message")
-        if entry.get("type") != "message" or not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
-            return
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
-        if isinstance(content, str) and content:
-            messages.append({"role": message["role"], "text": content,
-                             "id": entry.get("id"), "parent_id": entry.get("parentId"),
-                             "timestamp": archive_timestamp(entry.get("timestamp")) or archive_timestamp(message.get("timestamp"))})
+        message = conversation_message(entry)
+        if message is not None:
+            messages.append(message)
     _read_session(binding, root, collect, maximum=16 * 1024 * 1024)
     times = [m["timestamp"] for m in messages if m["timestamp"]]
     return {"device_id": device, "binding_id": binding["binding_id"], "workflow_id": binding["workflow_id"],

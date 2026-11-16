@@ -789,7 +789,11 @@ class RuntimeTests(unittest.TestCase):
         deadline = time.monotonic() + 3
         # Linux may leave a reparented zombie briefly; it cannot run or retain a lock.
         while Path(f"/proc/{agent_pid}/stat").exists():
-            status = Path(f"/proc/{agent_pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            try:
+                status = Path(f"/proc/{agent_pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                # Reaped between exists() and read_text(): also proves it is gone.
+                break
             if status == "Z":
                 break
             self.assertLess(time.monotonic(), deadline, "Owned fake OMP survived daemon SIGKILL")

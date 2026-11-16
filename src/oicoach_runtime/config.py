@@ -158,8 +158,8 @@ def load_config(path: Path) -> Config:
     socket_path = absolute_path(server.socket_path, "server.socket_path")
     if len(os.fsencode(socket_path)) > 107:
         raise ConfigError("server.socket_path exceeds the Linux Unix socket path limit")
-    if server.max_concurrent_runs != 1:
-        raise ConfigError("Only one concurrent run is supported")
+    if not 1 <= server.max_concurrent_runs <= 4:
+        raise ConfigError("server.max_concurrent_runs must be between 1 and 4")
     agent = _section(AgentConfig, raw.get("agent", {}))
     if agent.adapter != "omp-rpc" or not agent.executable or (not Path(agent.executable).is_absolute() and any(c.isspace() for c in agent.executable)):
         raise ConfigError("agent must use omp-rpc and an executable name or absolute path, not a shell command")

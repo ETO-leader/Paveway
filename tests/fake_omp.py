@@ -177,13 +177,16 @@ def main():
             if mode == "needs-user":
                 emit({"type": "extension_ui_request", "id": "permission", "method": "confirm"})
                 continue
-            if mode in ("hold", "hold-with-tool"):
+            if mode in ("hold", "hold-with-tool", "hold-tagged"):
                 emit({"type": "tool_execution_start", "toolName": "bash", "args": {"command": "PRIVATE_PROGRESS_COMMAND"}})
                 if mode == "hold-with-tool":
                     tool = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
                     (args.cwd / "fake-tool-pid").write_text(str(tool.pid))
-                (args.cwd / "fake-entered").write_text(str(os.getpid()))
-                while not (args.cwd / "fake-release").exists():
+                # hold-tagged uses per-Process markers so several concurrent
+                # fake Agents can be observed at the same time.
+                tag = ("-" + str(os.getpid())) if mode == "hold-tagged" else ""
+                (args.cwd / ("fake-entered" + tag)).write_text(str(os.getpid()))
+                while not (args.cwd / ("fake-release" + tag)).exists():
                     time.sleep(0.01)
                 emit({"type": "tool_execution_end", "toolName": "bash", "result": "PRIVATE_PROGRESS_RESULT"})
             if mode == "ack-only":

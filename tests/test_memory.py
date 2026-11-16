@@ -230,7 +230,10 @@ class MemoryMigrationTests(unittest.TestCase):
                     (run_id,event_id,binding_id,request_id,status,started_at,error_code)
                     VALUES ('old-run','old-event','old-binding','old-request','failed',
                      '2026-10-18T00:00:00.000000Z','old_failure')""")
-                preserved = {table: connection.execute("SELECT * FROM " + table).fetchall()
+                # Newer migrations add columns (execution_scope, retry diagnostics);
+                # the original columns and every row must survive the upgrade.
+                preserved = {table: (tuple(column[1] for column in connection.execute("PRAGMA table_info(" + table + ")")),
+                                     connection.execute("SELECT * FROM " + table).fetchall())
                              for table in ("events", "runs", "session_bindings", "runtime_metadata", "audit_log")}
                 connection.execute("PRAGMA user_version=1")
             path.chmod(0o600)
@@ -244,10 +247,13 @@ class MemoryMigrationTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
                 self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='partial_v2'").fetchone())
-            self.assertEqual(initialize_database(path)["schema_version"], 3)
-            self.assertEqual(initialize_database(path)["schema_version"], 3)
+            self.assertEqual(initialize_database(path)["schema_version"], 5)
+            self.assertEqual(initialize_database(path)["schema_version"], 5)
             with sqlite3.connect(path) as connection:
                 self.assertEqual(connection.execute("SELECT value FROM runtime_metadata WHERE key='keep'").fetchone()[0], '"private-value"')
-                for table, rows in preserved.items():
-                    self.assertEqual(connection.execute("SELECT * FROM " + table).fetchall(), rows)
+                for table, (columns, rows) in preserved.items():
+                    projection = ",".join(columns)
+                    self.assertEqual(connection.execute("SELECT " + projection + " FROM " + table).fetchall(), rows)
+                self.assertEqual(connection.execute("SELECT execution_scope FROM runs WHERE run_id='old-run'").fetchone()[0],
+                                 "coach\x1fold-task")
             self.assertEqual(inspect_database(path)["integrity"], "ok")

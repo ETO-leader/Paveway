@@ -48,9 +48,24 @@ ERROR_MESSAGES = {
     "todo_source_mismatch": "The configured Tijian source no longer matches the binding",
     "todo_source_invalid": "Tijian MCP returned an unexpected or oversized Todo projection",
     "binding_conflict": "WakeBinding changed concurrently; reload and retry",
+    "binding_verify_conflict": "Delivery authorization conflicted with a concurrent binding update; retry after backoff",
+    "binding_verify_failed": "Delivery authorization failed before a Todo decision was reached",
+    "binding_internal_error": "Runtime could not reconcile this binding; no reminder was delivered",
     "event_conflict": "The bound reminder event requires manual inspection",
     "reconcile_deferred": "The bound reminder is being dispatched; reconciliation was deferred",
 }
+
+# Recoverable failures are retried with exponential backoff so a flapping
+# Tijian MCP cannot be hammered by the reconciler.
+TRANSIENT_CODES = frozenset({"todo_unavailable", "todo_source_unavailable", "todo_source_missing",
+                             "binding_verify_failed", "binding_verify_conflict",
+                             "binding_internal_error", "reconcile_deferred"})
+# Failures that need a human decision; they are still recorded as business state.
+USER_ACTION_CODES = frozenset({"todo_source_missing", "todo_source_unavailable",
+                               "todo_source_mismatch", "todo_source_invalid", "event_conflict",
+                               "todo_not_found", "todo_ineligible", "cancelled_by_user"})
+RETRY_BASE_SECONDS = 15
+RETRY_MAX_SECONDS = 900
 
 
 async def _close_source(source):
@@ -545,10 +560,14 @@ class WakeBindings:
             return await asyncio.to_thread(source.get, todo_id)
         except WakeBindingError:
             raise
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            raise TodoUnavailable(_safe_message(str(error))) from None
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            # Transport/process failures are recoverable and keep their
+            # business code; the text is never persisted.
             raise TodoUnavailable() from None
+        except Exception:
+            # Anything else is a Runtime defect, not a Tijian outage. It must
+            # not be disguised as todo_unavailable.
+            raise WakeBindingError("binding_internal_error") from None
 
     def _scope(self, workflow_id, task_id):
         validate_id(workflow_id)
@@ -561,6 +580,7 @@ class WakeBindings:
 
     def _public(self, binding, include_event=True):
         result = dict(binding)
+        result["diagnostics"] = self.diagnostics(binding)
         if include_event and binding.get("event_id"):
             try:
                 event = self.store.event(binding["event_id"])
@@ -573,6 +593,37 @@ class WakeBindings:
         elif include_event:
             result["event"] = None
         return result
+
+    def diagnostics(self, binding):
+        """Stable, privacy-safe view of the binding's reconciliation health.
+
+        Only codes, states and timestamps are exposed. Todo descriptions,
+        MCP payloads, credentials and raw exception text are never stored.
+        """
+        code = binding.get("last_error_code")
+        status = binding["status"]
+        next_attempt = binding.get("next_attempt_at")
+        now = self.store.timestamp()
+        return {
+            "status": status,
+            "last_attempt_at": binding.get("last_attempt_at"),
+            "last_reconciled_at": binding.get("last_reconciled_at"),
+            "last_failure_at": binding.get("last_failure_at"),
+            "failure_code": code,
+            "failure_count": binding.get("failure_count") or 0,
+            "failure_message": ERROR_MESSAGES.get(code) if code else None,
+            "backing_off": bool(code and next_attempt and next_attempt > now),
+            "next_attempt_at": next_attempt,
+            "recovered": bool(binding.get("last_failure_at") and code is None),
+            "needs_user_action": bool(code in USER_ACTION_CODES or status in ("conflict", "disabled")),
+            "recoverable": code in TRANSIENT_CODES if code else None,
+        }
+
+    def _backoff(self, code, count):
+        if code not in TRANSIENT_CODES:
+            return RETRY_BASE_SECONDS
+        exponent = min(max(int(count) - 1, 0), 8)
+        return min(RETRY_BASE_SECONDS * (2 ** exponent), RETRY_MAX_SECONDS)
 
     async def create(self, *, workflow_id, task_id, todo_id, name="default", mode="follow",
                      time_source="due", offset_seconds=0, eligibility="open_and_incomplete",
@@ -713,6 +764,28 @@ class WakeBindings:
         return {"api_version": 1, "bindings": results}
 
     async def reconcile_binding(self, binding_id, *, reason="periodic", facts=None, reactivate=None):
+        """Reconcile one binding, recording any failure before it is reported.
+
+        A single broken binding must never abort the caller's sweep, yet its
+        failure still becomes durable evidence in the binding row. Callers that
+        need the error (create/update/manual sync) still receive it.
+        """
+        try:
+            return await self._reconcile_binding(binding_id, reason=reason, facts=facts,
+                                                 reactivate=reactivate)
+        except (WakeBindingError, ConflictError) as error:
+            code = getattr(error, "code", None) or "binding_conflict"
+            if code == "conflict":
+                code = "binding_conflict"
+            self._record_failure(binding_id, code)
+            raise
+        except Exception:
+            # Never persist or print the raw exception: it may carry MCP or
+            # storage details. The fixed code is enough to diagnose.
+            self._record_failure(binding_id, "binding_internal_error")
+            raise WakeBindingError("binding_internal_error") from None
+
+    async def _reconcile_binding(self, binding_id, *, reason="periodic", facts=None, reactivate=None):
         binding = self.store.wakebinding(binding_id)
         if binding["status"] == "disabled":
             return binding
@@ -722,32 +795,32 @@ class WakeBindings:
             source, source_id, _ = self._source(binding["workflow_id"])
         except WakeBindingError as error:
             return self._mark(binding, status="pending" if error.code.startswith("todo_source") else "conflict",
-                              error=error.code, message=str(error))
+                              error=error.code)
         if source_id != binding["todo_source_id"]:
             return self._mark(binding, status="conflict", error="todo_source_mismatch",
-                              message=ERROR_MESSAGES["todo_source_mismatch"], event_action="cancel")
+                              event_action="cancel")
         try:
             if facts is None:
                 facts = await self._fetch(source, binding["todo_id"])
-        except TodoNotFound as error:
+        except TodoNotFound:
             return self._mark(binding, status="ineligible", error="todo_not_found",
-                              message=str(error), event_action="cancel")
-        except TodoUnavailable as error:
-            return self._mark(binding, status="pending", error="todo_unavailable",
-                              message=str(error))
+                              event_action="cancel")
+        except TodoUnavailable:
+            return self._mark(binding, status="pending", error="todo_unavailable")
         except TodoSourceInvalid as error:
-            return self._mark(binding, status="conflict", error=error.code,
-                              message=str(error), event_action="cancel")
+            return self._mark(binding, status="conflict", error=error.code, event_action="cancel")
+        except WakeBindingError as error:
+            return self._mark(binding, status="pending", error=error.code)
         finally:
             await _close_source(source)
         if not eligible(facts, binding["eligibility"]):
             return self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts,
-                              message=ERROR_MESSAGES["todo_ineligible"], event_action="cancel")
+                              event_action="cancel")
         try:
             due = _compute_due(facts, binding, self._now())
         except WakeBindingError as error:
             return self._mark(binding, status="pending", error=error.code, facts=facts,
-                              message=str(error), event_action="cancel")
+                              event_action="cancel")
         try:
             event = self.store.event(binding["event_id"]) if binding["event_id"] else None
         except NotFoundError:
@@ -762,7 +835,7 @@ class WakeBindings:
             return self._reschedule(binding, due_text, facts, observation)
         if event["status"] in ("leased", "running"):
             return self._mark(binding, status="active", error="reconcile_deferred", facts=facts,
-                              message=ERROR_MESSAGES["reconcile_deferred"], reconciled=True)
+                              reconciled=True)
         if event["status"] == "succeeded":
             if event["not_before_utc"] == due_text:
                 return self._mark(binding, facts=facts, fields=observation, reconciled=True)
@@ -774,13 +847,16 @@ class WakeBindings:
                 if binding["status"] == "ineligible" and not reactivate:
                     return self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts)
                 return self._replace(binding, due_text, facts, observation)
-            return self._mark(binding, status="disabled", error="cancelled_by_user",
-                              message="Reminder was cancelled by the user; no automatic recreation")
-        return self._mark(binding, status="pending", error="event_conflict", facts=facts,
-                          message=ERROR_MESSAGES["event_conflict"])
+            return self._mark(binding, status="disabled", error="cancelled_by_user")
+        return self._mark(binding, status="pending", error="event_conflict", facts=facts)
 
     def _mark(self, binding, *, status=None, error=None, message=None, facts=None,
               fields=None, event_action="keep", due=None, generation=None, reconciled=False):
+        """Apply one observation with CAS, recording bounded failure diagnostics.
+
+        ``last_error_message`` is always a fixed local sentence: untrusted MCP
+        or exception text never reaches the database.
+        """
         stamp = self.store.timestamp()
         values = {"last_attempt_at": stamp}
         if reconciled:
@@ -792,19 +868,30 @@ class WakeBindings:
             values["status"] = status
         if error is not None:
             values["last_error_code"] = error
-            values["last_error_message"] = _safe_message(message or ERROR_MESSAGES.get(error, error))
+            values["last_error_message"] = ERROR_MESSAGES.get(error) or _safe_message(
+                message or ERROR_MESSAGES["binding_internal_error"])
         elif status == "active":
             values["last_error_code"] = None
             values["last_error_message"] = None
         if fields:
             values.update(fields)
+        final_error = values.get("last_error_code", binding["last_error_code"])
+        final_status = values.get("status", binding["status"])
+        if final_error:
+            count = int(binding.get("failure_count") or 0) + 1
+            values.update(last_failure_at=stamp, last_failure_code=final_error, failure_count=count,
+                          next_attempt_at=utc_text(self._now() + timedelta(
+                              seconds=self._backoff(final_error, count))))
+        elif final_status == "active":
+            values.update(failure_count=0, next_attempt_at=None)
         semantic = event_action != "keep" or any(
             key in values and values[key] != binding.get(key)
             for key in ("status", "last_error_code", "last_error_message"))
         if not semantic:
             diagnostic = {key: value for key, value in values.items() if key in {
                 "todo_version", "todo_fingerprint", "todo_title", "observed_at_utc",
-                "last_reconciled_at", "last_attempt_at"}}
+                "last_reconciled_at", "last_attempt_at", "last_failure_at", "last_failure_code",
+                "failure_count", "next_attempt_at"}}
             return self.store.touch_wakebinding(binding["binding_id"], diagnostic)
         for attempt in range(2):
             current = self.store.wakebinding(binding["binding_id"]) if attempt else binding
@@ -882,34 +969,34 @@ class WakeBindings:
         try:
             source, source_id, _ = self._source(binding["workflow_id"])
         except WakeBindingError as error:
-            self._mark(binding, status="pending", error=error.code, message=str(error))
+            self._mark(binding, status="pending", error=error.code)
             return {"allowed": False, "action": "defer", "reason": error.code}
         if source_id != binding["todo_source_id"]:
-            self._mark(binding, status="conflict", error="todo_source_mismatch",
-                       message=ERROR_MESSAGES["todo_source_mismatch"])
+            self._mark(binding, status="conflict", error="todo_source_mismatch")
             return {"allowed": False, "action": "cancel", "reason": "todo_source_mismatch"}
         try:
             facts = await self._fetch(source, binding["todo_id"])
-        except TodoNotFound as error:
-            self._mark(binding, status="ineligible", error="todo_not_found", message=str(error))
+        except TodoNotFound:
+            self._mark(binding, status="ineligible", error="todo_not_found")
             return {"allowed": False, "action": "cancel", "reason": "todo_not_found"}
-        except TodoUnavailable as error:
-            self._mark(binding, status="pending", error="todo_unavailable", message=str(error))
+        except TodoUnavailable:
+            self._mark(binding, status="pending", error="todo_unavailable")
             return {"allowed": False, "action": "defer", "reason": "todo_unavailable"}
         except TodoSourceInvalid as error:
-            self._mark(binding, status="conflict", error=error.code, message=str(error))
+            self._mark(binding, status="conflict", error=error.code)
             return {"allowed": False, "action": "cancel", "reason": error.code}
+        except WakeBindingError as error:
+            self._mark(binding, status="pending", error=error.code)
+            return {"allowed": False, "action": "defer", "reason": error.code}
         finally:
             await _close_source(source)
         if not eligible(facts, binding["eligibility"]):
-            self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts,
-                       message=ERROR_MESSAGES["todo_ineligible"])
+            self._mark(binding, status="ineligible", error="todo_ineligible", facts=facts)
             return {"allowed": False, "action": "cancel", "reason": "todo_ineligible"}
         try:
             due = _compute_due(facts, binding, self._now())
         except WakeBindingError as error:
-            self._mark(binding, status="pending", error=error.code, facts=facts,
-                       message=str(error))
+            self._mark(binding, status="pending", error=error.code, facts=facts)
             return {"allowed": False, "action": "cancel", "reason": error.code}
         due_text = utc_text(due)
         self._mark(binding, status="active", facts=facts,
@@ -962,6 +1049,37 @@ class WakeBindings:
         except NotFoundError:
             return False
 
+    def _record_failure(self, binding_id, code, message=None):
+        """Persist one bounded, privacy-safe failure observation.
+
+        A disabled binding is never resurrected and a competing writer that
+        just committed a successful reconciliation keeps its state.
+        """
+        for attempt in range(2):
+            try:
+                binding = self.store.wakebinding(binding_id)
+            except (RuntimeContractError, NotFoundError):
+                return False
+            if binding["status"] == "disabled":
+                return False
+            # A competing writer may have just committed a clean, active
+            # binding. A stale failure must never downgrade it.
+            if attempt and binding["status"] == "active" and binding["last_error_code"] is None:
+                return False
+            if code == "binding_conflict" and binding["last_error_code"] is None:
+                return False
+            try:
+                self._mark(binding, status="pending" if code in TRANSIENT_CODES else None,
+                           error=code, message=message)
+                return True
+            except (ConflictError, WakeBindingError):
+                continue
+            except (RuntimeContractError, NotFoundError):
+                return False
+            except Exception:
+                return False
+        return False
+
     def defer(self, binding_id, code, message=None):
         """Bounded backoff after a verification failure.
 
@@ -969,18 +1087,4 @@ class WakeBindings:
         the periodic reconciler re-reads Tijian. A concurrent version change is
         re-read once; if it still races, the competing writer owns the state.
         """
-        for _ in range(2):
-            try:
-                binding = self.store.wakebinding(binding_id)
-                if binding["status"] == "disabled":
-                    return False
-                self._mark(binding, status="pending", error=code,
-                           message=message or ERROR_MESSAGES.get(code, code))
-                return True
-            except (ConflictError, WakeBindingError) as error:
-                if getattr(error, "code", None) not in ("conflict", "binding_conflict"):
-                    return False
-                continue
-            except (RuntimeContractError, NotFoundError):
-                return False
-        return False
+        return self._record_failure(binding_id, code, message)

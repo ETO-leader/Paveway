@@ -742,3 +742,19 @@ CI 保留 Python 矩阵，新增锁定 OMP/Bun、前置条件、Bun 与本地 HT
 合并后全量 Python 501 项，407 通过、94 条件跳过（128.099 秒），/tmp/paveway-sync-final-python.log；固定 Bun 140 项全部通过，/tmp/paveway-sync-final-bun.log。真实锁定 Host 的 Memory 边界、原始 RPC／压缩恢复、检查点崩溃／取消证明、无记忆模式、Skill 文件导入／CAS 冲突、Ctrl+D 连续恢复与训练交接 9 项通过（42.085 秒），/tmp/paveway-sync-final-native.log。所有模型请求均使用隔离本地 Provider。
 
 仅同步源码、项目文档与测试；暂存路径及新增内容已检查，没有加入运行文件或凭据。未修改真实服务、用户配置、会话、用户数据 Git 远端或 event.md。运行中的旧 Runtime 需在 UI 正常退出、后台空闲后重启以加载新的构建。
+
+## 2026-11-16 — 长会话历史、生命周期状态机、WakeBinding 诊断与受控并发
+
+版本 0.23.0。四项修复；所有模型执行均使用 `tests/fake_omp.py` 或本地 fixture，未调用付费模型。
+
+**历史检索。** `git_sync.search_session` 复用 `_read_session` 的分行完整性校验（O_NOFOLLOW、自有普通文件、Session header 身份、1 MiB 单行、读前后 inode/size/mtime 一致），但不施加 16 MiB 归档预算。`Frontend.messages` 在同一遍扫描内完成过滤、计数、分页与片段截断，只保留当前页（至多 21 条）；`has_more` 由扫描时多看到的一条命中决定，memory 与 20MiB+ 文件大小无关。`frontend.messages`、`native_history.search(source=native)`、`history.messages`、`cache.stats` 改由工作线程执行，线程内新建并关闭独立 SQLite 连接，事件循环不再做整文件解析。Git 导出策略未变：>16 MiB Session 仍跳过并保留旧的有效副本。
+
+**生命周期。** running→draining→(running|stopping)→exit 单一入口，drain/shutdown/resume 共用 `lifecycle_lock`；resume 不能插入 drain 的取消与复查临区块；已接受 shutdown 拒绝 resume 且只建立一个停止计时器；drain 失败恢复 running；drain 检查全部活动 Run，只有未提交 dispatch intent 的租约才取消并退回 queued，已派发 Run 作为 blocker 保留并继续执行。
+
+**WakeBinding 诊断。** 区分业务拒绝、可恢复故障与内部异常（不再统一伪装成 `todo_unavailable`）。`last_failure_at`、`last_failure_code`、`failure_count`、`next_attempt_at` 持久化；成功协调清空当前错误并保留“已恢复”标记；可恢复故障按 15s→900s 指数退避，sweep/projection 查询遵守 `next_attempt_at`；CAS 冲突不覆盖竞争方刚提交的状态；禁用绑定不被异常路径重新激活；持久文案固定，不写入原始异常、MCP 正文、Todo 全文或凭据。
+
+**受控并发。** `server.max_concurrent_runs` 支持 1–4（默认 1，保持升级兼容）。DB v4 以 `runs.execution_scope`（`workflow_id` + US + 物理 task；Native wakeup 用冻结快照的 `binding_task_id`）建立部分唯一索引，claim 在同一写事务内检查全局容量与同作用域排他；队首作用域忙碌时继续寻找其他可运行到期事件。Scheduler 以 run_id 管理活动任务集合，每个 Run 独立 OmpRpc、进度、取消与清理；`agent.restart` 只取消目标作用域；shutdown 收集全部 Run 后再关闭共享 Store。全局 `supervisor_v1` 熔断、退避、冷却与重置语义未修改。
+
+**迁移。** DB v3→v5 原子升级：v4 增加执行作用域列、回填旧 Run 并替换 `one_active_run` 为 `runs_active_scope`；v5 增加 WakeBinding 诊断列。保留 events/runs/session_bindings/runtime_metadata/wake_bindings 全部行，失败整体回滚（旧索引与列保持），重复迁移安全。
+
+验证：全量 Python **617 项，513 通过、104 条件跳过（222.344 秒，无失败）**，`/tmp/paveway-final-full.log`；其中新增 40 项（`test_history_streaming` 8、`test_store_concurrency` 7、`test_lifecycle_state` 9、`test_wakebinding_diagnostics` 9、`test_runtime_concurrency` 7）。定向回归：历史/Git/前端/DB 61 项通过；`test_runtime` 连续 3 次 51 项通过。Bun UI **131 通过、12 条件跳过、0 失败**。未执行的验收：真实固定 OMP 宿主与真实模型的 PTY 全链路（`PAVEWAY_TEST_NATIVE` 条件测试跳过）、systemd 部署与真实 Tijian MCP 联网读取；并发重叠由 fake OMP 的逐进程进入标记证明，不是耗时推测。

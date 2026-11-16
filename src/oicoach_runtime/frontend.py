@@ -299,24 +299,45 @@ class Frontend:
                                     "byte_limit": 16 * 1024 * 1024}
 
     def messages(self, conversation_id, query="", offset=0):
+        """Stream local Session history; no archive budget and bounded memory.
+
+        Every source is scanned entry by entry. Only the requested page is
+        retained, so a long valid Session is searchable without materializing
+        its full message list. Git export keeps its own 16 MiB policy.
+        """
+        from .git_sync import search_session
         from .memory import clip, text
         self.store.validate_offset(offset)
         text(query, 256, "history query", empty=True)
+        limit = 20
         record = self.get(conversation_id)
-        messages = []
+        root = Path(record["session_dir"])
+        needle = query.lower()
+
+        def excerpt(message):
+            position = message["text"].lower().find(needle) if needle else 0
+            start = max(0, position - 80)
+            value, truncated = clip(message["text"][start:], 2048)
+            return {**message, "text": value, "truncated": truncated or start > 0}
+
+        selected = []
+        remaining = offset
+        has_more = False
         for item in record["session_files"]:
+            if has_more:
+                break
             if not Path(item["session_file"]).exists():
                 continue
-            archive = self.archive({**record, **item})
-            messages.extend({**message, "session_id": item["session_id"]} for message in archive["messages"]
-                            if query.lower() in message["text"].lower())
-        selected = []
-        for message in messages[offset:offset + 20]:
-            position = message["text"].lower().find(query.lower()) if query else 0
-            start = max(0, position - 80)
-            excerpt, truncated = clip(message["text"][start:], 2048)
-            selected.append({**message, "text": excerpt, "truncated": truncated or start > 0})
-        return {"conversation_id": conversation_id, "messages": selected, "has_more": len(messages) > offset + 20,
+            # One extra match proves has_more without buffering later pages.
+            page, matched = search_session({**record, **item}, root, query, remaining,
+                                           limit + 1 - len(selected), excerpt)
+            for message in page:
+                if len(selected) < limit:
+                    selected.append({**message, "session_id": item["session_id"]})
+                else:
+                    has_more = True
+            remaining = max(0, remaining - matched)
+        return {"conversation_id": conversation_id, "messages": selected, "has_more": has_more,
                 "archive_mode": "all_branches", "source": "omp_native_session"}
 
     def reconcile(self):

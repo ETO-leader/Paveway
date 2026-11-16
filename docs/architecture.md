@@ -57,11 +57,11 @@ flowchart TD
 ## 固定工程語義
 
 - Store 連線設定 `foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL` 並驗證 WAL。交易失敗回滾，事件與 audit 同時 commit。
-- 全 Runtime 同時最多一個 `leased/running` run；schema 以 partial unique index 作最後防線。
+- `server.max_concurrent_runs`（1–4，預設 1）限制全域同時活動的 `leased/running` run 數；同一物理執行作用域 `workflow_id + US + 物理 task_id`（Native wakeup 取凍結快照的 `binding_task_id`）同時最多一個活動 run，由 `runs.execution_scope` partial unique index 作資料庫級防線，容量與作用域排他在同一個 claim 交易內檢查。隊首事件的作用域忙碌時調度器會繼續尋找其他到期事件，不阻塞空閒槽位。
 - 時刻統一以固定六位小數 UTC 字串儲存，程序內等待使用 monotonic clock；啟動後重新計算 wall-clock 到期狀態。
 - 送 prompt 前持久化 dispatch intent；崩潰後不能證明完成的送出進入 `uncertain`。
 - session scope 使用 `SHA256(workflow_id + NUL + task_id)`，避免路徑穿越及 task 間串會話。
-- schema、manifest、CLI/API 各自版本化。DB 支援已知 v1→v2 原子遷移，新建直接到 v2；升級前 SQLite backup，遷移失敗回滾，拒絕未知版本。配置/manifest/API 仍為 v1。
+- schema、manifest、CLI/API 各自版本化。DB 支援已知 v1→v5 原子遷移（v4 加入執行作用域、v5 加入 WakeBinding 重試診斷欄位），新建直接到 v5；升級前 SQLite backup，遷移失敗整體回滾，拒絕未知版本。配置/manifest/API 仍為 v1。
 
 ## 驗收順序
 
@@ -83,7 +83,7 @@ Runtime 與 guardian 都使用 Linux subreaper；OMP root 在 guardian 死亡時
 
 每個 adapter 共享一個 cancellation-shielded cleanup task；restart 或 shutdown 取消派發等待時，後續清理會等待同一個有界 stop，避免重複讀 pipe、提前關閉 pidfd 或讓前後兩個進程重疊。
 
-Runtime 生命週期由 `launcher.py` 與 daemon 內的 `lifecycle.*` IPC 共同協調。launcher 以獨立 `launcher.lock` 序列化並發啟動器，daemon 仍以 `runtime.lock` 與 socket lock 作為唯一實例權威。檢查版本／Build ID／原生協議後，若需替換，daemon 在單一 quiesce 區段內先設 draining、拒絕新工作，再檢查 leased/running run 與實時前台 owner；有 dispatch intent 或活動模型工作時 fail-closed，只有未派發租約會退回 queued（不記為完成或失敗）。確認安全後才排程停止，launcher 等進程身份與兩個鎖真正釋放（zombie 視為已退出）再啟動新實例；超時或舊 daemon 缺少交接協議時不啟動競爭實例。`--shutdown-on-exit` 另以私密所有權記錄（runtime instance、pid identity、config、socket、一次性 token）證明本次啟動擁有獨立實例，systemd 托管與共享實例永不取得該所有權。
+Runtime 生命週期由 `launcher.py` 與 daemon 內的 `lifecycle.*` IPC 共同協調。launcher 以獨立 `launcher.lock` 序列化並發啟動器，daemon 仍以 `runtime.lock` 與 socket lock 作為唯一實例權威。檢查版本／Build ID／原生協議後，若需替換，daemon 在單一 quiesce 區段內先設 draining、拒絕新工作，再檢查 leased/running run 與實時前台 owner；有 dispatch intent 或活動模型工作時 fail-closed，只有未派發租約會退回 queued（不記為完成或失敗）。drain / shutdown / resume 共用同一個生命週期互斥鎖與 running→draining→（running|stopping）→exit 狀態機：resume 不能插入 drain 的取消與複查臨界區，已接受的 shutdown 拒絕 resume 且只建立一個停止計時器，drain 失敗回復 running。檢查涵蓋全部活動 run 而非單槽。確認安全後才排程停止，launcher 等進程身份與兩個鎖真正釋放（zombie 視為已退出）再啟動新實例；超時或舊 daemon 缺少交接協議時不啟動競爭實例。`--shutdown-on-exit` 另以私密所有權記錄（runtime instance、pid identity、config、socket、一次性 token）證明本次啟動擁有獨立實例，systemd 托管與共享實例永不取得該所有權。
 
 0.11.0 的 Git 同步任务独立于前景 scheduler，在后台线程用独立只读 SQLite 事务导出终态记录。共享配置按父版本图识别冲突，导入只通过 customization 的锁/CAS，不写活动队列。同步设置可热加载；网络失败保留本地提交并记录独立状态，不修改 Agent 熔断器。详见 [Git 同步](git-sync.md)。
 

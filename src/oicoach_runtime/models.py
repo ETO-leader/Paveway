@@ -57,3 +57,17 @@ def session_key(workflow_id: str, task_id: str) -> str:
     validate_id(workflow_id)
     validate_id(task_id)
     return hashlib.sha256(f"{workflow_id}\0{task_id}".encode()).hexdigest()
+
+
+def execution_scope(workflow_id: str, task_id: str) -> str:
+    """Physical OMP session identity shared by claims, runs and bindings.
+
+    IDs cannot contain control characters, so the unit separator is
+    unambiguous and the same value can be computed inside SQLite.
+    """
+    validate_id(workflow_id)
+    validate_id(task_id)
+    return f"{workflow_id}\x1f{task_id}"
+
+
+SCOPE_SEPARATOR_SQL = "char(31)"

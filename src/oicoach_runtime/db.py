@@ -8,10 +8,16 @@ from pathlib import Path
 
 from .errors import StorageError
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 V1_TABLES = {"runtime_metadata", "session_bindings", "events", "runs", "audit_log"}
 V2_TABLES = V1_TABLES | {"memory_notes"}
 REQUIRED_TABLES = V2_TABLES | {"wake_bindings"}
+V4_RUN_COLUMNS = {"execution_scope"}
+V5_BINDING_COLUMNS = {"last_failure_at", "last_failure_code", "failure_count", "next_attempt_at"}
+
+
+def _columns(connection, table):
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
 
 
 def inspect_database(path: Path) -> dict:
@@ -24,11 +30,31 @@ def inspect_database(path: Path) -> dict:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
             journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
-        if version != SCHEMA_VERSION or not REQUIRED_TABLES <= tables or integrity != "ok":
+            indexes = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+            active_index = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='runs_active_scope'").fetchone()
+            upgrade_ok = (_columns(connection, "runs") >= V4_RUN_COLUMNS
+                          and _columns(connection, "wake_bindings") >= V5_BINDING_COLUMNS
+                          and active_index is not None and "one_active_run" not in indexes)
+        if version != SCHEMA_VERSION or not REQUIRED_TABLES <= tables or integrity != "ok" or not upgrade_ok:
             raise StorageError("Database schema or integrity is incompatible; preserve the file for recovery")
         return {"schema_version": version, "integrity": integrity, "journal_mode": journal}
     except sqlite3.Error:
         raise StorageError("Cannot inspect database; preserve it for recovery") from None
+
+
+def _apply(connection, filename):
+    sql = files("oicoach_runtime").joinpath("migrations/" + filename).read_text(encoding="utf-8")
+    # execute individually: executescript would implicitly commit the transaction.
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise StorageError("Incomplete packaged migration")
 
 
 def initialize_database(path: Path) -> dict:
@@ -50,24 +76,18 @@ def initialize_database(path: Path) -> dict:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         names = {row[0] for row in tables}
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4, 5):
             raise StorageError("Refusing an unknown or newer database schema; no migration applied")
-        required = {0: V1_TABLES, 1: V1_TABLES, 2: V2_TABLES, 3: REQUIRED_TABLES}[version]
+        required = ({0: V1_TABLES, 1: V1_TABLES, 2: V2_TABLES}
+                    | {version_: REQUIRED_TABLES for version_ in (3, 4, 5)})[version]
         if (version == 0 and tables) or (version > 0 and not required <= names):
             raise StorageError("Refusing an unknown or newer database schema; no migration applied")
-        for target, filename in ((1, "001_initial.sql"), (2, "002_memory.sql"), (3, "003_wakebinding.sql")):
+        migrations = ((1, "001_initial.sql"), (2, "002_memory.sql"), (3, "003_wakebinding.sql"),
+                      (4, "004_execution_scope.sql"), (5, "005_wakebinding_diagnostics.sql"))
+        for target, filename in migrations:
             if target <= version:
                 continue
-            sql = files("oicoach_runtime").joinpath("migrations/" + filename).read_text(encoding="utf-8")
-            # execute individually: executescript would implicitly commit the transaction.
-            statement = ""
-            for line in sql.splitlines(keepends=True):
-                statement += line
-                if sqlite3.complete_statement(statement):
-                    connection.execute(statement)
-                    statement = ""
-            if statement.strip():
-                raise StorageError("Incomplete packaged migration")
+            _apply(connection, filename)
             connection.execute(f"PRAGMA user_version={target}")
         connection.execute("COMMIT")
         connection.execute("PRAGMA journal_mode=WAL")

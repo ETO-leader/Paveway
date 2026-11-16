@@ -6,7 +6,7 @@
 
 Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负责聊天、流式回复、工具展示、滚动和 Session；Paveway 负责持久定时任务、独立 GPT Profile、配置快照、记忆、执行状态、恢复与用户数据 Git。
 
-当前版本 **0.22.0**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
+当前版本 **0.23.0**。固定 **10k 对话／记忆 token 限制已取消**，上下文窗口和压缩使用 OMP 原生机制；本地历史检索按行流式扫描、不受 Git 导出的 16MiB 上限，`server.max_concurrent_runs`（1–4，默认 1）允许互不冲突的物理 Session 并行执行后台 Agent。旧 CLI、管理 UI 和后台 RPC 入口保留，可回退。分阶段实现和测试证据见 [开发记录](docs/progress.md) 与 [原生验收](docs/verification/omp-native-acceptance.md)。
 
 ## 环境与安装
 
@@ -107,7 +107,7 @@ oicoach-runtime frontend messages CONVERSATION_ID --query CF1A --offset 0 \
 
 OMP 可能在新 Session 首次助手回复前暂存内容，不能保证强杀时保存尚未落盘的第一轮输入；已经持久化的原文保留，不自动重发。
 
-只读归档沿用有界文件校验：单文件最多 16MiB、单行最多 1MiB；超过边界时拒绝归档并保留原文件，不能声称已同步。该限制不裁剪模型上下文，也不删除历史；可新建 Conversation 并保留旧来源。
+只读归档沿用有界文件校验：单行最多 1MiB，Git 导出单文件最多 16MiB；超过边界时拒绝导出并保留原文件，不能声称已同步。该限制只针对 Git 归档，不裁剪模型上下文，也不删除历史；本地 `frontend messages` 按行流式检索，不再受 16MiB 限制，因此 20MiB 以上的有效 Session 仍可在前段和末尾检索，且内存有界。可新建 Conversation 并保留旧来源。
 
 Sync Status 的 `last.session_archives` 分别报告成功导出、跳过、正常暂缓与需关注的数量及固定原因码。Git push 成功只表示提交同步成功：活动／变化中的 Session 暂缓，超过导出上限等问题明确列出，不覆盖旧的有效备份。大型有效 Session 仍可正常退出、恢复和续聊。
 

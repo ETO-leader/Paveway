@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .errors import ConflictError, SessionConflictError, NotFoundError, RuntimeContractError, StorageError
-from .models import EventStatus, parse_timestamp, session_key, utc_text, validate_id
+from .models import EventStatus, execution_scope, parse_timestamp, session_key, utc_text, validate_id
 from .supervisor import RestartPolicy
 
 
@@ -196,26 +196,45 @@ class Store:
             JOIN events e ON e.event_id=b.event_id
             WHERE b.status IN ('active','pending') AND e.status='queued' AND e.not_before_utc<=?
             AND (b.last_error_code IS NULL OR b.last_attempt_at IS NULL OR b.last_attempt_at<=?)
+            AND (b.next_attempt_at IS NULL OR b.next_attempt_at<=?)
             ORDER BY e.not_before_utc,b.created_at,b.binding_id LIMIT ?""",
-            (stamp, cutoff, limit)).fetchall()
+            (stamp, cutoff, stamp, limit)).fetchall()
         return [dict(row) for row in rows]
 
     def reconcile_wakebindings(self, now, active_after=60, pending_after=15, limit=20):
         active_before = utc_text(now - timedelta(seconds=active_after))
         pending_before = utc_text(now - timedelta(seconds=pending_after))
+        stamp = utc_text(now)
         rows = self.connection.execute("""SELECT * FROM wake_bindings
-            WHERE (status='active' AND (last_attempt_at IS NULL OR last_attempt_at<=?))
+            WHERE ((status='active' AND (last_attempt_at IS NULL OR last_attempt_at<=?))
                OR (status='pending' AND (last_attempt_at IS NULL OR last_attempt_at<=?))
                OR (status='ineligible' AND resume_policy='when_eligible'
-                   AND (last_attempt_at IS NULL OR last_attempt_at<=?))
+                   AND (last_attempt_at IS NULL OR last_attempt_at<=?)))
+            AND (next_attempt_at IS NULL OR next_attempt_at<=?)
             ORDER BY last_attempt_at IS NOT NULL,last_attempt_at,created_at,binding_id LIMIT ?""",
-            (active_before, pending_before, pending_before, limit)).fetchall()
+            (active_before, pending_before, pending_before, stamp, limit)).fetchall()
         return [dict(row) for row in rows]
 
     def wakebinding_counts(self):
         result = {status: 0 for status in ("active", "pending", "ineligible", "disabled", "conflict")}
         result.update(dict(self.connection.execute("SELECT status,count(*) FROM wake_bindings GROUP BY status").fetchall()))
         return result
+
+    def wakebinding_diagnostics(self):
+        """Bounded aggregate only: codes and counts, never reminder content."""
+        codes = dict(self.connection.execute(
+            "SELECT last_failure_code,count(*) FROM wake_bindings WHERE last_failure_code IS NOT NULL "
+            "GROUP BY last_failure_code ORDER BY count(*) DESC LIMIT 20").fetchall())
+        now = self.timestamp()
+        return {
+            "failure_codes": codes,
+            "backing_off": self.connection.execute(
+                "SELECT count(*) FROM wake_bindings WHERE next_attempt_at IS NOT NULL AND next_attempt_at>?",
+                (now,)).fetchone()[0],
+            "recovered": self.connection.execute(
+                "SELECT count(*) FROM wake_bindings WHERE last_failure_at IS NOT NULL AND last_error_code IS NULL"
+            ).fetchone()[0],
+        }
 
     def create_wakebinding(self, *, binding_id, workflow_id, task_id, owner_conversation_id,
                            todo_source_id, todo_source_label, todo_id, name, mode, time_source,
@@ -256,7 +275,8 @@ class Store:
 
     def touch_wakebinding(self, binding_id, fields):
         allowed = {"todo_version", "todo_fingerprint", "todo_title", "observed_at_utc",
-                   "last_reconciled_at", "last_attempt_at", "last_error_code", "last_error_message"}
+                   "last_reconciled_at", "last_attempt_at", "last_error_code", "last_error_message",
+                   "last_failure_at", "last_failure_code", "failure_count", "next_attempt_at"}
         if set(fields) - allowed:
             raise RuntimeContractError("Unknown WakeBinding observation fields")
         with self.transaction() as db:
@@ -293,7 +313,8 @@ class Store:
                           due=None, generation=None):
         allowed = {"status", "event_id", "schedule_generation", "todo_version", "todo_fingerprint",
                    "todo_title", "observed_at_utc", "last_reconciled_at", "last_attempt_at",
-                   "last_error_code", "last_error_message", "reminder_at_utc"}
+                   "last_error_code", "last_error_message", "reminder_at_utc",
+                   "last_failure_at", "last_failure_code", "failure_count", "next_attempt_at"}
         if set(fields) - allowed or not fields:
             raise RuntimeContractError("Unknown WakeBinding observation fields")
         with self.transaction() as db:
@@ -361,7 +382,7 @@ class Store:
                                (stamp, stamp, event["event_id"]))
                     self.audit(db, event["event_id"], event["run_id"], "wakebinding_disabled")
             db.execute("""UPDATE wake_bindings SET status='disabled',last_error_code=?,last_error_message=?,
-                last_attempt_at=?,version=version+1,updated_at=? WHERE binding_id=?""",
+                last_attempt_at=?,next_attempt_at=NULL,version=version+1,updated_at=? WHERE binding_id=?""",
                        (error, "Reminder cancelled by the user; the binding will not recreate it",
                         stamp, stamp, binding_id))
         return self.wakebinding(binding_id)
@@ -481,15 +502,23 @@ class Store:
             self.audit(db, event["event_id"], None, "reminder_delivered")
 
     def claim_due(self, owner, exclude=()):
+        """Lease the earliest due event that can run in the current capacity.
+
+        Capacity, physical-session exclusivity and the lease are decided in one
+        write transaction. An event whose execution scope is busy is skipped
+        instead of blocking every other due event behind it.
+        """
         if not isinstance(exclude, (list, tuple, set)) or len(exclude) > 100:
             raise RuntimeContractError("Invalid exclusion set")
         for event_id in exclude:
             validate_id(event_id)
         stamp = self.timestamp()
+        capacity = self.config.server.max_concurrent_runs
         with self.transaction() as db:
             if not self.policy.allowed(self.supervisor_state(), self.clock()):
                 return None
-            if db.execute("SELECT 1 FROM runs WHERE status IN ('leased','running')").fetchone():
+            active = db.execute("SELECT count(*) FROM runs WHERE status IN ('leased','running')").fetchone()[0]
+            if active >= capacity:
                 return None
             excluded = ""
             parameters = [stamp]
@@ -497,22 +526,36 @@ class Store:
                 placeholders = ",".join("?" for _ in exclude)
                 excluded = f" AND e.event_id NOT IN ({placeholders})"
                 parameters.extend(exclude)
-            row = db.execute("""SELECT e.event_id FROM events e
+            scope_expression = """(e.workflow_id || char(31) || coalesce(
+                json_extract((SELECT m.value FROM runtime_metadata m
+                    WHERE m.key='native-wakeup-config:v1:' || e.event_id), '$.binding_task_id'),
+                e.task_id))"""
+            row = db.execute("""SELECT e.event_id, """ + scope_expression + """ AS scope FROM events e
                 LEFT JOIN wake_bindings b ON b.event_id=e.event_id
                 WHERE e.status='queued' AND e.not_before_utc<=?
                 AND COALESCE(json_extract(e.payload_json,'$.native_wakeup')=1 AND json_extract(e.payload_json,'$.intent')='reminder',0)=0
                 AND (json_extract(e.payload_json,'$.wake_binding_id') IS NULL
                     OR (b.binding_id IS NOT NULL AND b.status='active' AND b.event_id=e.event_id))
+                AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.status IN ('leased','running')
+                    AND r.execution_scope=""" + scope_expression + """)
                 """ + excluded + " ORDER BY e.not_before_utc,e.created_at,e.event_id LIMIT 1", parameters).fetchone()
             if not row:
                 return None
-            event_id, run_id = row[0], str(uuid.uuid4())
-            db.execute("INSERT INTO runs(run_id,event_id,request_id,status,started_at) VALUES (?,?,?,'leased',?)", (run_id, event_id, run_id, stamp))
+            event_id, scope = row[0], row[1]
+            run_id = str(uuid.uuid4())
+            try:
+                db.execute("INSERT INTO runs(run_id,event_id,request_id,status,started_at,execution_scope)"
+                           " VALUES (?,?,?,'leased',?,?)", (run_id, event_id, run_id, stamp, scope))
+            except sqlite3.IntegrityError:
+                # The partial unique index caught a competing claim. No state changed.
+                return None
             lease = utc_text(self.clock() + timedelta(seconds=self.config.agent.startup_timeout_seconds + self.config.agent.turn_timeout_seconds + self.config.agent.settle_timeout_seconds + 60))
             db.execute("UPDATE events SET status='leased',run_id=?,attempt=attempt+1,lease_owner=?,lease_expires_utc=?,version=version+1,updated_at=? WHERE event_id=?",
                        (run_id, owner, lease, stamp, event_id))
             self.audit(db, event_id, run_id, "leased")
-        return self.event(event_id)
+        event = self.event(event_id)
+        event["execution_scope"] = scope
+        return event
 
     def abort_claim(self, run_id, error, *, keep_event=False):
         """Release a leased run before dispatch intent, optionally keeping the event queued."""
@@ -536,8 +579,26 @@ class Store:
             self.audit(db, event["event_id"], run_id, "claim_aborted", error)
         return self.event(run["event_id"])
 
+    def physical_task(self, event):
+        """Frozen physical task identity used for the execution scope.
+
+        A Native ``agent_wake`` runs against the Task that owns the attested
+        Session, not the Event's queue Task. The claim path derives the same
+        identity inside SQLite from the frozen snapshot.
+        """
+        if (event.get("payload") or {}).get("native_wakeup"):
+            snapshot = self.metadata("native-wakeup-config:v1:" + event["event_id"])
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("binding_task_id"), str):
+                return snapshot["binding_task_id"]
+        return event["task_id"]
+
     def bind(self, event, workflow):
-        key = session_key(event["workflow_id"], event["task_id"])
+        task_id = self.physical_task(event)
+        key = session_key(event["workflow_id"], task_id)
+        run = self.run(event["run_id"])
+        expected = execution_scope(event["workflow_id"], task_id)
+        if run["execution_scope"] is not None and run["execution_scope"] != expected:
+            raise ConflictError("Run execution scope does not match its physical session")
         directory = self.config.state_dir / "sessions" / key
         with self.transaction() as db:
             row = db.execute("SELECT * FROM session_bindings WHERE binding_id=?", (key,)).fetchone()
@@ -555,7 +616,7 @@ class Store:
                 ensure_private_directory(directory)
                 stamp = self.timestamp()
                 db.execute("INSERT INTO session_bindings(binding_id,workflow_id,task_id,session_dir,workspace,workflow_revision,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'new',?,?)",
-                           (key, event["workflow_id"], event["task_id"], str(directory), str(workflow.workspace), workflow.revision, stamp, stamp))
+                           (key, event["workflow_id"], task_id, str(directory), str(workflow.workspace), workflow.revision, stamp, stamp))
             db.execute("UPDATE runs SET binding_id=? WHERE run_id=?", (key, event["run_id"]))
             self.audit(db, event["event_id"], event["run_id"], "session_bound")
         return dict(self.connection.execute("SELECT * FROM session_bindings WHERE binding_id=?", (key,)).fetchone())
@@ -762,5 +823,6 @@ class Store:
                 "supervisor": self.policy.describe(self.supervisor_state(), self.clock()),
                 "last_restart": self.restart_job(self.metadata("last_restart_id")) if self.metadata("last_restart_id") else None,
                 "wakebindings": self.wakebinding_counts(),
+                "wakebinding_diagnostics": self.wakebinding_diagnostics(),
                 "last_success_at": last_success, "recent_error_code": recent_error[0] if recent_error else None,
                 "diagnostics": report(self)}
