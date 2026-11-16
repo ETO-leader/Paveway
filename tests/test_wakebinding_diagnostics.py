@@ -1,8 +1,10 @@
 """Persistent, privacy-safe WakeBinding failure diagnostics."""
 
+import asyncio
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -11,9 +13,10 @@ from oicoach_runtime.config import load_config
 from oicoach_runtime.errors import ConflictError
 from oicoach_runtime.inbox import Inbox
 from oicoach_runtime.scheduler import Runtime
+from oicoach_runtime.models import utc_text
 from oicoach_runtime.store import Store
 from oicoach_runtime.wakebinding import (ERROR_MESSAGES, TodoFacts, TodoSourceInvalid,
-                                         TodoUnavailable, WakeBindings)
+                                         TodoUnavailable, WakeBindingError, WakeBindings)
 from oicoach_runtime.workflow_setup import create
 
 NOW = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
@@ -92,6 +95,117 @@ class WakeBindingDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.now += timedelta(seconds=61)
         return binding_id
 
+    @staticmethod
+    def blocked(result, entered, release):
+        """A fetch that publishes its arrival and waits for the test barrier."""
+        def behaviour(_todo_id):
+            entered.set()
+            release.wait(5)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return behaviour
+
+    @staticmethod
+    async def wait_for(entered):
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(loop.run_in_executor(None, entered.wait, 5), 10)
+
+    async def test_stale_reconciliation_cannot_overwrite_a_newer_configuration(self):
+        binding_id = self.create_binding()
+        entered, release = threading.Event(), threading.Event()
+        stale = self.service(self.blocked(facts(version=5, due=NOW + timedelta(hours=1)),
+                                          entered, release))
+        task = asyncio.create_task(stale.reconcile_binding(binding_id, reason="stale"))
+        await self.wait_for(entered)
+        current = self.store.wakebinding(binding_id)
+        self.store.update_wakebinding(binding_id, current["version"], {"offset_seconds": 600})
+        winner = self.service(lambda _todo: facts(version=6, due=NOW + timedelta(hours=1)))
+        await winner.reconcile_binding(binding_id, reason="winner")
+        expected = utc_text(NOW + timedelta(hours=1, minutes=10))
+        self.assertEqual(self.store.event(self.store.wakebinding(binding_id)["event_id"])
+                         ["not_before_utc"], expected)
+        release.set()
+        with self.assertRaises(WakeBindingError) as failure:
+            await asyncio.wait_for(task, 10)
+        self.assertEqual(failure.exception.code, "binding_conflict")
+        final = self.store.wakebinding(binding_id)
+        self.assertEqual(final["offset_seconds"], 600)
+        self.assertEqual(final["todo_version"], 6)
+        self.assertEqual(self.store.event(final["event_id"])["not_before_utc"], expected)
+
+    async def test_older_todo_observation_cannot_replace_a_newer_schedule(self):
+        binding_id = self.create_binding()
+        entered, release = threading.Event(), threading.Event()
+        older_due = NOW + timedelta(hours=2)
+        newer_due = NOW + timedelta(hours=3)
+        older = self.service(self.blocked(facts(version=10, due=older_due), entered, release))
+        task = asyncio.create_task(older.reconcile_binding(binding_id, reason="slow"))
+        await self.wait_for(entered)
+        newer = self.service(lambda _todo: facts(version=11, due=newer_due))
+        await newer.reconcile_binding(binding_id, reason="fast")
+        winner = self.store.wakebinding(binding_id)
+        self.assertEqual(self.store.event(winner["event_id"])["not_before_utc"],
+                         utc_text(newer_due))
+        release.set()
+        with self.assertRaises(WakeBindingError):
+            await asyncio.wait_for(task, 10)
+        final = self.store.wakebinding(binding_id)
+        self.assertEqual(final["todo_version"], 11)
+        self.assertEqual(final["status"], "active")
+        self.assertEqual(self.store.event(final["event_id"])["not_before_utc"],
+                         utc_text(newer_due))
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) FROM events").fetchone()[0], 1)
+
+    async def test_late_failure_cannot_downgrade_a_newer_success(self):
+        binding_id = self.create_binding()
+        self.now += timedelta(seconds=30)
+        version_before = self.store.wakebinding(binding_id)["version"]
+        entered, release = threading.Event(), threading.Event()
+        stale = self.service(self.blocked(TodoUnavailable(), entered, release))
+        task = asyncio.create_task(stale.reconcile_binding(binding_id, reason="slow"))
+        await self.wait_for(entered)
+        success = self.service(lambda _todo: facts(version=1, due=NOW + timedelta(hours=1)))
+        await success.reconcile_binding(binding_id, reason="fast")
+        winner = self.store.wakebinding(binding_id)
+        self.assertEqual(winner["status"], "active")
+        self.assertIsNone(winner["last_error_code"])
+        self.assertEqual(winner["version"], version_before,
+                         "an observation-only success must not bump the business version")
+        release.set()
+        with self.assertRaises(WakeBindingError):
+            await asyncio.wait_for(task, 10)
+        final = self.store.wakebinding(binding_id)
+        self.assertEqual(final["status"], "active")
+        self.assertIsNone(final["last_error_code"])
+        self.assertIsNone(final["next_attempt_at"])
+        self.assertEqual(final["failure_count"], 0)
+        self.assertEqual(final["last_reconciled_at"], winner["last_reconciled_at"])
+
+    async def test_pure_diagnostic_cannot_resurrect_a_cancelled_binding(self):
+        binding_id = self.create_binding()
+        entered, release = threading.Event(), threading.Event()
+        stale = self.service(self.blocked(facts(version=2, due=NOW + timedelta(hours=1)),
+                                          entered, release))
+        task = asyncio.create_task(stale.reconcile_binding(binding_id, reason="slow"))
+        await self.wait_for(entered)
+        current = self.store.wakebinding(binding_id)
+        cancelled = self.store.disable_wakebinding(binding_id, current["version"])
+        self.assertEqual(cancelled["status"], "disabled")
+        release.set()
+        try:
+            await asyncio.wait_for(task, 10)
+        except WakeBindingError as error:
+            self.assertEqual(error.code, "binding_conflict")
+        final = self.store.wakebinding(binding_id)
+        self.assertEqual(final["status"], "disabled")
+        self.assertEqual(final["last_error_code"], "cancelled_by_user")
+        self.assertEqual(self.store.event(final["event_id"])["status"], "cancelled")
+        self.assertFalse(stale.defer(binding_id, "todo_unavailable"))
+        self.assertFalse(stale._record_failure(binding_id, "binding_internal_error"))
+        self.assertEqual(self.store.wakebinding(binding_id)["status"], "disabled")
+
     async def test_timeouts_are_persisted_queryable_and_back_off(self):
         binding_id = self.create_binding()
         created_stamp = self.created_stamp
@@ -156,6 +270,10 @@ class WakeBindingDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         second_delay = (datetime.fromisoformat(second["next_attempt_at"].replace("Z", "+00:00"))
                         - datetime.fromisoformat(second["last_attempt_at"].replace("Z", "+00:00")))
         self.assertGreater(second_delay, first_delay)
+        # Backoff never creates duplicate events or Inbox deliveries.
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) FROM events").fetchone()[0], 1)
+        self.assertEqual(Inbox(self.store).list("example")["messages"], [])
         self.now += timedelta(seconds=130)
         recovered_service = self.service(lambda todo_id: facts(todo_id=todo_id))
         await recovered_service.reconcile_all(limit=10)

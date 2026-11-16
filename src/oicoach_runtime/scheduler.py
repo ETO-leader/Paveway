@@ -51,6 +51,9 @@ class Runtime:
         self.clients = set()
         # One entry per active background Run: task, scope, state, progress.
         self.active_runs = {}
+        # Execution scopes whose process could not be proven dead. Their
+        # durable Run row stays active, so the scope is never reused.
+        self.unreleased_scopes = {}
         self.pending_restart = None
         # Single serialized lifecycle state machine: running|draining|stopping.
         self.lifecycle_state = "running"
@@ -103,18 +106,30 @@ class Runtime:
         self._refresh_health()
         return entry
 
+    def _scope_of(self, run_id):
+        entry = self.active_runs.get(run_id)
+        if entry is not None:
+            return entry["scope"]
+        try:
+            return self.store.run(run_id)["execution_scope"]
+        except (RuntimeContractError, NotFoundError):
+            return None
+
     async def _stop_run(self, run_id, timeout=10):
+        scope = self._scope_of(run_id)
+        if scope is not None and scope in self.unreleased_scopes:
+            # The process was not proven dead; never release or reuse it.
+            return False
         entry = self.active_runs.get(run_id)
         if entry is None:
             return True
         task = entry["task"]
         if not task.done():
             task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout)
-        except TimeoutError:
-            return False
-        return True
+        # Wait instead of wait_for: a second cancellation would abort the
+        # shielded process cleanup and could quarantine a stopping process.
+        await asyncio.wait({task}, timeout=timeout)
+        return task.done()
 
     async def _reap(self, run_ids):
         for run_id in list(run_ids):
@@ -125,6 +140,14 @@ class Runtime:
                 await entry["task"]
             except asyncio.CancelledError:
                 pass
+            except Exception as error:
+                # A Run's own failure is contained here. Durable evidence was
+                # already written by dispatch_event; this boundary only keeps
+                # one Run from terminating the Scheduler and other Runs.
+                print(json.dumps({"timestamp_utc": self.store.timestamp(),
+                                  "component": "scheduler", "run_id": run_id,
+                                  "transition": "run_task_failed",
+                                  "error_code": type(error).__name__}), flush=True)
         self._refresh_health()
 
     def _set_lifecycle(self, state):
@@ -417,7 +440,9 @@ class Runtime:
                  "workflow_id": row["workflow_id"], "task_id": row["task_id"],
                  "event_id": row["event_id"],
                  "scheduled": row["run_id"] in self.active_runs,
-                 "safe_to_abort": row["status"] == "leased" and row["dispatch_intent_at"] is None}
+                 "cleanup_unproven": row["execution_scope"] in self.unreleased_scopes,
+                 "safe_to_abort": row["status"] == "leased" and row["dispatch_intent_at"] is None
+                                   and row["execution_scope"] not in self.unreleased_scopes}
                 for row in rows]
 
     def _live_frontends(self):
@@ -458,9 +483,14 @@ class Runtime:
         for run in self._active_runs():
             if run["safe_to_abort"]:
                 continue
+            handling = "等待该后台运行自然结束；用 events show/status 检查进度，"
+            if run["cleanup_unproven"]:
+                handling = ("该 Run 的 OMP 进程无法确认已退出，执行作用域已隔离；不要重发或强制复用。"
+                            "检查进程后重启 Runtime，再按 uncertain／人工恢复流程处理。")
+            else:
+                handling += "不要强制取消或重发不确定的模型请求。"
             blockers.append({"kind": "background_run", "blocking": "dispatched_run", **run,
-                             "safe_handling": "等待该后台运行自然结束；用 events show/status 检查进度，"
-                                              "不要强制取消或重发不确定的模型请求。"})
+                             "safe_handling": handling})
         for frontend in self._live_frontends():
             blockers.append({"kind": "frontend", "blocking": "live_session", **frontend,
                              "safe_handling": "在对应终端正常退出该会话（Ctrl+D 或 /exit），然后重试。"})
@@ -910,16 +940,25 @@ class Runtime:
             retryable = stage in ("startup", "session")
             failure_code = "agent_start_failed" if retryable else "dispatch_interrupted"
         finally:
+            cleanup_error = await self._stop_agent(agent, abort=not terminal)
             try:
-                await agent.stop(abort=not terminal)
-            finally:
+                if terminal and cleanup_error is not None:
+                    # The durable result is already settled; the owned process
+                    # exited cleanly, so only the post-exit cleanup failed.
+                    print(json.dumps({"timestamp_utc": self.store.timestamp(),
+                                      "component": "scheduler", "run_id": run_id,
+                                      "event_id": event["event_id"],
+                                      "transition": "cleanup_failed",
+                                      "error_code": "agent_cleanup_failed"}), flush=True)
                 if not terminal:
                     # Another writer (drain, restart, watchdog) may have
                     # persisted a terminal status already; preserve it.
                     self._finish_interrupted(run_id, agent, entry, retryable=retryable,
                                              failure_code=failure_code,
                                              failure_message=failure_message,
-                                             interrupted=interrupted)
+                                             interrupted=interrupted,
+                                             cleanup_error=cleanup_error)
+            finally:
                 if entry is not None:
                     entry["state"] = "idle" if terminal else "degraded"
                     entry["progress"] = None
@@ -934,21 +973,90 @@ class Runtime:
                 print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler", "event_id": event["event_id"],
                                   "run_id": run_id, "transition": stored["status"], "error_code": stored["error_code"]}), flush=True)
 
+    @staticmethod
+    async def _stop_agent(agent, *, abort, timeout=45):
+        """Stop one Run's owned process without losing the cleanup owner.
+
+        A cancelled dispatch still has to finish the shielded stop task before
+        its scope may be released, otherwise a live OMP could overlap a new
+        Run on the same physical Session. The returned error is fixed-code
+        evidence, never an exception that escapes this boundary.
+        """
+        try:
+            await agent.stop(abort=abort)
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            return error
+        else:
+            return None
+        task = getattr(agent, "cleanup_task", None)
+        if task is None:
+            return AgentError("Process cleanup was interrupted", code="agent_stop_timeout")
+        if not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout)
+            except TimeoutError:
+                return AgentError("Process cleanup did not finish", code="agent_stop_timeout")
+            except asyncio.CancelledError:
+                return AgentError("Process cleanup was interrupted", code="agent_stop_timeout")
+            except Exception as error:
+                return error
+            return None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return AgentError("Process cleanup was cancelled", code="agent_stop_timeout")
+        except Exception as error:
+            return error
+        return None
+
     def _restart_scope_matches(self, entry):
         job = self.pending_restart
         return bool(job and entry is not None and
                     entry["scope"] == execution_scope(job["workflow_id"], job["task_id"]))
 
+    @staticmethod
+    def _process_gone(agent):
+        process = getattr(agent, "process", None)
+        return process is None or process.returncode is not None
+
+    def _quarantine(self, run, code):
+        scope = run["execution_scope"]
+        if scope is not None:
+            self.unreleased_scopes[scope] = code
+
     def _finish_interrupted(self, run_id, agent, entry, *, retryable, failure_code,
-                            failure_message, interrupted):
+                            failure_message, interrupted, cleanup_error=None):
         """Persist the outcome of an interrupted Run exactly once.
 
         A concurrent drain or restart may already have settled the Run; its
-        durable evidence is authoritative and must not be overwritten.
+        durable evidence is authoritative and must not be overwritten. When the
+        owned process cannot be proven dead, the Run row is left active so the
+        execution scope stays exclusively owned until a Runtime restart.
         """
         run = self.store.run(run_id)
         if run["status"] not in ("leased", "running"):
             return
+        if cleanup_error is not None and not self._process_gone(agent):
+            self._quarantine(run, "agent_cleanup_unproven")
+            try:
+                self.store.note_run_error(
+                    run_id, "agent_cleanup_unproven",
+                    "The Run process could not be proven stopped; this execution scope is "
+                    "quarantined until a Runtime restart.")
+            except (RuntimeContractError, NotFoundError, sqlite3.Error):
+                pass
+            print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
+                              "run_id": run_id, "event_id": run["event_id"],
+                              "transition": "cleanup_unproven",
+                              "error_code": "agent_cleanup_unproven"}), flush=True)
+            return
+        if cleanup_error is not None:
+            print(json.dumps({"timestamp_utc": self.store.timestamp(), "component": "scheduler",
+                              "run_id": run_id, "event_id": run["event_id"],
+                              "transition": "cleanup_failed",
+                              "error_code": "agent_cleanup_failed"}), flush=True)
         restart_scope = self._restart_scope_matches(entry)
         graceful = self.stop_event.is_set() or self.draining or restart_scope
         if graceful and run["status"] == "leased" and run["dispatch_intent_at"] is None:
@@ -994,16 +1102,29 @@ class Runtime:
             service = self.wake_reconciler = WakeBindings(self.store)
         self.bound_task = asyncio.create_task(self._project_bound_reminders(service))
 
+    def _refuse_quarantined_restart(self, job):
+        """Fail closed: a second OMP on an unproven Session would break exclusivity."""
+        self.store.update_restart(job["restart_id"], "failed", "agent_cleanup_unproven")
+        self.pending_restart = None
+
     async def _run_pending_restart(self):
         """Serial maintenance: only the target physical session is touched."""
         job = self.pending_restart
         target = execution_scope(job["workflow_id"], job["task_id"])
+        if target in self.unreleased_scopes:
+            self._refuse_quarantined_restart(job)
+            return
         for run in [item for item in self._active_runs() if item["execution_scope"] == target]:
             if not await self._stop_run(run["run_id"]):
-                # The target session is still owned by a live Run. Restart must
-                # not open a second process on the same session; retry later.
+                if target in self.unreleased_scopes:
+                    self._refuse_quarantined_restart(job)
+                # Otherwise the session is still owned by a live Run; retry
+                # later without opening a second process on it.
                 return
             await self._reap([run["run_id"]])
+        if target in self.unreleased_scopes:
+            self._refuse_quarantined_restart(job)
+            return
         await self.restart_agent(job)
         self.pending_restart = None
 
@@ -1027,6 +1148,9 @@ class Runtime:
             self.changed.clear()
             if self.pending_restart:
                 await self._run_pending_restart()
+                if self.pending_restart:
+                    # A deferred restart must not busy-spin the Scheduler.
+                    await asyncio.sleep(self.config.server.poll_interval_seconds)
                 continue
             service = self.wake_reconciler
             if service is None:
@@ -1121,8 +1245,19 @@ class Runtime:
         except (RuntimeContractError, OSError, TimeoutError, ValueError):
             self.store.supervisor_failure(error)
         finally:
+            cleanup_error = await self._stop_agent(adapter, abort=status != "succeeded")
             try:
-                await adapter.stop(abort=status != "succeeded")
+                if cleanup_error is not None:
+                    if not self._process_gone(adapter):
+                        self.unreleased_scopes[execution_scope(
+                            job["workflow_id"], job["task_id"])] = "agent_cleanup_unproven"
+                    if status == "succeeded":
+                        status, error = "failed", "agent_cleanup_failed"
+                    print(json.dumps({"timestamp_utc": self.store.timestamp(),
+                                      "component": "scheduler",
+                                      "restart_id": job["restart_id"],
+                                      "transition": "cleanup_failed",
+                                      "error_code": "agent_cleanup_failed"}), flush=True)
             finally:
                 self.store.update_restart(job["restart_id"], status, error)
                 self._health_override = None
@@ -1258,6 +1393,11 @@ class Runtime:
                                      *([self.bound_task] if self.bound_task else []),
                                      *runs, return_exceptions=True)
                 self.active_runs.clear()
+                if self.unreleased_scopes:
+                    print(json.dumps({"timestamp_utc": self.store.timestamp(),
+                                      "component": "daemon",
+                                      "transition": "cleanup_unproven_at_exit",
+                                      "count": len(self.unreleased_scopes)}), flush=True)
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.remove_signal_handler(sig)
                 if socket_path.exists() and socket_path.lstat().st_ino == inode:

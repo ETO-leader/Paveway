@@ -892,21 +892,23 @@ class WakeBindings:
                 "todo_version", "todo_fingerprint", "todo_title", "observed_at_utc",
                 "last_reconciled_at", "last_attempt_at", "last_failure_at", "last_failure_code",
                 "failure_count", "next_attempt_at"}}
-            return self.store.touch_wakebinding(binding["binding_id"], diagnostic)
-        for attempt in range(2):
-            current = self.store.wakebinding(binding["binding_id"]) if attempt else binding
-            if attempt and (current["status"] != binding["status"]
-                            or current["last_error_code"] != binding["last_error_code"]
-                            or current["event_id"] != binding["event_id"]
-                            or current["schedule_generation"] != binding["schedule_generation"]):
-                raise WakeBindingError("binding_conflict")
             try:
-                return self.store.apply_wakebinding(current["binding_id"], current["version"],
-                    fields=values, event_action=event_action, due=due, generation=generation)
+                return self.store.touch_wakebinding(binding["binding_id"], binding["version"],
+                                                    diagnostic)
             except ConflictError:
-                if attempt:
-                    raise WakeBindingError("binding_conflict")
-        raise WakeBindingError("binding_conflict")
+                # A newer observation or state already owns this row. A pure
+                # diagnostic carries no schedule and must not force a write.
+                return self.store.wakebinding(binding["binding_id"])
+        # Every value above was computed from this exact binding version.
+        # Committing it to a newer version would attach a stale schedule or
+        # Todo observation to a newer configuration, so conflicts are final.
+        try:
+            return self.store.apply_wakebinding(
+                binding["binding_id"], binding["version"], fields=values,
+                event_action=event_action, due=due, generation=generation,
+                expected_reconciled_at=binding.get("last_reconciled_at"))
+        except ConflictError:
+            raise WakeBindingError("binding_conflict") from None
 
     def _replace(self, binding, due, facts, observation):
         return self._mark(binding, facts=facts, fields=observation, event_action="replace",
@@ -1063,10 +1065,11 @@ class WakeBindings:
             if binding["status"] == "disabled":
                 return False
             # A competing writer may have just committed a clean, active
-            # binding. A stale failure must never downgrade it.
-            if attempt and binding["status"] == "active" and binding["last_error_code"] is None:
+            # binding. A failure caused by that conflict must never downgrade
+            # it, on any attempt, and a retry must not resurrect old backoff.
+            if code in ("binding_conflict", "binding_verify_conflict") and binding["last_error_code"] is None:
                 return False
-            if code == "binding_conflict" and binding["last_error_code"] is None:
+            if attempt and binding["status"] == "active" and binding["last_error_code"] is None:
                 return False
             try:
                 self._mark(binding, status="pending" if code in TRANSIENT_CODES else None,

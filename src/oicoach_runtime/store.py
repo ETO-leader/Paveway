@@ -12,6 +12,13 @@ from .errors import ConflictError, SessionConflictError, NotFoundError, RuntimeC
 from .models import EventStatus, execution_scope, parse_timestamp, session_key, utc_text, validate_id
 from .supervisor import RestartPolicy
 
+_UNSET = object()
+
+# Observation evidence is only meaningful while it is at least as new as what
+# the row already records. These fields are never allowed to regress.
+OBSERVATION_FIELDS = ("todo_version", "todo_fingerprint", "todo_title", "observed_at_utc")
+OBSERVATION_TIMESTAMPS = ("last_attempt_at", "last_reconciled_at", "last_failure_at")
+
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -273,19 +280,62 @@ class Store:
             self.audit(db, event_id, None, "wakebinding_created")
         return self.wakebinding(binding_id), True
 
-    def touch_wakebinding(self, binding_id, fields):
+    @staticmethod
+    def _fresh_observation(row, fields):
+        """Drop observations that are older than the row already records.
+
+        The row is locked by the caller's transaction, so this is the final
+        ordering decision: an older Todo read can never replace newer
+        evidence, and diagnostics stay monotonic.
+        """
+        updates = dict(fields)
+        current_version = row["todo_version"]
+        incoming_version = updates.get("todo_version")
+        if incoming_version is not None and current_version is not None and incoming_version < current_version:
+            for key in OBSERVATION_FIELDS:
+                updates.pop(key, None)
+        for key in OBSERVATION_TIMESTAMPS:
+            current = row[key]
+            incoming = updates.get(key)
+            if current is not None and incoming is not None and incoming < current:
+                updates.pop(key, None)
+        if "last_failure_at" not in updates and "last_failure_at" in fields:
+            updates.pop("last_failure_code", None)
+        if updates.get("failure_count") is not None:
+            updates["failure_count"] = max(int(row["failure_count"] or 0), int(updates["failure_count"]))
+        if "next_attempt_at" in updates:
+            incoming, current = updates["next_attempt_at"], row["next_attempt_at"]
+            if incoming is None or (current is not None and incoming < current):
+                updates.pop("next_attempt_at", None)
+        return updates
+
+    def touch_wakebinding(self, binding_id, expected_version, fields):
+        """Apply a pure observation to exactly the version it was computed for.
+
+        This deliberately does not bump the business version: diagnostics are
+        not schedule state. It is still fenced by ``expected_version`` and by
+        observation ordering, so a stale read cannot overwrite a newer one.
+        """
         allowed = {"todo_version", "todo_fingerprint", "todo_title", "observed_at_utc",
                    "last_reconciled_at", "last_attempt_at", "last_error_code", "last_error_message",
                    "last_failure_at", "last_failure_code", "failure_count", "next_attempt_at"}
         if set(fields) - allowed:
             raise RuntimeContractError("Unknown WakeBinding observation fields")
+        if type(expected_version) is not int or expected_version < 1:
+            raise RuntimeContractError("expected_version must be a positive integer")
         with self.transaction() as db:
             row = self._wakebinding_locked(db, binding_id)
             if row is None:
                 raise NotFoundError("WakeBinding does not exist")
-            assignments = ",".join(f"{key}=?" for key in fields)
-            db.execute(f"UPDATE wake_bindings SET {assignments} WHERE binding_id=?",
-                       (*fields.values(), binding_id))
+            if row["version"] != expected_version:
+                raise ConflictError("WakeBinding version changed; reload before observing")
+            updates = self._fresh_observation(row, fields)
+            if not updates:
+                return dict(row)
+            assignments = ",".join(f"{key}=?" for key in updates)
+            db.execute(f"UPDATE wake_bindings SET {assignments},updated_at=? "
+                       "WHERE binding_id=? AND version=?",
+                       (*updates.values(), self.timestamp(), binding_id, expected_version))
         return self.wakebinding(binding_id)
 
     def update_wakebinding(self, binding_id, expected_version, fields):
@@ -310,7 +360,7 @@ class Store:
         return self.wakebinding(binding_id)
 
     def apply_wakebinding(self, binding_id, expected_version, *, fields, event_action="keep",
-                          due=None, generation=None):
+                          due=None, generation=None, expected_reconciled_at=_UNSET):
         allowed = {"status", "event_id", "schedule_generation", "todo_version", "todo_fingerprint",
                    "todo_title", "observed_at_utc", "last_reconciled_at", "last_attempt_at",
                    "last_error_code", "last_error_message", "reminder_at_utc",
@@ -325,6 +375,12 @@ class Store:
                 raise RuntimeContractError("expected_version must be a positive integer")
             if row["version"] != expected_version:
                 raise ConflictError("WakeBinding version changed; reload before reconciling")
+            # A successful reconciliation is the newest observation evidence.
+            # Any result computed before it is stale even when the business
+            # version did not move for an observation-only update.
+            if (expected_reconciled_at is not _UNSET
+                    and row["last_reconciled_at"] != expected_reconciled_at):
+                raise ConflictError("WakeBinding observation changed; recompute before committing")
             stamp = self.timestamp()
             if event_action == "cancel":
                 event = db.execute("SELECT * FROM events WHERE event_id=?", (row["event_id"],)).fetchone() if row["event_id"] else None
@@ -556,6 +612,24 @@ class Store:
         event = self.event(event_id)
         event["execution_scope"] = scope
         return event
+
+    def note_run_error(self, run_id, code, message=None):
+        """Attach a fixed diagnostic to an active Run without settling it.
+
+        Used when a Run's evidence must stay active (for example an owned
+        process that cannot be proven stopped) but the reason has to remain
+        queryable through ``runs show``.
+        """
+        bounded_text(code, 128, "error code")
+        if message is not None:
+            bounded_text(message, 1024, "error message")
+        with self.transaction() as db:
+            run = self.run(run_id)
+            if run["status"] not in ("leased", "running"):
+                raise ConflictError("Run is no longer active")
+            db.execute("UPDATE runs SET error_code=?,error_message=? WHERE run_id=?",
+                       (code, message, run_id))
+            self.audit(db, run["event_id"], run_id, "run_error_noted", code)
 
     def abort_claim(self, run_id, error, *, keep_event=False):
         """Release a leased run before dispatch intent, optionally keeping the event queued."""

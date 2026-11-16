@@ -274,6 +274,11 @@ class OmpRpc:
             return None
         return {"status": "available", "text": self.output_text, "truncated": self.output_truncated}
 
+    @property
+    def cleanup_task(self):
+        """The single owned cleanup task, once a stop was requested."""
+        return self.stop_task
+
     async def stop(self, abort=False):
         if self.process is None:
             return

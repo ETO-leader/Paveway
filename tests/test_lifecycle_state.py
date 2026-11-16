@@ -249,6 +249,31 @@ class LifecycleStateTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.lifecycle_api("lifecycle.resume", stale)
         self.assertEqual(self.runtime.lifecycle_state, "draining")
 
+    async def test_quarantined_scope_blocks_drain_and_run_cancellation(self):
+        event = self.claim()  # leased without dispatch intent: normally cancellable
+        entry = self.register(event)
+        self.runtime.unreleased_scopes[entry["scope"]] = "agent_cleanup_unproven"
+        active = {item["run_id"]: item for item in self.runtime._active_runs()}
+        self.assertTrue(active[event["run_id"]]["cleanup_unproven"])
+        self.assertFalse(active[event["run_id"]]["safe_to_abort"])
+        result = await self.runtime.quiesce(self.target())
+        self.assertFalse(result["accepted"])
+        blockers = [item for item in result["blockers"] if item["kind"] == "background_run"]
+        self.assertEqual([item["run_id"] for item in blockers], [event["run_id"]])
+        self.assertTrue(blockers[0]["cleanup_unproven"])
+        # The unproven process is never cancelled, released or reused.
+        self.assertFalse(await self.runtime._stop_run(event["run_id"]))
+        self.assertFalse(entry["task"].done())
+        self.assertEqual(self.store.run(event["run_id"])["status"], "leased")
+        self.assertEqual(self.runtime.lifecycle_state, "running")
+        # Once the stop is proven, the ordinary drain semantics return.
+        self.runtime.unreleased_scopes.clear()
+        accepted = await self.runtime.quiesce(self.target())
+        self.assertTrue(accepted["accepted"], accepted)
+        self.assertEqual(self.store.run(event["run_id"])["status"], "blocked")
+        self.assertEqual(self.store.event(event["event_id"])["status"], "queued")
+        self.assertEqual(self.store.event(event["event_id"])["attempt"], 1)
+
     async def test_repeated_drain_is_idempotent(self):
         event = self.claim()
         self.register(event)
