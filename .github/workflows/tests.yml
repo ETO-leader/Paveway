@@ -49,6 +49,12 @@ jobs:
           "$PAVEWAY_PINNED_BUN" --version
       - name: Bun UI regressions
         run: '"$PAVEWAY_PINNED_BUN" test tests/*.test.mjs'
+      - name: Real OMP complete Skill package (ZIP install, restart, skill:// reads; no model)
+        env:
+          PAVEWAY_TEST_NATIVE: '1'
+          PAVEWAY_REQUIRE_REAL_OMP_PACKAGE: '1'
+          PYTHONPATH: src:tests
+        run: python -m unittest -v test_skill_packages_omp
       - name: Real native host with local provider and PTY (no external model)
         env:
           PAVEWAY_TEST_NATIVE: '1'
@@ -59,6 +65,7 @@ jobs:
             test_native_management.NativeManagementTests.test_skill_dialog_preserves_category_and_body_without_chat_submission \
             test_native_management.NativeManagementTests.test_skill_file_import_analyzes_reviews_and_saves_without_chat_history \
             test_native_management.NativeManagementTests.test_local_multi_skill_zip_selects_two_with_conflict_and_no_model_request \
+            test_native_management.NativeManagementTests.test_packaged_skill_read_only_view_lists_and_shows_files \
             test_native_management.NativeManagementTests.test_local_multi_skill_zip_select_all_then_cancel_writes_nothing \
             test_native_management.NativeManagementTests.test_sync_status_shows_incomplete_history_without_model_request \
             test_native_management.NativeManagementTests.test_skill_import_invalid_analysis_does_not_save \

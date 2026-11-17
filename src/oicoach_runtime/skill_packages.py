@@ -28,6 +28,8 @@ MAX_PACKAGE_BYTES = 16 * 1024 * 1024
 MAX_PATH = 1024
 MAX_PART = 255
 MAX_METADATA_BYTES = 65536
+# One read-only view: long text is truncated, binaries are never decoded.
+VIEW_BYTES = 65536
 
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -185,8 +187,8 @@ def store(config, files, *, expected=None):
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-def verify(config, value):
-    """Fail closed unless the stored tree is intact, private and byte-exact."""
+def inspect(config, value):
+    """Return (manifest entries, payloads) after failing closed on any damage."""
     if not isinstance(value, str) or not DIGEST.fullmatch(value):
         raise RuntimeContractError("Skill package reference must be a lowercase SHA256 digest")
     directory = root(config)
@@ -251,43 +253,132 @@ def verify(config, value):
         stored[path] = payload
     if digest(stored) != value:
         raise RuntimeContractError("Skill package store object is not content-addressed correctly")
-    return [dict(entries[path]) for path in sorted(entries)]
+    return [dict(entries[path]) for path in sorted(entries)], stored
+
+
+def verify(config, value):
+    """Fail closed unless the stored tree is intact, private and byte-exact."""
+    return inspect(config, value)[0]
+
+
+def bind(skill, entries, payloads):
+    """Bind one Profile record to the package it references.
+
+    A correct content hash is not enough: the record's declared size, file
+    count and Skill identity must describe this exact package.
+    """
+    if "package" not in skill:
+        raise RuntimeContractError("Skill %r is not a complete package" % skill.get("name"))
+    reference_value = skill["package"]
+    entry = payloads.get("SKILL.md")
+    if entry is None:
+        raise RuntimeContractError("the package has no root SKILL.md entry document")
+    if len(entries) != reference_value["files"]:
+        raise RuntimeContractError("the record declares %d files but the package has %d"
+                                   % (reference_value["files"], len(entries)))
+    total = sum(item["bytes"] for item in entries)
+    if total != reference_value["bytes"]:
+        raise RuntimeContractError("the record declares %d bytes but the package has %d"
+                                   % (reference_value["bytes"], total))
+    declared = metadata(entry)["name"] or skill["name"]
+    if declared != skill["name"]:
+        raise RuntimeContractError("the SKILL.md entry declares Skill %r but the record is %r; "
+                                   "re-import the package instead of rewriting it" % (declared, skill["name"]))
+    return declared
+
+
+def binding(config, skill, *, cache=None):
+    """Verified package contents for one record, with the binding enforced.
+
+    ``cache`` memoizes one inspect per digest inside a single sync or launch.
+    """
+    if "package" not in skill:
+        raise RuntimeContractError("Skill %r is not a complete package" % skill.get("name"))
+    try:
+        digest_value = skill["package"]["digest"]
+        if cache is not None and digest_value in cache:
+            entries, payloads = cache[digest_value]
+        else:
+            entries, payloads = inspect(config, digest_value)
+            if cache is not None:
+                cache[digest_value] = (entries, payloads)
+    except (RuntimeContractError, KeyError, TypeError) as error:
+        raise RuntimeContractError("Skill %r package is unavailable or damaged (%s); re-import it"
+                                   % (skill.get("name"), error)) from None
+    try:
+        bind(skill, entries, payloads)
+    except RuntimeContractError as error:
+        raise RuntimeContractError("Skill %r package binding is invalid (%s)"
+                                   % (skill.get("name"), error)) from None
+    return entries, payloads
+
+
+def require(config, skills):
+    """Fail closed when any referenced package is missing, damaged or misbound."""
+    cache = {}
+    for skill in skills:
+        if skill.get("package") is not None:
+            binding(config, skill, cache=cache)
 
 
 def read(config, value):
     """Return the verified resource tree for one package digest."""
-    entries = verify(config, value)
-    directory = root(config) / value / "files"
-    return {item["path"]: directory.joinpath(*item["path"].split("/")).read_bytes() for item in entries}
+    return inspect(config, value)[1]
 
 
-def require(config, skills):
-    """Fail closed when any referenced package is missing or damaged."""
-    for skill in skills:
-        reference_value = skill.get("package")
-        if reference_value is None:
-            continue
-        try:
-            verify(config, reference_value["digest"])
-        except RuntimeContractError as error:
-            raise RuntimeContractError(
-                "Skill %r references an unavailable package (%s); configuration was not applied"
-                % (skill.get("name"), str(error))) from None
+def is_text(payload):
+    """A resource is shown as text only when it really is UTF-8 without NUL bytes."""
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError:
+        return False
+    return "\0" not in text
+
+
+def media_type(path):
+    suffix = Path(path).suffix.lower()
+    return {
+        ".md": "text/markdown", ".txt": "text/plain", ".py": "text/x-python",
+        ".mjs": "text/javascript", ".js": "text/javascript", ".json": "application/json",
+        ".yml": "application/yaml", ".yaml": "application/yaml", ".svg": "image/svg+xml",
+        ".toml": "text/plain", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf",
+    }.get(suffix, "application/octet-stream")
+
+
+def listing(config, skill):
+    """Read-only manifest listing for one Skill record in the current Profile."""
+    entries, payloads = binding(config, skill)
+    return [{"path": item["path"], "bytes": item["bytes"], "sha256": item["sha256"],
+             "text": is_text(payloads[item["path"]]), "media_type": media_type(item["path"])}
+            for item in entries]
+
+
+def view(config, skill, path="SKILL.md"):
+    """Read one declared resource; never a filesystem path outside the package."""
+    entries, payloads = binding(config, skill)
+    safe_path(path)
+    if path not in payloads:
+        raise RuntimeContractError("the package has no such resource: %s" % path[:200])
+    payload = payloads[path]
+    record = {"path": path, "bytes": len(payload),
+              "sha256": hashlib.sha256(payload).hexdigest(), "media_type": media_type(path)}
+    if not is_text(payload):
+        return {**record, "kind": "binary", "text": None, "truncated": False}
+    text = payload.decode("utf-8")
+    truncated = len(payload) > VIEW_BYTES
+    shown = text.encode("utf-8")[:VIEW_BYTES].decode("utf-8", "ignore") if truncated else text
+    return {**record, "kind": "text", "text": shown, "truncated": truncated}
 
 
 def materialize(config, value, destination):
     """Copy one verified tree into a fresh snapshot directory; never execute it."""
-    entries = verify(config, value)
-    source_root = root(config) / value / "files"
+    entries, payloads = inspect(config, value)
     destination.mkdir(mode=0o700)
     for item in entries:
-        relative = PurePosixPath(item["path"])
-        target = destination.joinpath(*relative.parts)
+        target = destination.joinpath(*PurePosixPath(item["path"]).parts)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        payload = source_root.joinpath(*relative.parts).read_bytes()
-        if len(payload) != item["bytes"] or hashlib.sha256(payload).hexdigest() != item["sha256"]:
-            raise RuntimeContractError("Skill package resource changed while creating the launch snapshot")
-        _write_file(target, payload)
+        _write_file(target, payloads[item["path"]])
     return {"files": len(entries), "bytes": sum(item["bytes"] for item in entries)}
 
 

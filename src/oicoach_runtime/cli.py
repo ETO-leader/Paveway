@@ -219,7 +219,8 @@ def parser() -> argparse.ArgumentParser:
             continue
         if name == "customize":
             actions = child.add_subparsers(dest="customize_operation", required=True)
-            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable", "skill-source", "skill-local-preview", "skills-import"):
+            for action in ("show", "prompt", "inference", "skill-put", "skill-delete", "skill-enable", "skill-disable",
+                           "skill-source", "skill-local-preview", "skills-import", "skill-files", "skill-show"):
                 operation = actions.add_parser(action)
                 common(operation)
                 operation.add_argument("identifier")
@@ -230,8 +231,10 @@ def parser() -> argparse.ArgumentParser:
                     operation.add_argument("--expected-revision", type=int, required=True)
                     operation.add_argument("--content-file", type=Path, required=True)
                     continue
-                if action != "show":
+                if action not in ("show", "skill-files", "skill-show"):
                     operation.add_argument("--expected-revision", type=int, required=True)
+                if action == "skill-show":
+                    operation.add_argument("--path", default="SKILL.md")
                 if action == "prompt":
                     operation.add_argument("--mode", default="append")
                 if action == "inference":
@@ -769,6 +772,20 @@ def main(argv: list[str] | None = None) -> int:
                 from . import customization
                 if args.customize_operation == "show":
                     report = customization.show(config, args.identifier)
+                elif args.customize_operation in ("skill-files", "skill-show"):
+                    from . import skill_packages
+                    settings = customization.show(config, args.identifier)["settings"]
+                    skill = next((item for item in settings["skills"] if item["name"] == args.name), None)
+                    if skill is None or "package" not in skill:
+                        raise RuntimeContractError("No installed complete Skill package has this name in the current Profile")
+                    if args.customize_operation == "skill-files":
+                        report = {"api_version": 1, "skill": skill["name"],
+                                  "digest": skill["package"]["digest"],
+                                  "files": skill_packages.listing(config, skill), "read_only": True}
+                    else:
+                        report = {"api_version": 1, "skill": skill["name"],
+                                  "digest": skill["package"]["digest"], "read_only": True,
+                                  "file": skill_packages.view(config, skill, args.path)}
                 elif args.customize_operation == "skill-source":
                     from .skill_import import read_source
                     customization.directory_for(config, args.identifier)

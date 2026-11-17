@@ -123,6 +123,8 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 ## 原生菜单
 
+选择已安装的完整包后显示专用只读菜单：**查看入口 SKILL.md**、**查看资源文件清单**（路径、大小、媒体类型、SHA256 前缀、文本/二进制）、**查看指定文本资源**（输入包内相对路径）、启用／禁用、**重新导入替换**、删除。内容经 CLI `skill-files` / `skill-show` 读取，后端校验 Profile 绑定、manifest 与安全相对路径；二进制只显示类型/大小/摘要，不尝试解码；查看不修改包。
+
 `/paveway skills` 的 **Import standard SKILL.md / ZIP · local** 是标准 ZIP 的默认导入路径（菜单第一项），原样安装完整 OMP Skill 目录，不调用模型：解析必要的 YAML frontmatter（name、description）后，把 `SKILL.md` 与 `references/`、`scripts/`、`assets/` 等全部资源、原始字节和相对路径一起安装。多 Skill ZIP 展示每项名称、替代关系、文件数量、总大小与启停状态；可多选、全选、查看只读文件清单（路径／大小／SHA256）、切换启停，最后确认整批安装。已有同名项默认保留原启停状态，并明确标注是替换单文件还是完整包；确认界面同时提示完整托管包会进入用户数据 Git 同步范围。一次 revision CAS 原子提交所选项；并发修改、源文件在预览后变化都会拒绝整批，需要重新预览。取消不会写入。详见 [customization.md](customization.md#原样安装完整-skill-包本地-zip)。
 
 CLI 预览入口：

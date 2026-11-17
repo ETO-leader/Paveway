@@ -467,15 +467,26 @@ def validate_tree(git, ref):
 
 
 def validate_remote_packages(git, packages, records):
-    """Every referenced package must be complete before a profile may be applied."""
-    referenced = set()
+    """Every referenced package must be complete, and every possible Profile
+    head must describe the package it references.
+
+    Historical (non-head) records keep their content and hashes: they can never
+    be applied again, so a stricter future contract cannot lock the repository.
+    """
+    referenced, applicable = {}, {}
     for group in records.values():
-        for record in group.values():
+        current = set(heads(group))
+        for key, record in group.items():
             for skill in record["content"]["skills"]:
-                if "package" in skill:
-                    referenced.add(skill["package"]["digest"])
-    for digest in sorted(referenced - packages.keys()):
+                if "package" not in skill:
+                    continue
+                digest = skill["package"]["digest"]
+                referenced.setdefault(digest, []).append(skill)
+                if key in current:
+                    applicable.setdefault(digest, []).append(skill)
+    for digest in sorted(set(referenced) - packages.keys()):
         raise RuntimeContractError("Remote configuration references a missing Skill package; HEAD unchanged")
+    verified = {}
     for digest, group in sorted(packages.items()):
         if group["manifest"] is None:
             raise RuntimeContractError("Remote Skill package is missing its manifest; HEAD unchanged")
@@ -495,6 +506,17 @@ def validate_remote_packages(git, packages, records):
             files[path] = payload
         if skill_packages.digest(files) != digest:
             raise RuntimeContractError("Remote Skill package is not content-addressed correctly; HEAD unchanged")
+        verified[digest] = ([declared[path] for path in sorted(declared)], files)
+    # A correct content hash does not prove the Profile describes this package.
+    for digest, skills in applicable.items():
+        entries, files = verified[digest]
+        for skill in skills:
+            try:
+                skill_packages.bind(skill, entries, files)
+            except RuntimeContractError as error:
+                raise RuntimeContractError(
+                    "Remote Skill %r package binding is invalid (%s); HEAD unchanged"
+                    % (skill.get("name"), error)) from None
 
 
 def write_package_bytes(path, payload):

@@ -257,12 +257,12 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     if packages:
         if package_root is None:
             raise WorkflowError("Complete Skill packages require the Runtime package store; no prompt was composed")
-        for skill in packages:
-            try:
-                skill_packages.verify(package_root, skill["package"]["digest"])
-            except RuntimeContractError as error:
-                raise ConflictError("Skill " + skill["name"] + " package is unavailable (" + str(error) +
-                                    "); re-import it before launching") from None
+        # Integrity and Profile binding are one contract: a correct hash alone
+        # never proves that this record describes that Skill.
+        try:
+            skill_packages.require(package_root, packages)
+        except RuntimeContractError as error:
+            raise ConflictError(str(error)) from None
     from .models import validate_id
     from .config import ensure_private_directory
     validate_id(run_id)

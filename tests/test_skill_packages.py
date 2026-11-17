@@ -1,6 +1,8 @@
 """Complete native Skill packages: install, snapshot, lifecycle and security."""
 
+import contextlib
 import hashlib
+import io
 import json
 import shutil
 import stat
@@ -423,6 +425,151 @@ class ZipSecurityTests(PackageTestCase):
         path = self.root / ("direct-%d.zip" % len(list(self.root.glob("direct-*.zip"))))
         path.write_bytes(buffer.getvalue())
         return path
+
+
+class PackageBindingTests(PackageTestCase):
+    """Configuration metadata must describe the package it is bound to."""
+
+    def bind(self, files, *, name="skill-a", files_count=None, byte_count=None, revision=0):
+        digest = skill_packages.store(self.config, files)
+        record = {"name": name, "description": "bound", "enabled": True, "category": "personal-skill",
+                  "package": {"digest": digest,
+                              "files": len(files) if files_count is None else files_count,
+                              "bytes": sum(len(payload) for payload in files.values()) if byte_count is None else byte_count}}
+        custom.update(self.config, "coach", revision, "replace-settings", settings={
+            "schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": [record]})
+        return digest, record
+
+    def test_binding_rejects_file_count_size_and_name_mismatches(self):
+        valid = {"SKILL.md": b"---\nname: skill-a\ndescription: entry\n---\nBODY\n",
+                 "references/a.md": b"# A\n"}
+        renamed = {"SKILL.md": b"---\nname: skill-b\ndescription: entry\n---\nOTHER\n"}
+        no_entry = {"references/a.md": b"# A\n"}
+        bad_yaml = {"SKILL.md": b"---\nname: [unterminated\n---\nBODY\n"}
+        cases = {
+            "files": (valid, {"files_count": 5}),
+            "bytes": (valid, {"byte_count": 8192}),
+            "name": (renamed, {}),
+            "no-entry": (no_entry, {}),
+            "invalid-frontmatter": (bad_yaml, {}),
+        }
+        for label, (files, overrides) in cases.items():
+            with self.subTest(label=label):
+                before = self.settings()
+                with self.assertRaises((WorkflowError, RuntimeContractError)):
+                    self.bind(files, **overrides)
+                self.assertEqual(self.settings(), before)
+                session = self.root / ("binding-" + label)
+                session.mkdir(mode=0o700)
+                if before["skills"]:
+                    with self.assertRaises(ConflictError):
+                        custom.snapshot(before, session, label, True, package_root=self.store)
+                self.assertFalse((session / ("customizations/" + label)).exists())
+
+    def test_binding_accepts_matching_metadata_and_directory_name_fallback(self):
+        valid = {"SKILL.md": b"---\nname: skill-a\ndescription: entry\n---\nBODY\n",
+                 "references/a.md": b"# A\n"}
+        digest, record = self.bind(valid)
+        native, _ = self.snapshot()
+        self.assertEqual((native / "skill-a/references/a.md").read_bytes(), b"# A\n")
+        # OMP falls back to the directory name when frontmatter omits `name`;
+        # the session directory is created from the Profile record name.
+        nameless = {"SKILL.md": b"---\ndescription: entry without name\n---\nBODY\n"}
+        self.bind(nameless, name="skill-a", revision=1)
+        native, _ = self.snapshot("fallback")
+        self.assertIn(b"entry without name", (native / "skill-a/SKILL.md").read_bytes())
+
+    def test_snapshot_rejects_binding_drift_without_touching_the_previous_one(self):
+        valid = {"SKILL.md": b"---\nname: skill-a\ndescription: entry\n---\nBODY\n"}
+        digest, record = self.bind(valid)
+        native, _ = self.snapshot("kept")
+        first = tree_digest(native)
+        drifted = {**record, "package": {**record["package"], "files": 9}}
+        (self.config.workflow_root / "coach/customization.json").write_text(json.dumps({
+            "schema_version": 1, "revision": 2, "system_prompt": {"mode": "append", "text": ""}, "skills": [drifted]}))
+        (self.config.workflow_root / "coach/customization.json").chmod(0o600)
+        with self.assertRaises(ConflictError):
+            self.snapshot("drifted")
+        self.assertEqual(tree_digest(native), first)
+        self.assertEqual((native / "skill-a/SKILL.md").read_bytes(), valid["SKILL.md"])
+
+
+class PackageViewTests(PackageTestCase):
+    """Read-only inspection of an installed, bound package."""
+
+    def setUp(self):
+        super().setUp()
+        self.install(write_zip(self.root / "complex.zip", COMPLEX))
+        self.record, = self.settings()["skills"]
+
+    def test_listing_and_view_expose_bound_resources_without_changing_them(self):
+        before = tree_digest(self.store / self.record["package"]["digest"])
+        listing = skill_packages.listing(self.config, self.record)
+        self.assertEqual([item["path"] for item in listing],
+                         ["SKILL.md", "assets/diagram.png", "references/a.md", "references/nested/b.md", "scripts/check.py"])
+        self.assertTrue(next(item for item in listing if item["path"] == "references/nested/b.md")["text"])
+        self.assertFalse(next(item for item in listing if item["path"] == "assets/diagram.png")["text"])
+        entry = skill_packages.view(self.config, self.record)
+        self.assertEqual(entry["kind"], "text")
+        self.assertEqual(entry["text"].encode(), COMPLEX["complex-skill/SKILL.md"])
+        reference = skill_packages.view(self.config, self.record, "references/a.md")
+        self.assertEqual(reference["text"].encode(), COMPLEX["complex-skill/references/a.md"])
+        nested = skill_packages.view(self.config, self.record, "references/nested/b.md")
+        self.assertIn("exact", nested["text"])
+        script = skill_packages.view(self.config, self.record, "scripts/check.py")
+        self.assertEqual(script["kind"], "text")
+        self.assertIn("NEVER_EXECUTE", script["text"])
+        binary = skill_packages.view(self.config, self.record, "assets/diagram.png")
+        self.assertEqual(binary["kind"], "binary")
+        self.assertIsNone(binary["text"])
+        self.assertEqual(binary["bytes"], len(COMPLEX["complex-skill/assets/diagram.png"]))
+        self.assertEqual(tree_digest(self.store / self.record["package"]["digest"]), before)
+        self.assertFalse((self.root / "EXECUTED").exists())
+
+    def test_view_rejects_escapes_missing_paths_and_unbound_packages(self):
+        for path in ("../SKILL.md", "/etc/passwd", "references/../../escape", "references/missing.md", "", "references//a.md"):
+            with self.subTest(path=path), self.assertRaises(RuntimeContractError):
+                skill_packages.view(self.config, self.record, path)
+        impostor = {**self.record, "name": "other-skill"}
+        with self.assertRaisesRegex(RuntimeContractError, "binding"):
+            skill_packages.view(self.config, impostor, "SKILL.md")
+        inline = {"name": "inline", "description": "d", "enabled": True, "content": "BODY"}
+        with self.assertRaises(RuntimeContractError):
+            skill_packages.view(self.config, inline)
+        with self.assertRaisesRegex(RuntimeContractError, "unavailable"):
+            skill_packages.view(self.config, {**self.record,
+                                             "package": {**self.record["package"], "digest": "0" * 64}}, "SKILL.md")
+
+    def test_cli_lists_and_shows_without_revision_side_effects(self):
+        from oicoach_runtime.cli import main
+        before = self.settings()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["workflow", "customize", "skill-files", "coach", "--name", "complex-skill",
+                         "--config", str(self.path), "--json"])
+        self.assertEqual(code, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(len(report["files"]), 5)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["workflow", "customize", "skill-show", "coach", "--name", "complex-skill",
+                         "--path", "references/nested/b.md", "--config", str(self.path), "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["file"]["text"].encode(),
+                         COMPLEX["complex-skill/references/nested/b.md"])
+        self.assertEqual(self.settings(), before)
+
+    def test_binary_resources_are_reported_without_text_decoding(self):
+        from oicoach_runtime import skill_import
+        preview = skill_import.preview(self.config, "coach", write_zip(self.root / "raw.zip", {
+            "binary-skill/SKILL.md": b"---\nname: binary-skill\ndescription: d\n---\nBODY\n",
+            "binary-skill/assets/blob.bin": bytes(range(256))}))
+        skill_import.install(self.config, "coach", preview["revision"], {
+            "file": preview["file"], "sha256": preview["sha256"], "replace": [],
+            "skills": [{"name": "binary-skill"}]})
+        record = next(skill for skill in self.settings()["skills"] if skill["name"] == "binary-skill")
+        view = skill_packages.view(self.config, record, "assets/blob.bin")
+        self.assertEqual((view["kind"], view["text"], view["bytes"]), ("binary", None, 256))
 
 
 class PackageStoreTests(PackageTestCase):

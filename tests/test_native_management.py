@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+import zipfile
 from pathlib import Path
 import pty
 import select
@@ -74,6 +75,54 @@ class NativeManagementTests(NativeFixture):
         for relative, payload in bodies["missing-skill-1"].items():
             self.assertEqual((native / "missing-skill-1" / relative).read_bytes(), payload)
         self.assertFalse((native / "missing-skill-0").exists())
+        self.assertEqual(self.server.requests, [])
+        exit_ui()
+
+    def test_packaged_skill_read_only_view_lists_and_shows_files(self):
+        from oicoach_runtime import skill_import, skill_packages
+        package = self.root / "view.zip"
+        entry = b"---\nname: package-view-skill\ndescription: Viewable package\n---\nPRIVATE_PACKAGE_ENTRY_TOKEN\n"
+        with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("package-view-skill/SKILL.md", entry)
+            archive.writestr("package-view-skill/references/a.md", b"# A\nREFERENCE_TOKEN\n")
+            archive.writestr("package-view-skill/assets/x.bin", bytes(range(256)))
+        preview = skill_import.preview(self.config, "native-test", package)
+        skill_import.install(self.config, "native-test", preview["revision"], {
+            "file": preview["file"], "sha256": preview["sha256"], "replace": [],
+            "skills": [{"name": "package-view-skill"}]})
+        settings = customization.show(self.config, "native-test")["settings"]
+        record = settings["skills"][0]
+        skill_packages.verify(self.config, record["package"]["digest"])
+
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        send("/paveway skills\r")
+        until("完整包 3 文件")
+        raw.clear()
+        send(b"\x1b[B\x1b[B\x1b[B\r")
+        until("查看入口 SKILL.md")
+        raw.clear()
+        send("\r")
+        until("PRIVATE_PACKAGE_ENTRY_TOKEN")
+        raw.clear()
+        send(b"\x11")
+        until("查看入口 SKILL.md")
+        raw.clear()
+        send(b"\x1b[B\r")
+        until("references/a.md")
+        until("二进制")
+        raw.clear()
+        send(b"\x11")
+        until("查看入口 SKILL.md")
+        raw.clear()
+        send(b"\x1b[B\x1b[B\r")
+        until("包内相对路径")
+        send("../SKILL.md\r")
+        until("unsafe")
+        send(b"\x1b")
+        for _ in range(3):
+            pump(.05)
+        self.assertEqual(customization.show(self.config, "native-test")["settings"], settings)
+        skill_packages.verify(self.config, record["package"]["digest"])
         self.assertEqual(self.server.requests, [])
         exit_ui()
 

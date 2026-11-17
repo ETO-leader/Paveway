@@ -426,3 +426,21 @@ OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" PYTHONPATH=src:tests \
 ```
 
 真实 OMP 验收（无模型回合）：安装含 `references/nested/`、`scripts/`、二进制 `assets/` 的 ZIP，删除 ZIP，重新从持久配置启动 RPC，确认索引只含名称与描述，再用 `omp read skill://plain-oi-editorials:raw`、`skill://plain-oi-editorials/references/a.md:raw` 等原生相对路径读取，并核对快照内每个文件的 SHA256。
+
+## 2026-11-17 — 完整包身份契约、只读查看与真实 OMP CI
+
+审核发现 `skill_packages.verify()` 只证明“文件没坏”，没有证明“记录描述的就是这个 Skill”。复现证据：`files=5`（真实 4）、`bytes` 不匹配、`name=skill-a`（入口声明 skill-b）、缺 `SKILL.md`、非法 YAML 五类记录全部通过 `replace-settings` 与 `snapshot()`，其中缺入口的包在快照里静默产生零个 Skill。
+
+修复：`skill_packages.inspect()` 保留完整性校验，新增 `bind()` 校验 `digest/files/bytes`、根 `SKILL.md`、入口有效名称（省略 `name` 时按 OMP 语义回退目录名），`require()/binding()` 作为唯一入口被安装、`skills-import`、`replace-settings`、`snapshot()` 与 Git Sync 共用（同一摘要单次校验内缓存）。Git Sync 在 merge 前对**可被应用的 head** 校验绑定；历史记录内容与哈希不变。
+
+新增只读查看：`skill_packages.listing()/view()` 与 CLI `workflow customize skill-files|skill-show`，`/paveway skills` 的完整包菜单调用它们；只接受 manifest 声明的相对路径，文本 64 KiB 上限，二进制只报类型/大小/摘要。
+
+定向命令：
+
+```bash
+PYTHONPATH=src:tests .venv/bin/python -m unittest tests.test_skill_packages tests.test_git_sync -v
+PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest \
+  tests.test_native_management.NativeManagementTests.test_packaged_skill_read_only_view_lists_and_shows_files -v
+```
+
+CI 真实 OMP 验收：GitHub Actions native job 新增独立步骤，设置 `PAVEWAY_TEST_NATIVE=1`、`PAVEWAY_REQUIRE_REAL_OMP_PACKAGE=1`，执行 `test_skill_packages_omp`。缺少真实 OMP host 时该测试在导入期抛错（fail-on-skip），不再可能因环境变量缺失而显示成功。该测试复用 CI 已准备的 18.16.0 host 与 loopback fixture provider（无外部模型、无用户凭据），先安装完整 ZIP、删除 ZIP、从持久配置新建 RPC 会话，再用 `omp read skill://plain-oi-editorials:raw` 与 `skill://plain-oi-editorials/references/nested/b.md:raw` 验证字节；本机用 `packaging/omp` launcher + 同一 18.16.0 缓存复跑通过。

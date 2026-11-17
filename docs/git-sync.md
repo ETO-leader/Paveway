@@ -145,7 +145,8 @@ PYTHONPATH=tests .venv/bin/python -m unittest \
 
 1. `git_sync.validate_tree()` 在 checkout/merge 之前只按对象 ID 读取远端 tree：路径白名单新增 `packages/<sha256>/manifest.json` 与 `packages/<sha256>/files/…`（其余路径仍被拒绝），检查模式、单文件大小、包内文件数与总量。
 2. 对 Profile 引用到的每个摘要，读取 manifest、逐个校验文件大小与 SHA256、并重新计算内容摘要；缺包、manifest 不匹配、哈希不符都会让整轮同步 `state: error`，本机 HEAD 与用户配置保持不变。
-3. 通过后才 merge，并先把 `packages/` 中的对象校验并安装到本机 `<state_dir>/skill-packages/`，再由 `reconcile_profiles()` 应用 Profile；应用时 `customization.update()` 会再校验一次引用，绝不写入指向缺失文件树的配置。
+3. 对每个**可能被应用的 Profile head**（当前 head；历史记录不可再被应用）校验包绑定：`files`、`bytes` 与真实树一致，根存在合法 `SKILL.md`，且入口声明的有效名称等于记录名。哈希正确但绑定到别的名称同样 fail closed；同一摘要的验证结果在一次校验内缓存。
+4. 通过后才 merge，并先把 `packages/` 中的对象校验并安装到本机 `<state_dir>/skill-packages/`，再由 `reconcile_profiles()` 应用 Profile；应用时 `customization.update()` 会再校验一次引用，绝不写入指向缺失文件树或错误绑定的配置。
 
 不同设备同时替换同名 Skill 时仍是原有 Profile 版本图：选择一个 head 就同时选择它引用的完整包；`sync resolve` 应用该 head 前要求本机已有对应对象。对象只增不删，旧 head 的包仍可恢复。
 

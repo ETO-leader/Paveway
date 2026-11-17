@@ -341,6 +341,104 @@ class GitSyncTests(unittest.TestCase):
         self.assertIn("digest", result["error"])
         self.assertEqual(customization.show(self.b, "coach")["settings"], before)
 
+    def publish_raw_package(self, editor, files):
+        from oicoach_runtime import skill_packages
+        digest = skill_packages.digest(files)
+        root = editor / "packages" / digest
+        (root / "files").mkdir(parents=True, exist_ok=True)
+        (root / "manifest.json").write_bytes(skill_packages.canonical(skill_packages.manifest(files)) + b"\n")
+        for path, payload in files.items():
+            target = root / "files" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        return digest
+
+    def publish_profile(self, editor, skills, prompt="remote binding probe"):
+        records = git_sync.read_profiles(editor)
+        parent = git_sync.heads(records["coach"])[0]
+        record = {"workflow_id": "coach", "parents": [parent], "content": {
+            "system_prompt": {"mode": "append", "text": prompt}, "skills": skills},
+            "device_id": "f" * 32, "created_at": git_sync.stamp()}
+        key = git_sync.digest(record)
+        path = editor / "profiles" / "coach" / (key + ".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(git_sync.canonical(record) + b"\n")
+        return key
+
+    def publish_remote(self, action):
+        """Clone the remote, let ``action(editor)`` edit it, then commit and push."""
+        editor = self.root / ("binding-editor-" + str(len(list(self.root.glob("binding-editor-*")))))
+        subprocess.run(["git", "clone", str(self.remote), str(editor)], check=True, capture_output=True)
+        action(editor)
+        for args in (("add", "--all"), ("-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+                                       "commit", "-m", "publish"), ("push",)):
+            subprocess.run(["git", "-C", str(editor), *args], check=True, capture_output=True)
+        return subprocess.check_output(["git", "-C", str(editor), "rev-parse", "HEAD"], text=True).strip()
+
+    def assert_remote_rejected(self, commit, pattern):
+        before = customization.show(self.b, "coach")["settings"]
+        result = git_sync.cycle(self.b)
+        self.assertEqual(result["state"], "error")
+        self.assertIn(pattern, result["error"])
+        self.assertEqual(customization.show(self.b, "coach")["settings"], before)
+        repo = Path(git_sync.settings(self.b)["repository"])
+        probe = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, "HEAD"], capture_output=True)
+        self.assertNotEqual(probe.returncode, 0, "a rejected remote tip must never be merged or applied")
+        return result
+
+    def test_remote_package_binding_mismatches_fail_closed_before_apply(self):
+        self.edit(self.a, "binding base")
+        self.cycle(self.a)
+        self.cycle(self.b)
+        good = {"SKILL.md": b"---\nname: synced-skill\ndescription: entry\n---\nOK\n"}
+        good_reference = {"files": 1, "bytes": len(good["SKILL.md"])}
+        renamed = {"SKILL.md": b"---\nname: other-skill\ndescription: entry\n---\nOK\n"}
+        valid = {"name": "synced-skill", "description": "entry", "enabled": True, "category": "personal-skill"}
+        cases = {
+            "files": (good, {"files": 5, "bytes": good_reference["bytes"]}),
+            "bytes": (good, {"files": 1, "bytes": 8192}),
+            "name": (renamed, {"files": 1, "bytes": len(renamed["SKILL.md"])}),
+            "no-entry": ({"references/a.md": b"# A\n\n"}, {"files": 1, "bytes": 6}),
+        }
+        for label, (files, reference) in cases.items():
+            with self.subTest(label=label):
+                def action(editor, files=files, reference=reference):
+                    digest = self.publish_raw_package(editor, files)
+                    self.publish_profile(editor, [{**valid, "package": {"digest": digest, **reference}}],
+                                         "remote " + label)
+                commit = self.publish_remote(action)
+                self.assert_remote_rejected(commit, "binding")
+                # A corrected child of the rejected head restores sync; history is kept.
+                holder = {}
+                def fix(editor):
+                    digest = self.publish_raw_package(editor, good)
+                    holder["digest"] = digest
+                    self.publish_profile(editor, [{**valid, "package": {"digest": digest, **good_reference}}],
+                                         "fixed " + label)
+                self.publish_remote(fix)
+                result = self.cycle(self.b)
+                self.assertEqual(result["state"], "ok", result)
+                record = next(item for item in customization.show(self.b, "coach")["settings"]["skills"]
+                              if item["name"] == "synced-skill")
+                self.assertEqual(record["package"], {"digest": holder["digest"], **good_reference})
+
+    def test_remote_bad_binding_preserves_existing_package_snapshot(self):
+        digest = self.install_package(self.a, "synced-skill", "VERSION_ONE\n", 0)
+        self.edit(self.a, "kept")
+        self.cycle(self.a)
+        self.cycle(self.b)
+        native, snapshot_tree = self.snapshot_tree(self.b, "before-bad-binding")
+        before = customization.show(self.b, "coach")["settings"]
+
+        def action(editor):
+            self.publish_profile(editor, [{"name": "synced-skill", "description": "entry", "enabled": True,
+                                           "package": {"digest": digest, "files": 4, "bytes": 999}}], "bad")
+        commit = self.publish_remote(action)
+        self.assert_remote_rejected(commit, "binding")
+        self.assertEqual(customization.show(self.b, "coach")["settings"], before)
+        self.assertEqual(file_tree(native), snapshot_tree)
+        self.assertEqual(self.tree(digest, self.b), self.tree(digest, self.a))
+
     def test_conflicting_same_name_packages_resolve_with_their_profile_version(self):
         first = self.install_package(self.a, "shared-skill", "FROM_A\n", 0)
         self.edit(self.a, "device A base")

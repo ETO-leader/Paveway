@@ -49,7 +49,7 @@ omp --version
 | --- | --- |
 | `/paveway settings` | 原生设置中心：Tijian MCP、Model preference、Thinking preference |
 | `/paveway prompt` | 查看和编辑用户系统 Prompt，保留 append/replace 模式 |
-| `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除；原样安装完整 ZIP Skill 包 |
+| `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除；原样安装完整 ZIP Skill 包并只读查看其入口与资源 |
 | `/paveway persona` | 编辑当前 GPT 的独立 Persona |
 | `/paveway profile` | 创建／切换 GPT Profile、新对话、重启原生进程 |
 | `/paveway model`、`thinking` | 跨设备保存模型／思考偏好，下次启动生效 |

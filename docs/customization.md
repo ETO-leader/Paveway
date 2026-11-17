@@ -49,6 +49,7 @@ plain-oi-editorials/
 ```
 
 - 同一内容只保存一次；摘要按规范化路径清单计算，与 ZIP 打包顺序无关。
+- **身份一致性契约**：`digest`、`files`、`bytes` 必须与真实包一致，包根必须有合法 `SKILL.md`，且 `SKILL.md` 声明的有效名称必须等于记录名（省略 `name` 时按 OMP 语义回退到目录名，因此与记录名一致）。只校验完整性不够——哈希正确、但绑定到另一个名称的包同样会被拒绝，并提示“重新导入该包”。该校验由 `skill_packages.require()/binding()` 一处实现，安装、`skills-import`、`replace-settings`、启动快照与 Git Sync 共用；不会为了通过校验而改写 `SKILL.md`。
 - 创建 / 导入 / 替换 / 查看 / 启用 / 禁用 / 删除 / 重启恢复 / 新会话加载 / Profile 切换 / Git 同步恢复都只操作记录与不可变对象。
 - 完整包不支持单文件正文编辑：`skill-put` 会明确拒绝并提示“重新导入同名包”，避免一次编辑就删掉 `references/`、`scripts/`、`assets/`。
 - 删除记录不会删除内容库对象；其他 Profile 仍可能引用同一摘要。未引用对象不影响配置，也不进入新快照。
@@ -144,11 +145,29 @@ OMP 原有的项目/用户 Skill 发现机制仍存在。OMP overlay 会替换�
 
 Runtime 的 `agent.skills_enabled=false` 会阻止所有 Paveway 管理的 Skill（内置、单文件与完整包）注册，并传递 OMP 原生 `--no-skills`；用户配置与包对象仍保留。`agent.tools_enabled=false` 时无法按需读取正文，OMP 会在没有可用 Skill 读取工具时隐藏原生索引，正文也不会作为替代注入系统提示。UI 会提示，不会自动打开权限。Skill 是同 UID 用户或项目发布者提供的可信指令，不自动安装插件、执行附带脚本、安装依赖或下载网络资源；脚本能否执行完全由 OMP 原生工具权限决定。
 
+### 只读查看已安装的完整包
+
+原生界面 `/paveway skills` 选择已安装的完整包后提供：查看入口 `SKILL.md`、查看资源文件清单、查看指定文本资源、启用/禁用、重新导入替换、删除。全部只读：
+
+- 只能查看当前 Profile 真实记录所绑定的包，并先执行完整性 + 绑定校验。
+- 只接受包里 manifest 声明的安全相对路径；绝对路径、`../`、不存在的路径都拒绝。
+- UTF-8 文本按原文显示（单次最多 64 KiB，超出标记截断）；二进制只显示类型、大小与 SHA256，绝不当文本解码。
+- 查看不写入、不改变包对象、不执行脚本、不提升可执行权限；完整包的修改仍然只有“重新导入替换”一条路径。
+
+CLI 等价入口（只读，不需要 `--expected-revision`）：
+
+```bash
+oicoach-runtime workflow customize skill-files WORKFLOW --name plain-oi-editorials --config /absolute/config.toml --json
+oicoach-runtime workflow customize skill-show WORKFLOW --name plain-oi-editorials   --path references/nested/solution-selection.md --config /absolute/config.toml --json
+```
+
 ### 与 OMP 外部 Skill 的关系
 
 Paveway 只管理自己安装的 Skill 目录：它保留 OMP 原有的 `skills.customDirectories` 数组并在其后追加本轮快照目录，不复制、覆盖或删除外部 OMP Skill，也不改动 OMP 全局设置。
 
-OMP 18.16 的真实行为（源码 `extensibility/skills.ts`）：customDirectory 来源的 Skill 优先于 provider 内置 Skill；同名且内容不同时，先注册者保留裸名，后注册者被改名为 `<namespace>/<name>` 并给出 warning，不会静默覆盖。为避免依赖这种隐式顺序，`customization.snapshot()` 会在启动前扫描 OMP 报告的 `skills.customDirectories`（只读 `*/SKILL.md` frontmatter），如果某个 Paveway 托管或内置 Skill 与外部 Skill 同名，就直接拒绝启动并给出双方名称与外部路径，要求改名或停用其中一方。OMP 内部打包的 built-in Skill 与 `~/.omp`/项目级发现目录不在可扫描范围内，这一层冲突仍由 OMP 自己的命名空间规则处理。
+OMP 18.16 的真实行为（源码 `extensibility/skills.ts`）：customDirectory 来源的 Skill 优先于 provider 内置 Skill；同名且内容不同时，先注册者保留裸名，后注册者被改名为 `<namespace>/<name>` 并给出 warning，不会静默覆盖。为避免依赖这种隐式顺序，`customization.snapshot()` 会在启动前扫描 OMP 报告的 `skills.customDirectories`（只读 `*/SKILL.md` frontmatter），如果某个 Paveway 托管或内置 Skill 与外部 Skill 同名，就直接拒绝启动并给出双方名称与外部路径，要求改名或停用其中一方。
+
+该预检只覆盖 OMP 自己返回的 `skills.customDirectories`（一层 `*/SKILL.md`，最多 512 个目录项）；OMP 包内 built-in Skill、`~/.omp` 用户目录、项目级发现目录及 registry/skillshare 来源**不在**扫描范围内，也不被 Paveway 复制、覆盖或删除。这些来源的同名冲突仍由 OMP 自身的命名空间规则处理（先注册者保留裸名，后者加命名空间前缀并告警）。本任务不复制 OMP 的完整发现算法。
 
 ## 第一方 Built-in Skills
 

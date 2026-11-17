@@ -97,6 +97,65 @@ export function registerManagement(pi, config, requestSwitch) {
     };
     actions.skills = async ctx => {
         const raw = await settings();
+        const importLocal = async () => {
+            const path = await ctx.ui.input("本地 Skill 文件路径（不调用模型；支持多项 ZIP）");
+            if (!path) return;
+            const preview = await cli(["workflow", "customize", "skill-local-preview", config.workflow_id, "--file", path]);
+            if (await selectLocalSkills(ctx, preview, data => privateInput(JSON.stringify(data), file =>
+                cli(["workflow", "customize", "skills-import", config.workflow_id,
+                    "--expected-revision", String(preview.revision), "--content-file", file])))) changed(ctx);
+        };
+        // A complete package is inspected read-only through the bound Profile
+        // record; the CLI enforces the manifest and refuses any other path.
+        const packageSkill = async (skill, revision) => {
+            const view = async path => {
+                const {file} = await cli(["workflow", "customize", "skill-show", config.workflow_id,
+                    "--name", skill.name, "--path", path]);
+                const title = `${skill.name} · ${file.path} · ${file.bytes} 字节${file.truncated ? " · 已截断" : ""}`;
+                if (file.kind !== "text")
+                    return show(ctx, `${title}\n二进制资源（${file.media_type}）· sha256 ${file.sha256}\n只读查看不解码二进制内容。`);
+                await ctx.ui.editor(`${title} · 只读（返回不会保存）`, file.text);
+            };
+            while (true) {
+                const action = await ctx.ui.select(`${skill.name} · 完整包 · ${skill.enabled ? "启用" : "停用"} · ${skill.package.files} 个文件`,
+                    ["查看入口 SKILL.md", "查看资源文件清单", "查看指定文本资源",
+                        skill.enabled ? "禁用" : "启用", "重新导入替换", "删除", "返回"]);
+                if (!action || action === "返回") return;
+                if (action === "查看入口 SKILL.md") { await view("SKILL.md"); continue; }
+                if (action === "查看资源文件清单") {
+                    const report = await cli(["workflow", "customize", "skill-files", config.workflow_id, "--name", skill.name]);
+                    const lines = report.files.map(entry =>
+                        `${entry.text ? "文本" : "二进制"} · ${entry.path} · ${entry.bytes} 字节 · ${entry.media_type} · ${entry.sha256.slice(0, 12)}`);
+                    await ctx.ui.editor(`${skill.name} · ${report.files.length} 个文件 · 只读清单`, lines.join("\n"));
+                    continue;
+                }
+                if (action === "查看指定文本资源") {
+                    const path = await ctx.ui.input("包内相对路径，例如 references/a.md", "references/");
+                    if (path) { try { await view(path); } catch (error) { ctx.ui.notify(error.message, "error"); } }
+                    continue;
+                }
+                if (action === "禁用" || action === "启用") {
+                    await cli(["workflow", "customize", action === "启用" ? "skill-enable" : "skill-disable",
+                        config.workflow_id, "--name", skill.name, "--expected-revision", String(revision)]);
+                    changed(ctx);
+                    return;
+                }
+                if (action === "重新导入替换") {
+                    if (await ctx.ui.confirm("重新导入替换完整包？",
+                        `${skill.name} 的全部文件将由新包整体替换；单文件编辑不会修改它。`)) await importLocal();
+                    return;
+                }
+                if (action === "删除") {
+                    if (await ctx.ui.confirm("删除完整包 Skill？",
+                        `${skill.name}（${skill.package.files} 个文件）将从当前 Profile 移除；内容库对象不可变，不会被改写。`)) {
+                        await cli(["workflow", "customize", "skill-delete", config.workflow_id, "--name", skill.name,
+                            "--expected-revision", String(revision)]);
+                        changed(ctx);
+                    }
+                    return;
+                }
+            }
+        };
         const labels = raw.skills.map(skill => `${skill.name} · ${skill.category || "personal-skill"} · ${skill.enabled ? "on" : "off"}` +
             (skill.package ? ` · 完整包 ${skill.package.files} 文件` : ""));
         // Installing a package exactly as authored is the default import path;
@@ -105,12 +164,7 @@ export function registerManagement(pi, config, requestSwitch) {
             "Import from file · GPT analysis", ...(importDraft ? ["Review import draft"] : []), ...labels]);
         if (!picked) return;
         if (picked === "Import standard SKILL.md / ZIP · local") {
-            const path = await ctx.ui.input("本地 Skill 文件路径（不调用模型；支持多项 ZIP）");
-            if (!path) return;
-            const preview = await cli(["workflow", "customize", "skill-local-preview", config.workflow_id, "--file", path]);
-            if (await selectLocalSkills(ctx, preview, data => privateInput(JSON.stringify(data), file =>
-                cli(["workflow", "customize", "skills-import", config.workflow_id,
-                    "--expected-revision", String(preview.revision), "--content-file", file])))) changed(ctx);
+            await importLocal();
             return;
         }
         if (picked === "Import from file · GPT analysis" || picked === "Review import draft") {
@@ -138,15 +192,12 @@ export function registerManagement(pi, config, requestSwitch) {
             return;
         }
         const existing = raw.skills[labels.indexOf(picked)];
-        // A complete package has several files: re-import it instead of editing
-        // one Markdown body, which would silently drop its resources.
-        const operations = existing?.package ? ["show", "toggle", "delete"] : ["edit", "show", "toggle", "delete"];
-        let operation = existing ? await ctx.ui.select(existing.name, operations) : "edit";
+        // A complete package has several files: inspect it read-only or re-import
+        // it wholesale instead of editing one Markdown body.
+        if (existing?.package) return packageSkill(existing, raw.revision);
+        let operation = existing ? await ctx.ui.select(existing.name, ["edit", "show", "toggle", "delete"]) : "edit";
         if (!operation) return;
-        if (operation === "show") {
-            if (existing?.package) return show(ctx, `${existing.description}\n\n完整包 · ${existing.package.files} 个文件 · ${existing.package.bytes} 字节 · ${existing.package.digest}\n重新导入同名包可替换；单文件编辑不会覆盖完整包。`);
-            return show(ctx, existing.content);
-        }
+        if (operation === "show") return show(ctx, existing.content);
         const name = existing?.name || await ctx.ui.input("Skill name (lowercase words separated by hyphens)");
         if (!name) return;
         const base = ["workflow", "customize"];
