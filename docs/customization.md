@@ -2,6 +2,58 @@
 
 在已选择 workflow 的 UI 中输入 `/prompt` 或 `/skills`，用方向键和 Enter 操作。设置保存在 `workflow_root/<ID>/customization.json`，权限 0600，与记忆、coach 模板和 OMP 全局配置分别管理。关闭 UI 或重启 daemon 后仍然保留；同一个 workflow 下所有 task 共用，其他 workflow 不受影响。
 
+## 原样安装完整 Skill 包（本地 ZIP）
+
+`/paveway skills` → **Import standard SKILL.md / ZIP · local**（标准 ZIP 的默认入口）把用户选择的标准 Skill 目录 **原样**安装为 OMP 原生 Skill：不调用模型、不改写 `SKILL.md`、不把 `references/` 拼接进正文、不把脚本转成说明、不忽略二进制资源。支持单 Skill ZIP、包含多个独立 Skill 的 ZIP，以及单个带 YAML frontmatter 的 Markdown 文件。
+
+```text
+plain-oi-editorials/
+├── SKILL.md
+├── references/{task-contract.md,nested/solution-selection.md}
+├── scripts/verify.py
+└── assets/example.svg
+```
+
+安装后内容库保存同一目录树，启动快照同样恢复它；OMP 通过 `skill://<name>` 读取 `SKILL.md`，通过 `skill://<name>/references/nested/solution-selection.md` 读取相对路径资源。Paveway 不解释正文、不执行脚本、不解析 `references/` 语义。
+
+### 归属与容量
+
+- ZIP 内每个 `SKILL.md` 定义其所在目录为一个 Skill 根；其他文件归属于**最深的**包含它的 Skill 根，嵌套 Skill（`a/` 与 `a/b/`）各自独立，资源和引用只在各自目录内。
+- 不属于任何 Skill 根的文件（ZIP 根部共享文件、`bundle/README.md` 等）无法确定归属，整批拒绝；不会擅自分给某个 Skill。
+- `__MACOSX/`、`.DS_Store`、`Thumbs.db`、`desktop.ini` 作为打包垃圾忽略。
+- 单个文件最多 4 MiB；单个 Skill 最多 512 个文件、16 MiB；一个 ZIP 最多 2048 个条目、32 MiB 解压内容、32 个 Skill。这些上限只用于原样安装，与 GPT 分析的 64 条目／256 KiB 文本上限互相独立。
+
+### 预览、选择与原子性
+
+预览显示每项名称、描述、文件数量、总大小，以及“新增”或“替换同名（单文件 / 完整包）”。可逐项选择、全选、清空、查看只读文件清单（路径、大小、SHA256）、切换启停；确认界面明确说明安装会保留全部文件与相对路径、不执行其中内容，并提示完整托管包属于用户数据 Git 同步范围。
+
+确认后整批以一次 revision/CAS 提交：先写入全部不可变包对象，再校验 revision 并提交引用；任何失败都不会留下“引用不存在文件树”的配置，也不会只安装一部分。重名必须逐项显式确认；未选择项不进入托管目录。预览后源文件被修改会拒绝安装并要求重新预览。
+
+### 存储与生命周期
+
+完整包保存在私有、不可变的内容库里：
+
+```text
+<state_dir>/skill-packages/<sha256>/
+├── manifest.json          # 每个相对路径的大小与 SHA256
+└── files/                 # 原生 Skill 文件树
+    ├── SKILL.md
+    └── references/…
+```
+
+`customization.json` 只保存元数据和引用，不保存整个 ZIP 或全文：
+
+```json
+{"name": "plain-oi-editorials", "description": "…", "enabled": true,
+ "category": "oi-introduce", "package": {"digest": "<sha256>", "files": 4, "bytes": 8192}}
+```
+
+- 同一内容只保存一次；摘要按规范化路径清单计算，与 ZIP 打包顺序无关。
+- 创建 / 导入 / 替换 / 查看 / 启用 / 禁用 / 删除 / 重启恢复 / 新会话加载 / Profile 切换 / Git 同步恢复都只操作记录与不可变对象。
+- 完整包不支持单文件正文编辑：`skill-put` 会明确拒绝并提示“重新导入同名包”，避免一次编辑就删掉 `references/`、`scripts/`、`assets/`。
+- 删除记录不会删除内容库对象；其他 Profile 仍可能引用同一摘要。未引用对象不影响配置，也不进入新快照。
+- 启动快照逐字节复制到本轮私密 `skills/<name>/`（文件 0600、目录 0700）；不执行脚本、不安装依赖、不联网、不读取包外路径、不把资源注入系统提示词。已启动会话的快照不受之后替换、删除、停用或同步影响。
+
 ## 从文件导入并由 GPT 整理 Skill
 
 原生界面输入 `/paveway skills`，选择 **Import from file · GPT analysis**，填写文件路径，例如 `/mnt/d/Downloads/example.skill` 或 `~/skills/SKILL.md`。支持 UTF-8 文本、Markdown、文本格式 `.skill`，以及包含一个 `SKILL.md` 的 `.skill`/ZIP 包。路径可包含空格，支持 `~`；WSL 已挂载的盘符路径也可使用。
@@ -12,7 +64,7 @@
 
 分析过程中 Esc 取消；网络、认证、无效输出、输出截断都不保存。分析最多等待 180 秒。保存仍执行现有 revision/CAS：其他设备或窗口在分析期间修改配置，会提示冲突并保留草稿。选择“返回（保留草稿）”，重新打开 `/paveway skills` → **Review import draft**，按当前设置重新审核保存，不需要重新分析。草稿仅保留在当前 UI 进程内，退出界面后不保留。
 
-单个选中文件最多 1 MiB；参与分析的文本最多 256 KiB。ZIP 最多 64 个条目、解压总量最多 256 KiB，仅在内存读取，不解压到磁盘。拒绝重复条目、路径穿越、符号链接和加密包；未读取的二进制资源会告知模型并列入依赖／注意事项。导入保存单篇正文，不安装包内资源；要求 GPT 将必需文本引用整合进正文，缺失依赖须明确说明。最终描述与正文仍分别受 64 KiB 限制，不会静默截断超限内容。
+单个选中文件最多 1 MiB；参与分析的文本最多 256 KiB。ZIP 最多 64 个条目、解压总量最多 256 KiB，仅在内存读取，不解压到磁盘。拒绝重复条目、路径穿越、符号链接和加密包；未读取的二进制资源会告知模型并列入依赖／注意事项。**这个入口只生成单篇 Markdown 正文，不安装包内资源**，因此不能当作完整包的无损安装：需要完整目录树时使用上面的原样安装。最终描述与正文仍分别受 64 KiB 限制，不会静默截断超限内容。
 
 原文件保持不变。保存后的 Skill 沿用现有独立用户数据 Git 同步设置；不会把原文件或 ZIP 放进 Paveway 源码仓库。未保存的草稿不参与同步。此入口使用锁定 OMP 的公开模型 SDK，不替换模型认证或修改全局 OMP 配置。
 
@@ -90,7 +142,13 @@ Enter 到下一项或保存，Ctrl+J/Alt+Enter 换行，Esc 取消。正文最�
 
 OMP 原有的项目/用户 Skill 发现机制仍存在。OMP overlay 会替换数组，因此在需要注册 Paveway Skill 时，启动链路先用同一 workspace/profile/环境执行无模型调用的 `omp config get skills.customDirectories --json`，再将本轮目录追加到已有目录，生成私密 overlay。查询失败明确阻止启动，不以空目录覆盖配置。其他原生 Skill 设置、过滤器和发现开关不被改写，也不持久修改 OMP 设置。
 
-Runtime 的 `agent.skills_enabled=false` 会阻止所有 Paveway 管理的 Skill（内置与三类用户 Skill）注册，并传递 OMP 原生 `--no-skills`；用户配置仍保留。`agent.tools_enabled=false` 时无法按需读取正文，OMP 会在没有可用 Skill 读取工具时隐藏原生索引，正文也不会作为替代注入系统提示。UI 会提示，不会自动打开权限。Skill 是同 UID 用户或项目发布者提供的可信指令，不自动安装插件、执行附带脚本或下载依赖。当前只管理单份 Markdown 正文，不导入外部 Skill 包的脚本/资源目录。
+Runtime 的 `agent.skills_enabled=false` 会阻止所有 Paveway 管理的 Skill（内置、单文件与完整包）注册，并传递 OMP 原生 `--no-skills`；用户配置与包对象仍保留。`agent.tools_enabled=false` 时无法按需读取正文，OMP 会在没有可用 Skill 读取工具时隐藏原生索引，正文也不会作为替代注入系统提示。UI 会提示，不会自动打开权限。Skill 是同 UID 用户或项目发布者提供的可信指令，不自动安装插件、执行附带脚本、安装依赖或下载网络资源；脚本能否执行完全由 OMP 原生工具权限决定。
+
+### 与 OMP 外部 Skill 的关系
+
+Paveway 只管理自己安装的 Skill 目录：它保留 OMP 原有的 `skills.customDirectories` 数组并在其后追加本轮快照目录，不复制、覆盖或删除外部 OMP Skill，也不改动 OMP 全局设置。
+
+OMP 18.16 的真实行为（源码 `extensibility/skills.ts`）：customDirectory 来源的 Skill 优先于 provider 内置 Skill；同名且内容不同时，先注册者保留裸名，后注册者被改名为 `<namespace>/<name>` 并给出 warning，不会静默覆盖。为避免依赖这种隐式顺序，`customization.snapshot()` 会在启动前扫描 OMP 报告的 `skills.customDirectories`（只读 `*/SKILL.md` frontmatter），如果某个 Paveway 托管或内置 Skill 与外部 Skill 同名，就直接拒绝启动并给出双方名称与外部路径，要求改名或停用其中一方。OMP 内部打包的 built-in Skill 与 `~/.omp`/项目级发现目录不在可扫描范围内，这一层冲突仍由 OMP 自己的命名空间规则处理。
 
 ## 第一方 Built-in Skills
 
@@ -157,7 +215,11 @@ oicoach-runtime workflow customize skill-disable coach --name training-review \
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p test_customization.py -v
+.venv/bin/python -m unittest discover -s tests -p test_skill_packages.py -v
+.venv/bin/python -m unittest discover -s tests -p test_skill_import.py -v
 .venv/bin/python -m unittest discover -s tests -p test_tui.py -v
+OICOACH_TEST_REAL_OMP_CONFIG=/absolute/test-config.toml PYTHONPATH=src:tests \
+  .venv/bin/python -m unittest test_skill_packages_omp -v
 OICOACH_TEST_REAL_OMP_CONFIG=/absolute/test-config.toml PYTHONPATH=src:tests \
   .venv/bin/python -m unittest \
     test_customization_omp.RealCustomizationTests.test_native_builtin_and_user_skills_read_without_model \

@@ -410,3 +410,19 @@ OICOACH_TEST_WORKFLOW=test01 \
 原界面关闭 mouse_support，原生 ScrollbarMargin 只负责绘制，无法点击/拖动。现启用鼠标事件，使用独立的交互滚动条和只读 TranscriptWindow；按折行后的显示行计算视口，滚动不切换输入焦点，Ctrl+Home/End 跳转首尾，PageUp/Down 按实际窗口高度翻页。移除新回复及后台恢复时无条件开启 tail-follow 的行为，阅读历史时保持位置。
 
 `/tmp/paveway-scroll-regression.log`：完整 UI 回归 39 项全部通过，69.297 秒。新增真实 PTY 测试发送 SGR 滚轮、轨道点击、滑块拖动、移出滑块到正文后的拖动、Ctrl+End 与 PageUp 事件，验证中文单段折行仍可滚动、输入焦点及草稿保持，且不额外提交模型请求。另验证新回复到达时阅读模式不被重置。原登录隐藏输入、选择器、终端缩放与退出重入回归均通过。compileall、pip check、git diff --check 通过。重开 UI 生效，不需要重启 daemon。
+
+## 2026-11-17 — 完整 OMP Skill 包安装
+
+ZIP 原样安装改为完整目录树：`skill_import.discover()/preview()/install()` 解析独立 Skill 根、按最深归属分配资源、把每个文件写入内容寻址包库 `<state_dir>/skill-packages/<sha256>/{manifest.json,files/}`，`customization.snapshot()` 逐字节复制到本轮私密目录。单文件 Inline Skill 保持可用；完整包不支持单文件编辑，只能重新导入替换。
+
+定向验证：
+
+```bash
+PYTHONPATH=src:tests .venv/bin/python -m unittest tests.test_skill_packages tests.test_skill_import tests.test_customization -v
+PYTHONPATH=src:tests .venv/bin/python -m unittest tests.test_git_sync -v
+OICOACH_TEST_REAL_OMP_CONFIG="$PWD/.runtime/config.toml" PYTHONPATH=src:tests \
+  .venv/bin/python -m unittest tests.test_skill_packages_omp -v
+~/.../bun test tests/*.test.mjs
+```
+
+真实 OMP 验收（无模型回合）：安装含 `references/nested/`、`scripts/`、二进制 `assets/` 的 ZIP，删除 ZIP，重新从持久配置启动 RPC，确认索引只含名称与描述，再用 `omp read skill://plain-oi-editorials:raw`、`skill://plain-oi-editorials/references/a.md:raw` 等原生相对路径读取，并核对快照内每个文件的 SHA256。

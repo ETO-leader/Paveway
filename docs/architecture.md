@@ -28,6 +28,8 @@ Python 3.11+、Linux；终端编辑器依赖 prompt_toolkit，上下文预算使
 | `git_sync.py` | 独立用户数据 Git 仓库、配置版本图/CAS 导入、按设备文字归档与后台同步，不恢复活动队列 |
 | `customization.py` | workflow 范圍系統提示詞/用戶 Skill 的 CAS、私密保存與每輪 OMP 原生輸入快照 |
 | `builtin_skills.py`、`bundled/skills/*/SKILL.md` | 包资源发现与校验；workflow 显式声明的第一方 Skill 复用同一快照/OMP 原生发现链路 |
+| `skill_packages.py` | 完整 OMP Skill 目录的内容寻址私有库：摘要、校验、原子写入、快照复制；不解释 Skill 语义 |
+| `skill_import.py` | ZIP／单文件原样安装（归属规则、安全边界、批量预览与原子安装）与可选的 GPT 分析源读取 |
 | `tui.py`、`ui_client.py` | 對話記錄/常駐編輯器/slash 選單；背景執行公開 CLI 子進程，不直接讀寫 DB、不接管 daemon 生命週期 |
 
 fake OMP 持續驗證故障與競態；本機 OMP 18.10.4 另通過真實模型回合、兩次喚醒續聊與跨 task 隔離。verify-omp 可在每個環境重現。0.7.0 只新增 memory_notes 表，DB 升級到 v2；既有 queue/run/session/output 不刪除或重播。

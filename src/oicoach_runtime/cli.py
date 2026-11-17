@@ -774,15 +774,16 @@ def main(argv: list[str] | None = None) -> int:
                     customization.directory_for(config, args.identifier)
                     report = {"api_version": 1, "source": read_source(args.file)}
                 elif args.customize_operation == "skill-local-preview":
-                    from .skill_import import local_skills
-                    report = local_skills(args.file, customization.show(config, args.identifier)["settings"])
+                    from . import skill_import
+                    customization.directory_for(config, args.identifier)
+                    report = skill_import.preview(config, args.identifier, args.file)
                 elif args.customize_operation == "skills-import":
-                    with args.content_file.open("rb") as stream: data = stream.read(customization.MAX_SETTINGS + 1)
-                    if len(data) > customization.MAX_SETTINGS: raise RuntimeContractError("Skill import batch exceeds 256 KiB")
+                    from . import skill_import
+                    with args.content_file.open("rb") as stream: data = stream.read(65537)
+                    if len(data) > 65536: raise RuntimeContractError("Skill import batch exceeds 64 KiB")
                     try: values = json.loads(data)
                     except (ValueError, UnicodeError, RecursionError): raise RuntimeContractError("Invalid Skill import JSON") from None
-                    if not isinstance(values, dict) or set(values) != {"skills", "replace"}: raise RuntimeContractError("Skill import requires skills and replace lists")
-                    report = customization.update(config, args.identifier, args.expected_revision, "skills-import", **values)
+                    report = skill_import.install(config, args.identifier, args.expected_revision, values)
                 else:
                     values = {}
                     if args.customize_operation in ("prompt", "skill-put"):

@@ -7,15 +7,19 @@ import re
 import tempfile
 from pathlib import Path
 
-from .errors import ConflictError, NotFoundError, WorkflowError
+from .errors import ConflictError, NotFoundError, RuntimeContractError, WorkflowError
 
 MAX_SETTINGS = 262144
+MAX_SKILLS = 32
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 SKILL_CATEGORIES = {
     "oi-introduce": "OI Introduce",
     "user-information": "user information",
     "personal-skill": "personal skill",
 }
+# content and package are mutually exclusive: a legacy inline body or a
+# reference to one immutable native Skill directory tree.
+SKILL_FIELDS = {"name", "description", "enabled", "category", "content", "package"}
 
 
 def skill_category(skill):
@@ -55,11 +59,12 @@ def validate(raw):
     if not isinstance(prompt, dict) or set(prompt) != {"mode", "text"} or prompt["mode"] != "append":
         raise WorkflowError("System prompt mode must be append")
     text(prompt["text"], 65536, "System prompt", empty=True)
-    if not isinstance(raw["skills"], list) or len(raw["skills"]) > 32:
-        raise WorkflowError("At most 32 user skills are supported per workflow")
+    if not isinstance(raw["skills"], list) or len(raw["skills"]) > MAX_SKILLS:
+        raise WorkflowError(f"At most {MAX_SKILLS} user skills are supported per workflow")
     names = set()
     for skill in raw["skills"]:
-        if not isinstance(skill, dict) or set(skill) - {"category"} != {"name", "description", "content", "enabled"}:
+        if (not isinstance(skill, dict) or set(skill) - SKILL_FIELDS or
+                not {"name", "description", "enabled"} <= set(skill) or ("content" in skill) == ("package" in skill)):
             raise WorkflowError("Invalid user skill schema")
         if not isinstance(skill_category(skill), str) or skill_category(skill) not in SKILL_CATEGORIES:
             raise WorkflowError("Skill category must be oi-introduce, user-information or personal-skill")
@@ -68,7 +73,16 @@ def validate(raw):
             raise WorkflowError("Skill names must be unique lowercase words/digits separated by hyphens, at most 64 characters")
         names.add(name)
         text(skill["description"], 65536, "Skill description")
-        text(skill["content"], 65536, "Skill body")
+        if "package" in skill:
+            from . import skill_packages
+            reference = skill["package"]
+            if (not isinstance(reference, dict) or set(reference) != {"digest", "files", "bytes"} or
+                    not isinstance(reference["digest"], str) or not skill_packages.DIGEST.fullmatch(reference["digest"]) or
+                    type(reference["files"]) is not int or not 0 < reference["files"] <= skill_packages.MAX_FILES or
+                    type(reference["bytes"]) is not int or not 0 <= reference["bytes"] <= skill_packages.MAX_PACKAGE_BYTES):
+                raise WorkflowError("Skill package reference must be a digest with its file count and size")
+        else:
+            text(skill["content"], 65536, "Skill body")
         if type(skill["enabled"]) is not bool:
             raise WorkflowError("Skill enabled must be a boolean")
     if len(json.dumps(raw, ensure_ascii=False).encode()) > MAX_SETTINGS:
@@ -132,6 +146,8 @@ def update(config, workflow_id, expected_revision, operation, **values):
             raw["coach"] = values["coach"]
         elif operation == "replace-settings":
             incoming = validate(values["settings"])
+            from . import skill_packages
+            skill_packages.require(config, incoming["skills"])
             raw["system_prompt"] = incoming["system_prompt"]
             raw["skills"] = incoming["skills"]
             if "inference" in incoming:
@@ -148,13 +164,23 @@ def update(config, workflow_id, expected_revision, operation, **values):
             if not isinstance(incoming, list) or not incoming or not isinstance(replacements, list) or any(not isinstance(name, str) for name in replacements):
                 raise WorkflowError("Select at least one Skill and explicitly confirm replacements")
             validate({"schema_version": 1, "revision": 0, "system_prompt": {"mode": "append", "text": ""}, "skills": incoming})
+            from . import skill_packages
+            skill_packages.require(config, incoming)
             names = {s["name"] for s in incoming}
             current = {s["name"]: s for s in raw["skills"]}
             if set(replacements) != names & current.keys():
                 raise ConflictError("Every conflicting Skill requires explicit replacement confirmation")
             for skill in incoming:
-                if skill["name"] in current: current[skill["name"]].update(skill)
-                else: raw["skills"].append(dict(skill))
+                old = current.get(skill["name"])
+                record = dict(skill)
+                if old is not None and "category" not in record:
+                    record["category"] = skill_category(old)
+                # A package replaces the whole record: a leftover inline body
+                # would otherwise resurrect alongside its resources.
+                if old is None:
+                    raw["skills"].append(record)
+                else:
+                    raw["skills"][raw["skills"].index(old)] = record
         elif operation == "inference":
             if not values or set(values) - {"model", "thinking"}:
                 raise WorkflowError("Provide model and/or thinking")
@@ -167,6 +193,10 @@ def update(config, workflow_id, expected_revision, operation, **values):
                 if category is None:
                     category = skill_category(existing) if existing else "personal-skill"
                 if existing:
+                    if "package" in existing:
+                        raise ConflictError(
+                            "Skill " + name + " is a complete package; re-import the package to replace it "
+                            "(single-document editing would delete its references, scripts and assets)")
                     existing.update(description=values["description"], content=values["content"], category=category)
                 else:
                     raw["skills"].append({"name": name, "description": values["description"], "content": values["content"], "enabled": True, "category": category})
@@ -203,15 +233,36 @@ def update(config, workflow_id, expected_revision, operation, **values):
     return show(config, workflow_id)
 
 
-def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, *, base=None, builtin_skills=(), skill_directories=()):
+def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None, *, base=None, builtin_skills=(), skill_directories=(), package_root=None):
     """Freeze launch settings; compatibility-only memory_context is not system data."""
     validate(settings)
     from .builtin_skills import resolve
+    from . import skill_packages
     packaged = resolve(list(builtin_skills))
     conflicts = packaged.keys() & {skill["name"] for skill in settings["skills"]}
     if conflicts:
         raise ConflictError("Built-in and user Skill names conflict: " + ", ".join(sorted(conflicts)) +
                             "; edit the workflow declaration or explicitly resolve the user Skill")
+    active = [s for s in settings["skills"] if s["enabled"]] if skills_enabled else []
+    # OMP still owns discovery. Surface a same-name external Skill instead of
+    # letting one of two registrations win by directory order.
+    external = skill_packages.external_skills(skill_directories) if skills_enabled else {}
+    registered = (set(packaged) | {skill["name"] for skill in active}) & external.keys()
+    if registered:
+        raise ConflictError(
+            "Paveway and OMP external Skill names conflict: " + ", ".join(sorted(registered)) +
+            " (external: " + "; ".join(external[name] for name in sorted(registered)) +
+            "); rename one side or disable the Paveway Skill")
+    packages = [skill for skill in active if "package" in skill]
+    if packages:
+        if package_root is None:
+            raise WorkflowError("Complete Skill packages require the Runtime package store; no prompt was composed")
+        for skill in packages:
+            try:
+                skill_packages.verify(package_root, skill["package"]["digest"])
+            except RuntimeContractError as error:
+                raise ConflictError("Skill " + skill["name"] + " package is unavailable (" + str(error) +
+                                    "); re-import it before launching") from None
     from .models import validate_id
     from .config import ensure_private_directory
     validate_id(run_id)
@@ -228,9 +279,10 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     write("settings.json", json.dumps(settings, ensure_ascii=False, indent=2))
     arguments = []
     prompt = settings["system_prompt"]
-    active = [s for s in settings["skills"] if s["enabled"]] if skills_enabled else []
     documents = {}
     for skill in sorted(active, key=lambda s: (list(SKILL_CATEGORIES).index(skill_category(s)), s["name"])):
+        if "package" in skill:
+            continue
         description = "[" + SKILL_CATEGORIES[skill_category(skill)] + "] " + skill["description"]
         documents[skill["name"]] = ("---\nname: " + json.dumps(skill["name"]) +
                                   "\ndescription: " + json.dumps(description, ensure_ascii=False) +
@@ -245,14 +297,16 @@ def snapshot(settings, session_dir, run_id, skills_enabled, memory_context=None,
     write("prompt-manifest.json", canonical_json(manifest(settings, system_text, base=base, template=template_text)))
     if template_text:
         arguments += ["--system-prompt-template", write("system-template.md", template_text)]
-    if documents:
+    if documents or packages:
         root = destination / "skills"
         root.mkdir(mode=0o700)
-        # One snapshot and native discovery path for both sources. Bodies are
+        # One snapshot and native discovery path for every source. Bodies are
         # copied before spawn, never embedded in the system prompt.
         for name, markdown in documents.items():
             (root / name).mkdir(mode=0o700)
             write("skills/" + name + "/SKILL.md", markdown)
+        for skill in packages:
+            skill_packages.materialize(package_root, skill["package"]["digest"], root / skill["name"])
         directories = list(dict.fromkeys([*skill_directories, str(root)]))
         arguments += ["--config", write("omp.yml", json.dumps({"skills": {"customDirectories": directories}}))]
     return arguments

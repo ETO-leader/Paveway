@@ -123,7 +123,7 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 ## 原生菜单
 
-`/paveway skills` 的 **Import standard SKILL.md / ZIP · local** 直接解析标准 YAML frontmatter（name、description）及 Markdown 正文，不调用模型。多 Skill ZIP 展示每项名称、同名冲突和启停状态；可多选、全选、查看正文、切换启停，最后确认整批导入。已有同名项默认保留原启停状态。一次 revision CAS 原子写入所选项；并发修改会拒绝整批，需要重新预览。取消不会写入，正文及换行保持原样。包内 references、脚本等资源不会安装，确认界面会提示；需要整理引用或总结非标准输入时继续使用 **Import from file · GPT analysis**。
+`/paveway skills` 的 **Import standard SKILL.md / ZIP · local** 是标准 ZIP 的默认导入路径（菜单第一项），原样安装完整 OMP Skill 目录，不调用模型：解析必要的 YAML frontmatter（name、description）后，把 `SKILL.md` 与 `references/`、`scripts/`、`assets/` 等全部资源、原始字节和相对路径一起安装。多 Skill ZIP 展示每项名称、替代关系、文件数量、总大小与启停状态；可多选、全选、查看只读文件清单（路径／大小／SHA256）、切换启停，最后确认整批安装。已有同名项默认保留原启停状态，并明确标注是替换单文件还是完整包；确认界面同时提示完整托管包会进入用户数据 Git 同步范围。一次 revision CAS 原子提交所选项；并发修改、源文件在预览后变化都会拒绝整批，需要重新预览。取消不会写入。详见 [customization.md](customization.md#原样安装完整-skill-包本地-zip)。
 
 CLI 预览入口：
 
@@ -131,7 +131,13 @@ CLI 预览入口：
 oicoach-runtime workflow customize skill-local-preview WORKFLOW --file /path/to/package.zip --config /absolute/config.toml --json
 ```
 
-预览只读。批量保存使用 `workflow customize skills-import WORKFLOW --expected-revision N --content-file /private/batch.json`，batch 为 `{ "skills": [已选择的完整 Skill 记录], "replace": [已确认替换的同名名称] }`。每项包含 name、description、content、category、enabled；不要包含预览的 source/conflict 字段。输入限额沿用既有导入机制：源文件 1 MiB、解包 64 项／256 KiB，每项正文及描述各 64 KiB，所有 Skills 最多 32 项。ZIP 不解压到磁盘，不执行任何内容。
+预览只读，返回 `file`、`sha256`、`revision` 与每项 `name`、`description`、`category`、`enabled`、`conflict`、`replaces`、`digest`、`file_count`、`bytes`、`resources`（不含文件内容）。批量保存使用：
+
+```bash
+oicoach-runtime workflow customize skills-import WORKFLOW --expected-revision N --content-file /private/batch.json
+```
+
+batch 为 `{ "file": "<预览的路径>", "sha256": "<预览的 ZIP 摘要>", "skills": [{"name": …, "category": …, "enabled": …}], "replace": [已确认替换的同名名称] }`；`file`/`sha256` 必须与预览一致，`replace` 必须与选择集里的同名集合完全相同。CLI 会重新读取源文件，按预览摘要校验后写入内容库并提交引用。源文件大于 1 MiB、多于 2048 条目或超过 32 MiB 解压内容时拒绝；每个 Skill 最多 512 个文件／16 MiB，单个文件最多 4 MiB。ZIP 不执行任何内容，也不安装依赖。
 
 输入 `/paveway` 用方向键选择；也可 `/paveway prompt` 等直接打开。以下均为用户操作界面，编辑正文不发送给模型。
 
@@ -139,7 +145,7 @@ oicoach-runtime workflow customize skill-local-preview WORKFLOW --file /path/to/
 | --- | --- |
 | settings | SettingsList 设置中心：Tijian MCP、Model preference、Thinking preference |
 | prompt | 查看／编辑／清空用户自定义追加 Prompt |
-| skills | 新建、查看、编辑、启停、删除；OI Introduce、user information、personal skill 同时按需发现 |
+| skills | 新建、查看、编辑、启停、删除单文件 Skill；原样安装／替换完整包；OI Introduce、user information、personal skill 同时按需发现 |
 | persona | 编辑独立 Persona，CAS 保存，新的 Paveway Conversation 生效 |
 | profile | 创建／切换 Profile、新 Conversation、重启原生进程；先正常释放旧进程再启动目标环境 |
 | model / thinking | 可携带到其他设备的配置偏好，下次启动生效；本次 OMP 的模型／思考选择仍使用原生命令和快捷键 |

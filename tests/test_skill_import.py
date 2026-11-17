@@ -16,7 +16,7 @@ from oicoach_runtime.workflow_setup import create
 
 
 class SkillImportSourceTests(unittest.TestCase):
-    def test_local_eight_skill_cli_import_is_atomic_preserves_body_and_fences_conflicts(self):
+    def test_local_eight_skill_cli_import_installs_complete_trees_atomically(self):
         from multi_skill_fixture import write_eight_skills
         from oicoach_runtime import customization
         config_path = self.root / "config.toml"
@@ -24,7 +24,7 @@ class SkillImportSourceTests(unittest.TestCase):
         config = load_config(config_path)
         create(config, "sample", self.root)
         package = self.root / "Paveway-missing-skills.zip"
-        bodies = write_eight_skills(package)
+        trees = write_eight_skills(package)
         def cli(*args):
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -33,22 +33,32 @@ class SkillImportSourceTests(unittest.TestCase):
         code, preview = cli("skill-local-preview", "sample", "--file", str(package))
         self.assertEqual(code, 0)
         self.assertEqual(len(preview["skills"]), 8)
+        self.assertEqual([item["file_count"] for item in preview["skills"]], [4] * 8)
         self.assertEqual(customization.show(config, "sample")["settings"]["revision"], 0)
-        selected = [{k: v for k, v in item.items() if k not in ("source", "conflict")} for item in preview["skills"]]
-        batch = self.root / "batch.json"
-        batch.write_text(json.dumps({"skills": selected, "replace": []}))
-        code, _ = cli("skills-import", "sample", "--expected-revision", "0", "--content-file", str(batch))
-        self.assertEqual(code, 0)
+        batch = {"file": preview["file"], "sha256": preview["sha256"], "replace": [],
+                 "skills": [{"name": item["name"]} for item in preview["skills"]]}
+        path = self.root / "batch.json"
+        path.write_text(json.dumps(batch))
+        code, report = cli("skills-import", "sample", "--expected-revision", "0", "--content-file", str(path))
+        self.assertEqual(code, 0, report)
         settings = customization.show(config, "sample")["settings"]
         self.assertEqual(settings["revision"], 1)
-        self.assertEqual({s["name"]: s["content"] for s in settings["skills"]}, bodies)
-        code, _ = cli("skills-import", "sample", "--expected-revision", "1", "--content-file", str(batch))
+        self.assertEqual({s["name"]: s["package"]["files"] for s in settings["skills"]},
+                         {name: 4 for name in trees})
+        self.assertTrue(all("content" not in skill for skill in settings["skills"]))
+        # Re-import requires explicit replacement confirmation and keeps the revision.
+        code, error = cli("skills-import", "sample", "--expected-revision", "1", "--content-file", str(path))
         self.assertNotEqual(code, 0, "same-name replacements require explicit confirmation")
+        self.assertIn("replacement", error["error"]["message"])
         self.assertEqual(customization.show(config, "sample")["settings"], settings)
-        batch.write_text(json.dumps({"skills": selected, "replace": list(bodies)}))
-        code, _ = cli("skills-import", "sample", "--expected-revision", "0", "--content-file", str(batch))
-        self.assertNotEqual(code, 0)
-        self.assertEqual(customization.show(config, "sample")["settings"], settings)
+        self.assertEqual(package.read_bytes(), package.read_bytes())
+        session = self.root / "session"
+        session.mkdir(mode=0o700)
+        argv = customization.snapshot(settings, session, "cli", True, package_root=config.state_dir / "skill-packages")
+        native = Path(json.loads(Path(argv[argv.index("--config") + 1]).read_text())["skills"]["customDirectories"][0])
+        for name, files in trees.items():
+            for relative, payload in files.items():
+                self.assertEqual((native / name / relative).read_bytes(), payload)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pw-skill-import-")

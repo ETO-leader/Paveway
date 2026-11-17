@@ -115,6 +115,8 @@ oicoach-runtime sync resume --config /absolute/config.toml
 ```text
 format.json
 profiles/WORKFLOW/SHA256.json               prompt / User Skill 版本图
+packages/SHA256/manifest.json               完整 Skill 包的规范化清单
+packages/SHA256/files/<relative path>       原生 Skill 文件树（逐字节）
 devices/DEVICE_ID/runs/RUN_ID.json           已结束回合的可查询摘要与回复
 devices/DEVICE_ID/sessions/BINDING_ID.json   经过过滤的 user/assistant 文字原文
 ```
@@ -133,4 +135,18 @@ PYTHONPATH=tests .venv/bin/python -m unittest \
 
 测试以两个独立设备目录、两个 daemon 和实际本地 bare remote 验证双向同步、原生文字过滤、离线提交与重试、配置冲突/解决、新设备绑定、队列隔离和异常远端拒绝。PTY 实际填写 remote、提交训练请求、后台 push、查看同步历史及暂停。SSH/HTTPS 的实际访问需要用户指定远端与自己的认证，不把本地 bare 验收称为已验证某个互联网仓库。
 
-0.12.0 的三类 Skill 分类与正文一起同步；旧记录省略 category 时按 personal skill 解释，读取不改写记录和历史哈希。使用分类的设备应统一升级到 0.12.0 或更新版本，旧程序会拒绝无法识别的额外字段并保留本地数据。
+## 完整 Skill 包
+
+0.12.0 的三类 Skill 分类与正文一起同步；旧记录省略 category 时按 personal skill 解释，读取不改写记录和历史哈希。单文件 Skill 记录仍以 `content` 保存在 Profile 版本里，不需要迁移。
+
+原样安装的完整包以内容寻址对象同步：`customization.json`（以及 Profile 版本中的 `skills`）只保存 `{"package": {"digest", "files", "bytes"}}`，同一内容不会在每个 Profile revision 里重复保存；对象本身写入 `packages/<digest>/`，与引用它的 Profile 版本一起提交、推送。
+
+两阶段恢复：
+
+1. `git_sync.validate_tree()` 在 checkout/merge 之前只按对象 ID 读取远端 tree：路径白名单新增 `packages/<sha256>/manifest.json` 与 `packages/<sha256>/files/…`（其余路径仍被拒绝），检查模式、单文件大小、包内文件数与总量。
+2. 对 Profile 引用到的每个摘要，读取 manifest、逐个校验文件大小与 SHA256、并重新计算内容摘要；缺包、manifest 不匹配、哈希不符都会让整轮同步 `state: error`，本机 HEAD 与用户配置保持不变。
+3. 通过后才 merge，并先把 `packages/` 中的对象校验并安装到本机 `<state_dir>/skill-packages/`，再由 `reconcile_profiles()` 应用 Profile；应用时 `customization.update()` 会再校验一次引用，绝不写入指向缺失文件树的配置。
+
+不同设备同时替换同名 Skill 时仍是原有 Profile 版本图：选择一个 head 就同时选择它引用的完整包；`sync resolve` 应用该 head 前要求本机已有对应对象。对象只增不删，旧 head 的包仍可恢复。
+
+不会通过 Git 同步：本机 OMP 可执行文件、外部 OMP Skill 目录、临时会话快照、本机绝对路径、认证凭据，以及选定 Skill 根目录之外的文件。注意完整托管包会进入现有用户数据同步范围：如配置了远端，包内容（可能包含私有资料）会随下一次同步上传；导入确认界面会明确提示这一点。

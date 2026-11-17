@@ -693,6 +693,9 @@ class TerminalUI:
             def prompt_reset():
                 self.confirm("恢复默认系统提示词（清空追加内容，不删除 Skill）", lambda: save("prompt", "--mode", "append", content=""))
             def skill_edit(skill=None, category=None):
+                if skill is not None and "package" in skill:
+                    self.info("完整包 Skill 不能单文件编辑", "该 Skill 由多个原生文件组成；请在 /paveway skills 中重新导入同名包来整体替换，以免丢失 references/、scripts/、assets/ 等资源。")
+                    return
                 if category is None:
                     if skill:
                         category = skill_category(skill)
@@ -707,10 +710,17 @@ class TerminalUI:
                     return save("skill-put", "--name", skill["name"] if skill else values["name"],
                                 "--category", category, "--description", values["description"], content=values["content"])
                 self.start_wizard(("编辑用户 Skill" if skill else "新增用户 Skill") + " · " + SKILL_CATEGORIES[category], steps, done)
+            def skill_body(skill):
+                if "package" in skill:
+                    package = skill["package"]
+                    return (skill["description"] + "\n\n完整包 · " + str(package["files"]) + " 个文件 · " +
+                            str(package["bytes"]) + " 字节\n" + package["digest"] +
+                            "\n重新导入同名包可替换；单文件编辑不会覆盖完整包。")
+                return skill["description"] + "\n\n" + skill["content"]
             def skill_action(action, skill):
                 if action == "show":
                     self.info("用户 Skill · " + SKILL_CATEGORIES[skill_category(skill)] + " · " + skill["name"] + (" · 启用" if skill["enabled"] else " · 停用"),
-                              skill["description"] + "\n\n" + skill["content"])
+                              skill_body(skill))
                 elif action == "edit":
                     skill_edit(skill)
                 elif action == "category":
@@ -722,7 +732,8 @@ class TerminalUI:
                 else:
                     save("skill-" + action, "--name", skill["name"])
             def skill_menu(skill):
-                actions = ["show", "edit", "category", "disable" if skill["enabled"] else "enable", "delete"]
+                actions = (["show", "disable" if skill["enabled"] else "enable", "delete"] if "package" in skill else
+                           ["show", "edit", "category", "disable" if skill["enabled"] else "enable", "delete"])
                 labels = {"show": "查看正文", "edit": "编辑", "category": "移动分类", "disable": "停用", "enable": "启用", "delete": "删除"}
                 self.open_picker("用户 Skill · " + skill["name"], [(labels[a], lambda a=a: skill_action(a, skill)) for a in actions])
             def category_menu(category):

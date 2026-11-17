@@ -49,7 +49,7 @@ omp --version
 | --- | --- |
 | `/paveway settings` | 原生设置中心：Tijian MCP、Model preference、Thinking preference |
 | `/paveway prompt` | 查看和编辑用户系统 Prompt，保留 append/replace 模式 |
-| `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除 |
+| `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除；原样安装完整 ZIP Skill 包 |
 | `/paveway persona` | 编辑当前 GPT 的独立 Persona |
 | `/paveway profile` | 创建／切换 GPT Profile、新对话、重启原生进程 |
 | `/paveway model`、`thinking` | 跨设备保存模型／思考偏好，下次启动生效 |
@@ -85,7 +85,9 @@ oicoach-runtime native --coach alpha --new --config "$PAVEWAY_CONFIG"
 
 Skills 分为 **OI Introduce、user information、personal skill**，三类同时参与发现。上下文先包含索引与描述，正文由 OMP 按需读取；没有把所有正文固定塞入每一轮。每条 Prompt／Skill 正文上限为 64KiB，区别于已经取消的 token 预算。新 Prompt／Skill 快照在下次原生启动加载；**Persona 改动要求新的 Paveway Conversation**，原生 `/new` 仅创建当前快照下的另一个 OMP Session。
 
-从文件导入可用 `/paveway skills` → **Import from file · GPT analysis**：当前模型分析文本或 `.skill` ZIP，整理名称、描述、分类、正文及各项内容摘要，预览编辑后确认保存。支持冲突时保留草稿；详细格式、隐私与限额见 [文件导入说明](docs/customization.md#从文件导入并由-gpt-整理-skill)。
+完整 Skill 包的默认导入路径是 `/paveway skills` → **Import standard SKILL.md / ZIP · local**：不调用模型，把 `SKILL.md`、`references/`、`scripts/`、`assets/` 等全部文件按原始字节与相对路径安装为 OMP 原生 Skill 目录，存入内容寻址的私有包库，由 OMP 自己的发现与 `skill://` 读取机制使用。可多选、替换确认、原子提交，并随用户数据 Git 同步跨设备恢复；详见 [完整包安装说明](docs/customization.md#原样安装完整-skill-包本地-zip)。
+
+需要模型整理非标准输入时仍可用 `/paveway skills` → **Import from file · GPT analysis**：当前模型分析文本或 `.skill` ZIP，整理名称、描述、分类、正文及各项内容摘要，预览编辑后确认保存。它生成单篇正文，不能当作完整包的无损安装。支持冲突时保留草稿；详细格式、隐私与限额见 [文件导入说明](docs/customization.md#从文件导入并由-gpt-整理-skill)。
 
 配置编辑采用 revision/CAS；并发修改会拒绝旧版本，不静默覆盖。CLI 入口见 `workflow customize --help`。
 

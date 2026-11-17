@@ -39,8 +39,9 @@ fetch links, use tools, or import other local files. Produce a reusable Skill dr
 Analyze all supplied documents: purpose, when to load it, inputs, steps, outputs, constraints, dependencies and warnings.
 Preserve important conditions, workflow semantics, uncertainty and permissions. Summarize repetition without inventing
 missing facts or silently dropping critical rules. In content, preserve useful instructions as Markdown (not frontmatter).
-Only a single Markdown body is saved: package resources are not installed. Integrate essential supplied text references
-into that body. Do not leave relative paths as if installed; explain any remaining external dependencies and limitations.
+This analysis produces a single Markdown body, not a package install: references, scripts and assets are not installed.
+Integrate essential supplied text references into that body. Do not leave relative paths as if installed; explain any
+remaining external dependencies and limitations. Installing a package exactly as authored is a separate, model-free operation.
 Use a valid source name/description when suitable; otherwise propose clear ones. Use GPT or first person as the assistant name.
 Choose exactly one category: oi-introduce (OI background/methods), user-information (user background/preferences),
 personal-skill (reusable personal workflow). Do not treat user reports as verified facts. Identify external references,
@@ -143,30 +144,39 @@ export async function reviewSkillImport(ctx, initial, existingSkills, save) {
 export async function selectLocalSkills(ctx, preview, save) {
     const items = structuredClone(preview.skills);
     const selected = new Set();
+    const size = value => value < 1024 ? value + " B" : (value / 1024).toFixed(1) + " KiB";
+    const replaceLabel = item => item.conflict ? "替换同名" + (item.replaces === "inline" ? "单文件" : "完整包") : "新增";
     while (true) {
-        const labels = items.map((item, index) => `${selected.has(index) ? "☑" : "☐"} ${item.name} · ${item.conflict ? "替换同名" : "新增"} · ${item.enabled ? "启用" : "停用"}`);
+        const labels = items.map((item, index) =>
+            `${selected.has(index) ? "☑" : "☐"} ${item.name} · ${replaceLabel(item)} · ${item.file_count} 个文件 ${size(item.bytes)} · ${item.enabled ? "启用" : "停用"}`);
         const action = await ctx.ui.select(`本地直导 · ${selected.size}/${items.length} 已选 · revision ${preview.revision}`, [
-            ...labels, "全选", "清空选择", "查看正文", "切换启停", "导入所选项", "取消"]);
+            ...labels, "全选", "清空选择", "查看文件清单", "切换启停", "导入所选项", "取消"]);
         if (!action || action === "取消") return false;
         const index = labels.indexOf(action);
         if (index >= 0) {
             if (selected.has(index)) selected.delete(index); else selected.add(index);
         } else if (action === "全选") items.forEach((_item, i) => selected.add(i));
         else if (action === "清空选择") selected.clear();
-        else if (action === "查看正文" || action === "切换启停") {
+        else if (action === "查看文件清单" || action === "切换启停") {
             const picked = await ctx.ui.select(action, items.map(item => item.name));
             const item = items.find(item => item.name === picked);
             if (!item) continue;
-            if (action === "查看正文") await ctx.ui.editor(`${item.name} · ${item.source}（只读预览）`, item.content);
-            else item.enabled = !item.enabled;
+            if (action === "查看文件清单") {
+                const resources = item.resources.map(entry => `${entry.path} · ${size(entry.bytes)} · ${entry.sha256.slice(0, 12)}`).join("\n");
+                await ctx.ui.editor(`${item.name} · ${item.source}（只读清单，共 ${item.file_count} 个文件）`,
+                    `${item.description}\n\n${resources}`);
+            } else item.enabled = !item.enabled;
         } else if (action === "导入所选项") {
             const chosen = items.filter((_item, i) => selected.has(i));
             if (!chosen.length) { ctx.ui.notify("请先选择要导入的 Skill。", "warning"); continue; }
             const replace = chosen.filter(item => item.conflict).map(item => item.name);
-            const summary = chosen.map(item => `${item.name}: ${item.conflict ? "替换" : "新增"} / ${item.enabled ? "启用" : "停用"}`).join("\n");
-            if (!await ctx.ui.confirm(`确认原子导入 ${chosen.length} 项？`, summary +
-                (preview.resources_not_installed.length ? "\n包内额外资源不会安装，正文保持原样。" : ""))) continue;
-            await save({skills: chosen.map(({source, conflict, ...skill}) => skill), replace});
+            const summary = chosen.map(item =>
+                `${item.name}: ${item.conflict ? "替换" : "新增"} / ${item.file_count} 个文件 / ${size(item.bytes)} / ${item.enabled ? "启用" : "停用"}`).join("\n");
+            if (!await ctx.ui.confirm(`确认原子安装 ${chosen.length} 项完整 Skill 目录？`, summary +
+                "\n保留原始 SKILL.md、references/、scripts/、assets/ 等全部文件、字节与相对路径；不执行其中内容，不安装依赖。" +
+                "\n完整托管包属于 Paveway 用户数据；如已配置 Git 远端，将随下一次同步上传。")) continue;
+            await save({file: preview.file, sha256: preview.sha256,
+                skills: chosen.map(({name, category, enabled}) => ({name, category, enabled})), replace});
             return true;
         }
     }

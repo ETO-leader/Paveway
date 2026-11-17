@@ -6,31 +6,47 @@ const proposal = () => ({name: "fixture-skill", category: "personal-skill", desc
     content: "# Fixture\nPreserve constraints and do not invent facts.", analysis: Object.fromEntries(
         ["purpose", "triggers", "inputs", "workflow", "outputs", "constraints", "dependencies", "warnings"].map(key => [key, "Fixture " + key]))});
 
-test("local selection preserves bodies, toggles enabled, confirms replacements and submits one batch", async () => {
-    const preview = {revision: 7, resources_not_installed: ["reference.md"], skills: [
-        {name: "existing", description: "Existing", content: "\r\n正文\r\n", category: "personal-skill", enabled: false, conflict: true, source: "a/SKILL.md"},
-        {name: "new", description: "New", content: "Untouched", category: "personal-skill", enabled: true, conflict: false, source: "b/SKILL.md"}]};
-    const actions = ["全选", "切换启停", "existing", "查看正文", "existing", "导入所选项"];
-    let writes = 0;
-    const ctx = {ui: {select: async () => actions.shift(), editor: async (_title, body) => {assert.equal(body, "\r\n正文\r\n"); return "Ignored edit";},
-        confirm: async (_title, summary) => {assert.ok(summary.includes("替换 / 启用")); assert.ok(summary.includes("额外资源不会安装")); return true;}}};
+test("local package selection preserves tree metadata, toggles enabled, confirms replacements and submits one batch", async () => {
+    const preview = {revision: 7, file: "/tmp/x.zip", filename: "x.zip", sha256: "a".repeat(64), skill_limit: 32, skills: [
+        {name: "existing", description: "Existing", category: "personal-skill", enabled: false, conflict: true, replaces: "inline",
+         source: "a", digest: "b".repeat(64), file_count: 3, bytes: 2048, resources: [
+             {path: "SKILL.md", bytes: 100, sha256: "c".repeat(64)},
+             {path: "references/a.md", bytes: 1948, sha256: "d".repeat(64)}]},
+        {name: "new", description: "New", category: "personal-skill", enabled: true, conflict: false, replaces: null,
+         source: "b", digest: "e".repeat(64), file_count: 1, bytes: 10, resources: [{path: "SKILL.md", bytes: 10, sha256: "f".repeat(64)}]}]};
+    const actions = ["全选", "切换启停", "existing", "查看文件清单", "existing", "导入所选项"];
+    let writes = 0, listed = "";
+    const ctx = {ui: {
+        select: async () => actions.shift(),
+        editor: async (_title, body) => { listed = body; return ""; },
+        confirm: async (_title, summary) => {
+            assert.ok(summary.includes("替换"));
+            assert.ok(summary.includes("3 个文件"));
+            assert.ok(summary.includes("Git 远端"));
+            return true;
+        }}};
     assert.equal(await selectLocalSkills(ctx, preview, async payload => {
         writes++;
+        assert.equal(payload.file, "/tmp/x.zip");
+        assert.equal(payload.sha256, "a".repeat(64));
         assert.deepEqual(payload.replace, ["existing"]);
-        assert.equal(payload.skills[0].content, "\r\n正文\r\n");
-        assert.equal(payload.skills[0].enabled, true);
-        assert.equal(payload.skills[0].source, undefined);
-        assert.equal(payload.skills.length, 2);
+        assert.deepEqual(payload.skills, [{name: "existing", category: "personal-skill", enabled: true},
+            {name: "new", category: "personal-skill", enabled: true}]);
+        assert.equal(payload.skills[0].content, undefined);
+        assert.equal(payload.skills[0].file_count, undefined);
     }), true);
     assert.equal(writes, 1);
+    assert.ok(listed.includes("references/a.md"));
+    assert.ok(listed.includes("d".repeat(12)));
     assert.equal(preview.skills[0].enabled, false);
 });
 
 test("local import cancel, declined confirmation and save conflict do not report success", async () => {
-    const preview = {revision: 0, resources_not_installed: [], skills: []};
+    const preview = {revision: 0, file: "/tmp/x.zip", sha256: "a".repeat(64), skills: []};
     assert.equal(await selectLocalSkills({ui: {select: async () => "取消"}}, preview, () => assert.fail("cancel saved")), false);
     const actions = ["全选", "导入所选项", "取消"];
-    const skill = {name: "fixture", description: "Fixture", content: "Body", enabled: true, conflict: false};
+    const skill = {name: "fixture", description: "Fixture", category: "personal-skill", enabled: true, conflict: false,
+        replaces: null, digest: "b".repeat(64), file_count: 1, bytes: 4, resources: [], source: "fixture"};
     const ctx = {ui: {select: async () => actions.shift(), confirm: async () => false}};
     assert.equal(await selectLocalSkills(ctx, {...preview, skills: [skill]}, () => assert.fail("declined saved")), false);
     const conflictActions = ["全选", "导入所选项"];

@@ -199,7 +199,8 @@ def _run_owned(config, config_path, workflow, lease, lock):
         from .omp_config import skill_directories
         directories = asyncio.run(skill_directories(config, str(workflow.workspace), environment))
     argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
-                     base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories)
+                     base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories,
+                     package_root=config.state_dir / "skill-packages")
     overlay = root / "native.yml"
     overlay.write_text(json.dumps({"autoResume": False, "startup": {"setupWizard": False}}))
     overlay.chmod(0o600)

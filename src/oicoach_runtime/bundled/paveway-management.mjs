@@ -97,9 +97,12 @@ export function registerManagement(pi, config, requestSwitch) {
     };
     actions.skills = async ctx => {
         const raw = await settings();
-        const labels = raw.skills.map(skill => `${skill.name} · ${skill.category || "personal-skill"} · ${skill.enabled ? "on" : "off"}`);
-        const picked = await ctx.ui.select("User Skills", ["Create Skill", "Import from file · GPT analysis",
-            ...(importDraft ? ["Review import draft"] : []), "Import standard SKILL.md / ZIP · local", ...labels]);
+        const labels = raw.skills.map(skill => `${skill.name} · ${skill.category || "personal-skill"} · ${skill.enabled ? "on" : "off"}` +
+            (skill.package ? ` · 完整包 ${skill.package.files} 文件` : ""));
+        // Installing a package exactly as authored is the default import path;
+        // GPT analysis is a separate, model-assisted operation.
+        const picked = await ctx.ui.select("User Skills", ["Create Skill", "Import standard SKILL.md / ZIP · local",
+            "Import from file · GPT analysis", ...(importDraft ? ["Review import draft"] : []), ...labels]);
         if (!picked) return;
         if (picked === "Import standard SKILL.md / ZIP · local") {
             const path = await ctx.ui.input("本地 Skill 文件路径（不调用模型；支持多项 ZIP）");
@@ -135,9 +138,15 @@ export function registerManagement(pi, config, requestSwitch) {
             return;
         }
         const existing = raw.skills[labels.indexOf(picked)];
-        let operation = existing ? await ctx.ui.select(existing.name, ["edit", "show", "toggle", "delete"]) : "edit";
+        // A complete package has several files: re-import it instead of editing
+        // one Markdown body, which would silently drop its resources.
+        const operations = existing?.package ? ["show", "toggle", "delete"] : ["edit", "show", "toggle", "delete"];
+        let operation = existing ? await ctx.ui.select(existing.name, operations) : "edit";
         if (!operation) return;
-        if (operation === "show") return show(ctx, existing.content);
+        if (operation === "show") {
+            if (existing?.package) return show(ctx, `${existing.description}\n\n完整包 · ${existing.package.files} 个文件 · ${existing.package.bytes} 字节 · ${existing.package.digest}\n重新导入同名包可替换；单文件编辑不会覆盖完整包。`);
+            return show(ctx, existing.content);
+        }
         const name = existing?.name || await ctx.ui.input("Skill name (lowercase words separated by hyphens)");
         if (!name) return;
         const base = ["workflow", "customize"];

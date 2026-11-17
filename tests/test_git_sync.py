@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -17,6 +18,11 @@ from oicoach_runtime.errors import ConflictError, RuntimeContractError
 from oicoach_runtime.store import Store
 from oicoach_runtime.workflow_setup import create
 from oicoach_runtime.workflows import WorkflowProvider
+
+
+def file_tree(root):
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(Path(root).rglob("*")) if path.is_file()}
 
 
 class GitSyncTests(unittest.TestCase):
@@ -245,6 +251,123 @@ class GitSyncTests(unittest.TestCase):
         report = git_sync.set_remote(config, "")
         self.assertTrue(report["configured"])
         self.assertEqual(report["settings"]["remote"], "")
+
+    def install_package(self, config, name, body, revision):
+        import zipfile
+        from oicoach_runtime import skill_import
+        package = self.root / (name + "-" + str(revision) + ".zip")
+        with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(name + "/SKILL.md",
+                             ("---\nname: " + name + "\ndescription: synced skill\n---\n" + body).encode())
+            archive.writestr(name + "/references/a.md", ("# A " + body).encode())
+            archive.writestr(name + "/scripts/check.py", b"raise RuntimeError('NEVER_EXECUTE')\n")
+            archive.writestr(name + "/assets/blob.bin", bytes(range(32)))
+        preview = skill_import.preview(config, "coach", package)
+        settings = customization.show(config, "coach")["settings"]
+        replace = [name] if any(skill["name"] == name for skill in settings["skills"]) else []
+        skill_import.install(config, "coach", settings["revision"], {
+            "file": preview["file"], "sha256": preview["sha256"], "replace": replace,
+            "skills": [{"name": name}]})
+        return customization.show(config, "coach")["settings"]["skills"][0]["package"]["digest"]
+
+    def tree(self, digest, config):
+        from oicoach_runtime import skill_packages
+        import hashlib
+        return {path: hashlib.sha256(payload).hexdigest()
+                for path, payload in skill_packages.read(config, digest).items()}
+
+    def snapshot_tree(self, config, run):
+        session = self.root / ("snapshot-" + run)
+        session.mkdir(mode=0o700, exist_ok=True)
+        settings = customization.show(config, "coach")["settings"]
+        argv = customization.snapshot(settings, session, run, True, package_root=config.state_dir / "skill-packages")
+        native = Path(json.loads(Path(argv[argv.index("--config") + 1]).read_text())["skills"]["customDirectories"][0])
+        return native, file_tree(native)
+
+    def publish_from_remote(self, action):
+        editor = self.root / ("editor-" + str(len(list(self.root.glob("editor-*")))))
+        subprocess.run(["git", "clone", str(self.remote), str(editor)], check=True, capture_output=True)
+        action(editor)
+        for args in (("add", "--all",), ("-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "publish"), ("push",)):
+            subprocess.run(["git", "-C", str(editor), *args], check=True, capture_output=True)
+
+    def test_complete_skill_package_syncs_between_devices_with_exact_bytes(self):
+        digest = self.install_package(self.a, "synced-skill", "VERSION_ONE\n", 0)
+        self.edit(self.a, "package profile")
+        result = self.cycle(self.a)
+        self.assertEqual(result["skill_packages"]["packages"], 1)
+        self.cycle(self.b)
+        # The remote object and the restored tree are byte-identical.
+        self.assertEqual(self.tree(digest, self.a), self.tree(digest, self.b))
+        native, restored = self.snapshot_tree(self.b, "after-pull")
+        self.assertEqual(restored, {"synced-skill/" + path: sha for path, sha in self.tree(digest, self.b).items()})
+        self.assertEqual((native / "synced-skill/references/a.md").read_bytes(), b"# A VERSION_ONE\n")
+        self.assertEqual((native / "synced-skill/assets/blob.bin").read_bytes(), bytes(range(32)))
+        repo = Path(git_sync.settings(self.b)["repository"])
+        tracked = subprocess.check_output(["git", "-C", str(repo), "ls-files"], text=True)
+        self.assertIn("packages/" + digest + "/files/references/a.md", tracked)
+        self.assertNotIn(str(self.b.state_dir), tracked)
+
+        # A replaces the package; B's old launch snapshot must not change.
+        second = self.install_package(self.a, "synced-skill", "VERSION_TWO\n", 2)
+        self.assertNotEqual(second, digest)
+        self.cycle(self.a)
+        self.cycle(self.b)
+        self.assertEqual(file_tree(native), restored)
+        self.assertEqual((native / "synced-skill/references/a.md").read_bytes(), b"# A VERSION_ONE\n")
+        _, newest = self.snapshot_tree(self.b, "after-replace")
+        self.assertEqual(newest, {"synced-skill/" + path: sha for path, sha in self.tree(second, self.b).items()})
+
+    def test_remote_missing_or_corrupt_package_is_rejected_before_applying_profile(self):
+        digest = self.install_package(self.a, "synced-skill", "VERSION_ONE\n", 0)
+        self.cycle(self.a)
+        self.cycle(self.b)
+        before = customization.show(self.b, "coach")["settings"]
+        head = subprocess.check_output(["git", "-C", str(git_sync.settings(self.b)["repository"]), "rev-parse", "HEAD"])
+        self.publish_from_remote(lambda editor: (editor / "packages" / digest / "files/references/a.md").unlink())
+        result = git_sync.cycle(self.b)
+        self.assertEqual(result["state"], "error")
+        self.assertIn("Skill package", result["error"])
+        self.assertEqual(customization.show(self.b, "coach")["settings"], before)
+        self.assertEqual(subprocess.check_output(["git", "-C", str(git_sync.settings(self.b)["repository"]), "rev-parse", "HEAD"]), head)
+
+        def corrupt(editor):
+            path = editor / "packages" / digest / "files/references/a.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"# B VERSION_ONE\n")
+        self.publish_from_remote(corrupt)
+        result = git_sync.cycle(self.b)
+        self.assertEqual(result["state"], "error")
+        self.assertIn("digest", result["error"])
+        self.assertEqual(customization.show(self.b, "coach")["settings"], before)
+
+    def test_conflicting_same_name_packages_resolve_with_their_profile_version(self):
+        first = self.install_package(self.a, "shared-skill", "FROM_A\n", 0)
+        self.edit(self.a, "device A base")
+        self.cycle(self.a)
+        # B never pulled before its own edit, so both heads diverge.
+        second = self.install_package(self.b, "shared-skill", "FROM_B\n", 1)
+        self.edit(self.b, "device B base")
+        result = self.cycle(self.b)
+        self.assertEqual(result["state"], "ok")
+        self.cycle(self.a)
+        conflict = git_sync.conflicts(self.a)[0]
+        self.assertEqual(len(conflict["heads"]), 2)
+        records = git_sync.read_profiles(Path(git_sync.settings(self.a)["repository"]))["coach"]
+        def package_of(head):
+            return next(skill for skill in records[head]["content"]["skills"] if skill["name"] == "shared-skill")["package"]["digest"]
+        self.assertNotEqual(first, second)
+        choice = next(head["head"] for head in conflict["heads"] if package_of(head["head"]) == second)
+        git_sync.resolve(self.a, "coach", choice)
+        self.cycle(self.a)
+        self.cycle(self.b)
+        record = next(skill for skill in customization.show(self.a, "coach")["settings"]["skills"]
+                      if skill["name"] == "shared-skill")
+        self.assertEqual(record["package"]["digest"], second)
+        self.assertEqual(customization.show(self.b, "coach")["settings"]["skills"][0]["package"]["digest"], second)
+        _, tree = self.snapshot_tree(self.a, "resolved")
+        self.assertEqual(tree["shared-skill/references/a.md"], hashlib.sha256(b"# A FROM_B\n").hexdigest())
+        self.assertEqual(git_sync.conflicts(self.a), [])
 
     def edit(self, config, value):
         revision = customization.show(config, "coach")["settings"]["revision"]

@@ -16,13 +16,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import customization
+from . import customization, skill_packages
 from .config import absolute_path, ensure_private_directory
 from .errors import ConflictError, RuntimeContractError
 from .models import validate_id
 
 MAX_FILE = 32 * 1024 * 1024
 FORMAT = {"format": "paveway-user-data", "version": 1}
+PROFILE_PATH = re.compile(r"profiles/[A-Za-z0-9_.-]+/[0-9a-f]{64}\.json")
+DEVICE_PATH = re.compile(r"devices/[0-9a-f]{32}/(?:runs/[A-Za-z0-9-]+|sessions/[0-9a-f]{64})\.json")
+PACKAGE_MANIFEST = re.compile(r"packages/([0-9a-f]{64})/manifest\.json")
+PACKAGE_RESOURCE = re.compile(r"packages/([0-9a-f]{64})/files/(.+)")
+PACKAGE_MANIFEST_BYTES = 65536
 
 
 def stamp():
@@ -342,50 +347,247 @@ def resolve(config, workflow, head=None, keep_local=False):
     return {"api_version": 1, "resolved": workflow, "head": key, "next": "sync now"}
 
 
+def safe_resource(path):
+    """Accept one normalized relative Skill resource path from the remote tree."""
+    try:
+        skill_packages.safe_path(path)
+    except RuntimeContractError:
+        return False
+    return True
+
+
+def package_tree_path(name):
+    """True only for a managed Skill package manifest or resource path."""
+    if PACKAGE_MANIFEST.fullmatch(name):
+        return True
+    match = PACKAGE_RESOURCE.fullmatch(name)
+    return bool(match) and safe_resource(match.group(2))
+
+
+def read_blob(git, oid, maximum, *, value=False):
+    data = git.run("cat-file", "blob", oid.decode()).stdout
+    if len(data) > maximum:
+        raise RuntimeContractError("Remote record exceeds its size limit; HEAD unchanged")
+    if not value:
+        return data
+    try:
+        return json.loads(data)
+    except (ValueError, UnicodeError, RecursionError):
+        raise RuntimeContractError("Remote configuration contains invalid JSON; HEAD unchanged") from None
+
+
+def manifest_entries(raw):
+    """Validate one Skill package manifest read from the remote tree."""
+    if (not isinstance(raw, dict) or set(raw) != {"format", "version", "files"} or
+            raw["format"] != skill_packages.FORMAT or raw["version"] != skill_packages.VERSION or
+            not isinstance(raw["files"], list) or not raw["files"] or len(raw["files"]) > skill_packages.MAX_FILES):
+        raise RuntimeContractError("Remote Skill package manifest is invalid; HEAD unchanged")
+    entries, folded, total = {}, set(), 0
+    for item in raw["files"]:
+        if not isinstance(item, dict) or set(item) != {"path", "bytes", "sha256"}:
+            raise RuntimeContractError("Remote Skill package manifest has an invalid entry; HEAD unchanged")
+        path = item["path"]
+        if (not safe_resource(path) or not isinstance(item["sha256"], str) or
+                not skill_packages.DIGEST.fullmatch(item["sha256"]) or type(item["bytes"]) is not int or
+                not 0 <= item["bytes"] <= skill_packages.MAX_FILE_BYTES or path.casefold() in folded):
+            raise RuntimeContractError("Remote Skill package manifest has an invalid entry; HEAD unchanged")
+        folded.add(path.casefold())
+        total += item["bytes"]
+        entries[path] = item
+    if total > skill_packages.MAX_PACKAGE_BYTES:
+        raise RuntimeContractError("Remote Skill package exceeds 16 MiB; HEAD unchanged")
+    return entries
+
+
 def validate_tree(git, ref):
     listing = git.run("ls-tree", "-rlz", "--full-tree", ref).stdout
-    for entry in listing.split(b"\0"):
-        if not entry:
+    entries, packages, totals = [], {}, {}
+    rejected = "Remote tree contains unexpected paths, modes or oversized files; nothing was applied"
+    for chunk in listing.split(b"\0"):
+        if not chunk:
             continue
-        meta, path = entry.split(b"\t", 1)
-        fields = meta.split()
-        name = path.decode("utf-8")
-        allowed = name == "format.json" or re.fullmatch(r"profiles/[A-Za-z0-9_.-]+/[0-9a-f]{64}\.json", name) or re.fullmatch(r"devices/[0-9a-f]{32}/(?:runs/[A-Za-z0-9-]+|sessions/[0-9a-f]{64})\.json", name)
-        if fields[0] != b"100644" or not allowed or int(fields[3]) > MAX_FILE:
-            raise RuntimeContractError("Remote tree contains unexpected paths, modes or oversized files; nothing was applied")
+        try:
+            meta, encoded = chunk.split(b"\t", 1)
+            fields = meta.split()
+            name = encoded.decode("utf-8")
+            size = int(fields[3])
+        except (UnicodeError, IndexError, ValueError):
+            raise RuntimeContractError(rejected) from None
+        manifest_match, resource_match = PACKAGE_MANIFEST.fullmatch(name), PACKAGE_RESOURCE.fullmatch(name)
+        if name == "format.json":
+            maximum = 65536
+        elif PROFILE_PATH.fullmatch(name):
+            maximum = 524288
+        elif DEVICE_PATH.fullmatch(name):
+            maximum = MAX_FILE
+        elif manifest_match:
+            maximum = PACKAGE_MANIFEST_BYTES
+        elif resource_match:
+            maximum = skill_packages.MAX_FILE_BYTES
+        else:
+            raise RuntimeContractError(rejected)
+        if fields[0] != b"100644" or size > maximum:
+            raise RuntimeContractError(rejected)
+        if manifest_match:
+            packages.setdefault(manifest_match.group(1), {"manifest": None, "files": {}})["manifest"] = (fields[2], size)
+        elif resource_match:
+            digest, relative = resource_match.group(1), resource_match.group(2)
+            if not safe_resource(relative):
+                raise RuntimeContractError("Remote tree contains an unsafe Skill resource path; nothing was applied")
+            group = packages.setdefault(digest, {"manifest": None, "files": {}})
+            totals[digest] = totals.get(digest, 0) + size
+            if totals[digest] > skill_packages.MAX_PACKAGE_BYTES or len(group["files"]) >= skill_packages.MAX_FILES:
+                raise RuntimeContractError("Remote Skill package exceeds its size limit; nothing was applied")
+            group["files"][relative] = (fields[2], size)
+        entries.append((name, fields[2], size))
 
     # Read blobs by object ID; nothing has been checked out or merged yet.
-    import json
-    from pathlib import PurePosixPath
     candidates = []
     format_seen = False
-    for entry in listing.split(b"\0"):
-        if not entry: continue
-        meta, encoded_path = entry.split(b"\t", 1)
-        path = PurePosixPath(encoded_path.decode("utf-8"))
-        if str(path) != "format.json" and path.parts[0] != "profiles": continue
-        maximum = 65536 if str(path) == "format.json" else 524288
-        if int(meta.split()[3]) > maximum:
+    for name, oid, size in entries:
+        if name != "format.json" and not PROFILE_PATH.fullmatch(name):
+            continue
+        maximum = 65536 if name == "format.json" else 524288
+        if size > maximum:
             raise RuntimeContractError("Remote configuration record exceeds its size limit; HEAD unchanged")
-        try:
-            value = json.loads(git.run("cat-file", "blob", meta.split()[2].decode()).stdout)
-        except (ValueError, UnicodeError, RecursionError):
-            raise RuntimeContractError("Remote configuration contains invalid JSON; HEAD unchanged") from None
-        if str(path) == "format.json":
+        value = read_blob(git, oid, maximum, value=True)
+        if name == "format.json":
             format_seen = True
             if not isinstance(value, dict) or value != FORMAT or type(value.get("version")) is not int:
                 raise RuntimeContractError("Remote format.json is incompatible; expected paveway-user-data version 1; HEAD unchanged")
         else:
-            candidates.append((path, value))
+            candidates.append((Path(name), value))
     if not format_seen:
         raise RuntimeContractError("Remote format.json is missing; HEAD unchanged")
     try:
-        validate_profiles(candidates)
+        records = validate_profiles(candidates)
     except RuntimeContractError as error:
         raise RuntimeContractError("Remote profile validation failed: " + str(error) + "; HEAD unchanged") from None
+    validate_remote_packages(git, packages, records)
 
 
-def pull(git, values):
+def validate_remote_packages(git, packages, records):
+    """Every referenced package must be complete before a profile may be applied."""
+    referenced = set()
+    for group in records.values():
+        for record in group.values():
+            for skill in record["content"]["skills"]:
+                if "package" in skill:
+                    referenced.add(skill["package"]["digest"])
+    for digest in sorted(referenced - packages.keys()):
+        raise RuntimeContractError("Remote configuration references a missing Skill package; HEAD unchanged")
+    for digest, group in sorted(packages.items()):
+        if group["manifest"] is None:
+            raise RuntimeContractError("Remote Skill package is missing its manifest; HEAD unchanged")
+        declared = manifest_entries(read_blob(git, group["manifest"][0], PACKAGE_MANIFEST_BYTES, value=True))
+        if set(declared) != set(group["files"]):
+            raise RuntimeContractError("Remote Skill package tree does not match its manifest; HEAD unchanged")
+        for path, item in declared.items():
+            if group["files"][path][1] != item["bytes"]:
+                raise RuntimeContractError("Remote Skill package resource size does not match its manifest; HEAD unchanged")
+        if digest not in referenced:
+            continue
+        files = {}
+        for path, item in declared.items():
+            payload = read_blob(git, group["files"][path][0], skill_packages.MAX_FILE_BYTES)
+            if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+                raise RuntimeContractError("Remote Skill package content does not match its digest; HEAD unchanged")
+            files[path] = payload
+        if skill_packages.digest(files) != digest:
+            raise RuntimeContractError("Remote Skill package is not content-addressed correctly; HEAD unchanged")
+
+
+def write_package_bytes(path, payload):
+    ensure_private_directory(path.parent)
+    if path.is_symlink():
+        raise ConflictError("Refusing to replace a symlink Skill package resource")
+    if path.exists():
+        if path.read_bytes() == payload:
+            return
+        if not path.is_file():
+            raise ConflictError("Sync repository contains an unexpected Skill package entry")
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def read_package_directory(directory):
+    """Read one immutable package tree from the sync worktree, never a symlink."""
+    files_root = Path(directory) / "files"
+    if files_root.is_symlink() or not files_root.is_dir():
+        raise RuntimeContractError("Synced Skill package has no resource directory; nothing was applied")
+    files, total = {}, 0
+    for base, directories, names in os.walk(files_root, followlinks=False):
+        for name in sorted(directories):
+            if (Path(base) / name).is_symlink():
+                raise RuntimeContractError("Synced Skill package contains a symlink; nothing was applied")
+        for name in sorted(names):
+            path = Path(base) / name
+            relative = path.relative_to(files_root).as_posix()
+            if path.is_symlink() or not path.is_file() or not safe_resource(relative):
+                raise RuntimeContractError("Synced Skill package contains an unsafe resource; nothing was applied")
+            payload = path.read_bytes()
+            if len(payload) > skill_packages.MAX_FILE_BYTES:
+                raise RuntimeContractError("Synced Skill package resource exceeds 4 MiB; nothing was applied")
+            total += len(payload)
+            if total > skill_packages.MAX_PACKAGE_BYTES or len(files) >= skill_packages.MAX_FILES:
+                raise RuntimeContractError("Synced Skill package exceeds its size limit; nothing was applied")
+            files[relative] = payload
+    if not files:
+        raise RuntimeContractError("Synced Skill package is empty; nothing was applied")
+    return files
+
+
+def export_packages(config, repo):
+    """Copy every published or locally referenced package into the sync tree."""
+    digests = set()
+    for path in (Path(repo) / "profiles").glob("*/*.json"):
+        record = read_json(path, maximum=524288)
+        for skill in record.get("content", {}).get("skills", []) if isinstance(record, dict) else []:
+            reference = skill.get("package") if isinstance(skill, dict) else None
+            if isinstance(reference, dict) and isinstance(reference.get("digest"), str):
+                digests.add(reference["digest"])
+    for directory in sorted(Path(config.workflow_root).iterdir()):
+        if not directory.is_dir():
+            continue
+        for skill in customization.load(directory)["skills"]:
+            if "package" in skill:
+                digests.add(skill["package"]["digest"])
+    exported = {"packages": 0, "bytes": 0}
+    for value in sorted(digests):
+        files = skill_packages.read(config, value)
+        target = Path(repo) / "packages" / value
+        write_package_bytes(target / "manifest.json", canonical(skill_packages.manifest(files)) + b"\n")
+        for path, payload in files.items():
+            write_package_bytes(target / "files" / Path(path), payload)
+        exported["packages"] += 1
+        exported["bytes"] += sum(len(payload) for payload in files.values())
+    return exported
+
+
+def import_packages(config, repo):
+    """Stage verified remote packages locally before any profile is applied."""
+    directory = Path(repo) / "packages"
+    if not directory.exists() and not directory.is_symlink():
+        return {"packages": 0}
+    if directory.is_symlink() or not directory.is_dir():
+        raise RuntimeContractError("Synced Skill package root is unsafe; nothing was applied")
+    imported = 0
+    for entry in sorted(directory.iterdir()):
+        if entry.is_symlink() or not entry.is_dir() or not skill_packages.DIGEST.fullmatch(entry.name):
+            raise RuntimeContractError("Synced Skill package directory is invalid; nothing was applied")
+        skill_packages.store(config, read_package_directory(entry), expected=entry.name)
+        imported += 1
+    return {"packages": imported}
+
+
+def pull(config, git, values):
     if not values["remote"]:
         return
     git.run("fetch", "--no-tags", "origin")
@@ -397,6 +599,8 @@ def pull(git, values):
         git.run("checkout", "-B", values["branch"], ref)
     else:
         git.run("merge", "--no-edit", "--allow-unrelated-histories", ref)
+    # Stage packages before reconcile_profiles applies any remote profile.
+    import_packages(config, Path(values["repository"]))
 
 
 def export_history(config, repo, device):
@@ -621,14 +825,14 @@ def commit(git):
             continue
         if path.is_symlink():
             raise ConflictError("Sync worktree contains a symlink")
-        if path.is_file() and not (relative.as_posix() == "format.json" or
-            re.fullmatch(r"profiles/[A-Za-z0-9_.-]+/[0-9a-f]{64}\.json", relative.as_posix()) or
-            re.fullmatch(r"devices/[0-9a-f]{32}/(?:runs/[A-Za-z0-9-]+|sessions/[0-9a-f]{64})\.json", relative.as_posix())):
+        name = relative.as_posix()
+        if path.is_file() and not (name == "format.json" or PROFILE_PATH.fullmatch(name) or
+                DEVICE_PATH.fullmatch(name) or package_tree_path(name)):
             raise ConflictError("Sync worktree contains unexpected files; only managed user data can be committed")
     if git.run("diff", "--name-only", "--diff-filter=D").stdout:
         raise ConflictError("Tracked sync data was deleted locally; restore or inspect it before automatic sync")
     git.run("add", "--all", "--", "format.json")
-    for name in ("profiles", "devices"):
+    for name in ("profiles", "devices", "packages"):
         if any((git.repository / name).rglob("*.json")):
             git.run("add", "--all", "--", name)
     if git.run("diff", "--cached", "--quiet", allowed=(0, 1)).returncode:
@@ -660,10 +864,11 @@ def cycle(config):
             commit(git)
             # Offline work is committed locally even when the following fetch fails.
             reconcile_profiles(config, repo, values, local)
+            package_report = export_packages(config, repo)
             archive_report = export_history(config, repo, values["device_id"])
             write_json(root / "local.json", local)
             commit(git)
-            pull(git, values)
+            pull(config, git, values)
             if read_json(repo / "format.json") != FORMAT:
                 raise RuntimeContractError("Unsupported user-data repository format")
             # Git checks out files with ordinary modes; keep the independent clone private.
@@ -682,10 +887,11 @@ def cycle(config):
                         break
                     if attempt == 2:
                         raise RuntimeContractError("Remote moved or push was rejected; local commits are retained for retry")
-                    pull(git, values)
+                    pull(config, git, values)
                     reconcile_profiles(config, repo, values, local)
                     commit(git)
             result = {"state": "ok", "completed_at": stamp(), **archive_report,
+                      "skill_packages": package_report,
                       "remote_synced": bool(values["remote"]), "conflict_count": len(conflicts(config))}
         except Exception as error:
             result = {"state": "error", "completed_at": stamp(), "error": str(error) if isinstance(error, RuntimeContractError) else "Sync filesystem/database operation failed"}
