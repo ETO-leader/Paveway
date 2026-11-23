@@ -9,6 +9,7 @@ import hmac
 import os
 from pathlib import Path
 import secrets
+import stat
 import uuid
 
 from .errors import ConflictError, NativeSessionError, NotFoundError, RuntimeContractError
@@ -22,6 +23,26 @@ PREFIX = "frontend:v1:"
 def session_directory(config, workflow_id, task_id, conversation_id):
     key = hashlib.sha256(canonical_json([workflow_id, task_id, conversation_id]).encode()).hexdigest()
     return config.state_dir / "native" / key
+
+
+def check_directory(cwd, *, canonical=False):
+    """Validate a foreground directory without changing the Runtime process cwd."""
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute() or any(ord(c) < 32 or ord(c) == 127 for c in cwd):
+        raise RuntimeContractError("Invalid working directory: expected an absolute filesystem path")
+    directory = Path(cwd)
+    try:
+        if not stat.S_ISDIR(directory.stat().st_mode):
+            raise RuntimeContractError("Working directory is not a directory")
+        if not os.access(directory, os.R_OK | os.X_OK, effective_ids=True):
+            raise PermissionError
+        if canonical and str(directory.resolve(strict=True)) != cwd:
+            raise RuntimeContractError("Working directory now resolves to a different path; select it again")
+    except (FileNotFoundError, NotADirectoryError):
+        raise RuntimeContractError("Working directory is missing or is not a directory") from None
+    except PermissionError:
+        raise RuntimeContractError("Permission denied for working directory") from None
+    except OSError:
+        raise RuntimeContractError("Cannot access working directory") from None
 
 
 def alive(pid, identity):
@@ -54,6 +75,7 @@ class Frontend:
     @staticmethod
     def public(record):
         return {**{key: value for key, value in record.items() if key not in ("token_hash", "session_files")},
+                "cwd": record.get("cwd", record["workspace"]),
                 "session_count": len(record.get("session_files", []))}
 
     def get(self, conversation_id):
@@ -77,11 +99,13 @@ class Frontend:
         return record
 
     def begin(self, workflow_id, task_id, workspace, conversation_id=None, new=False, settings=None,
-              workflow_revision="", workflow_instructions="", inference_preference=None, role_base=None):
+              workflow_revision="", workflow_instructions="", inference_preference=None, role_base=None, cwd=None):
         validate_id(workflow_id)
         validate_id(task_id)
         if type(new) is not bool or (new and conversation_id):
             raise RuntimeContractError("Choose a conversation or create a new one")
+        if cwd is not None and conversation_id is None and not new:
+            raise RuntimeContractError("A cwd override requires a new conversation")
         if not conversation_id and not new:
             previous = self.records(workflow_id, task_id)
             conversation_id = previous[0]["conversation_id"] if previous else None
@@ -96,6 +120,8 @@ class Frontend:
                 raise ConflictError("Native conversation belongs to another scope or workspace")
             if old and old["status"] != "released":
                 raise ConflictError("Native conversation has an active or uncertain owner; use --new or inspect frontend status")
+            if old and cwd is not None:
+                raise ConflictError("Cannot change a saved conversation's working directory")
             if old and old.get("persona_digest", persona_digest({})) != persona_digest(settings):
                 raise ConflictError("Persona changed; start --new (or a new task). The old conversation and original settings remain intact")
             if old and old.get("workflow_revision", workflow_revision) != workflow_revision:
@@ -103,10 +129,13 @@ class Frontend:
             if old and old.get("session_file") and (
                     old.get("composer_version") != VERSION or old.get("role_base") != role_base):
                 raise ConflictError("Prompt architecture/role changed; start --new. Legacy sessions and history are preserved")
+            effective_cwd = old.get("cwd", old["workspace"]) if old else (str(workspace) if cwd is None else cwd)
+            check_directory(effective_cwd, canonical=effective_cwd != str(workspace))
             directory = session_directory(self.store.config, workflow_id, task_id, conversation_id)
             key = directory.name
             record = {"contract_version": 1, "conversation_id": conversation_id, "workflow_id": workflow_id,
                 "coach_id": settings.get("coach", {}).get("id", workflow_id), "task_id": task_id, "workspace": str(workspace), "binding_id": key,
+                "cwd": effective_cwd,
                 "session_dir": str(directory), "session_id": old.get("session_id") if old else None,
                 "session_file": old.get("session_file") if old else None,
                 "session_required": bool(old and old.get("session_file")),

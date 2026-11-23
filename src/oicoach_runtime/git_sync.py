@@ -720,13 +720,14 @@ def archive_timestamp(value):
         return None
 
 
-def _read_session(binding, root, consume, *, maximum=None):
+def _read_session(binding, root, consume, *, maximum=None, header_only=False):
     """Stream integrity validation independently of bounded text collection."""
     from .errors import NativeSessionError
     path = Path(binding["session_file"])
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
         raise NativeSessionError("native_session_unsafe")
-    header = False
+    header = title = False
+    expected_cwd = binding.get("cwd", binding["workspace"])
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid():
@@ -745,9 +746,16 @@ def _read_session(binding, root, consume, *, maximum=None):
             if not isinstance(entry, dict):
                 raise NativeSessionError("native_session_invalid")
             if entry.get("type") == "session":
-                if header or entry.get("id") != binding["session_id"] or entry.get("cwd") != binding["workspace"] or type(entry.get("version", 1)) is not int or entry.get("version", 1) not in (1, 2, 3):
+                if header or entry.get("id") != binding["session_id"] or entry.get("cwd") != expected_cwd or type(entry.get("version", 1)) is not int or entry.get("version", 1) not in (1, 2, 3):
                     raise NativeSessionError("native_session_identity_mismatch")
                 header = True
+                if header_only:
+                    break
+            elif header_only:
+                if not title and entry.get("type") == "title":
+                    title = True
+                    continue
+                raise NativeSessionError("native_session_identity_mismatch")
             elif entry.get("type") == "message":
                 if not header:
                     raise NativeSessionError("native_session_identity_mismatch")
@@ -770,6 +778,15 @@ def validate_session(config, binding, *, root=None):
     """Bounded-memory validation for release/resume; no aggregate export limit."""
     root = root or config.state_dir / "sessions" / binding["binding_id"]
     return _read_session(binding, root, lambda _entry: None)
+
+
+def validate_session_header(binding, root):
+    """Fence OMP resume before its native loader can adopt another project."""
+    from .errors import NativeSessionError
+    try:
+        _read_session(binding, root, None, header_only=True)
+    except FileNotFoundError:
+        raise NativeSessionError("native_session_missing") from None
 
 
 def conversation_message(entry):

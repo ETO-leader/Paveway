@@ -192,3 +192,44 @@ class FrontendTests(unittest.TestCase):
                     self.frontend.recover(lease["conversation_id"])
                 self.assertEqual(error.exception.code, code)
                 self.assertEqual(self.frontend.get(lease["conversation_id"])["session_file"], str(path))
+
+    def test_conversation_cwd_is_immutable_and_validates_the_physical_header(self):
+        from oicoach_runtime.errors import RuntimeContractError
+        from oicoach_runtime.git_sync import validate_session_header
+
+        project = self.root / "other project"
+        project.mkdir()
+        lease = self.begin(new=True, cwd=str(project), workflow_revision="1")
+        self.assertEqual((lease["workspace"], lease["cwd"]), (str(self.root), str(project)))
+        directory = Path(lease["session_dir"])
+        directory.mkdir(parents=True, mode=0o700)
+        path = directory / "session.jsonl"
+        header = {"type": "session", "id": "recorded", "cwd": str(project), "version": 3}
+        title = json.dumps({"type": "title", "v": 1, "title": "", "pad": ""}) + "\n"
+        path.write_text(title + json.dumps(header) + "\n")
+        record = self.frontend.get(lease["conversation_id"])
+        record.update(session_file=str(path), session_id="recorded", session_required=True)
+        with self.store.transaction() as db:
+            self.frontend.save(db, record)
+
+        self.assertEqual(self.frontend.finish(**self.owner(lease), exit_code=0)["status"], "released")
+        with self.assertRaisesRegex(ConflictError, "working directory"):
+            self.begin(lease["conversation_id"], cwd=str(self.root), workflow_revision="1")
+        with self.assertRaisesRegex(ConflictError, "Workflow revision"):
+            self.begin(lease["conversation_id"], workflow_revision="2")
+
+        project.rmdir()
+        with self.assertRaisesRegex(RuntimeContractError, "missing"):
+            self.begin(lease["conversation_id"], workflow_revision="1")
+        self.assertEqual(self.frontend.get(lease["conversation_id"])["status"], "released")
+        project.mkdir()
+        resumed = self.begin(lease["conversation_id"], workflow_revision="1")
+        self.assertEqual(resumed["cwd"], str(project))
+        validate_session_header(resumed, directory)
+        path.write_text(title + json.dumps({**header, "cwd": str(self.root)}) + "\n")
+        with self.assertRaises(ConflictError) as error:
+            validate_session_header(resumed, directory)
+        self.assertEqual(error.exception.code, "native_session_identity_mismatch")
+        self.assertEqual(self.frontend.finish(**self.owner(resumed), exit_code=0)["status"], "uncertain")
+        with self.assertRaises(ConflictError):
+            self.frontend.recover(lease["conversation_id"])

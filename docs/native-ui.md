@@ -87,7 +87,7 @@ PTY 验证字符单元格、颜色、动画生命周期与 resize；当前 [Dual
 
 原生入口在获取前台所有权之前准备隔离的 **18.16.0** 宿主（commit `650f3a108229ee11bf68ba3377f4e8c3391cd424`），不检查或限制系统／配置中 OMP 的版本。该版本原来的 `setFooter()` 是 no-op；随包补丁增加 `ui.setStatusLine(renderer)`，直接挂入现有 StatusLine；对话与输入外观由上面的独立 opt-in 接口提供，不替换 Transcript、Scrollback、编辑逻辑或鼠标滚轮。OMP 自身在 Resize／全屏选择器中短暂借用 Alternate Screen 的行为保留，不强制常驻 Alternate Screen。
 
-安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,statusline.patch,conversation.patch,composer.patch,banner.patch,omp}`。Banner 的前台预加载模块和字符渲染器位于 `bundled/paveway-banner{,-host}.mjs`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
+安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,*.patch,omp}`。Banner 的前台预加载模块和字符渲染器位于 `bundled/paveway-banner{,-host}.mjs`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
 
 首次准备需要 Git、网络和 Linux x86-64 glibc；下载固定 Bun／原生插件并校验 SHA-512，JS 依赖使用上游冻结锁文件和独立依赖缓存。缓存默认在 `~/.cache/paveway/omp/18.16.0`，可用 `PAVEWAY_OMP_CACHE` 指定。后续启动离线复用已准备宿主。可以提前准备：
 
@@ -113,13 +113,27 @@ packaging/omp/omp --version
 oicoach-runtime native --config /absolute/config.toml --workflow test01
 ```
 
-同一 workflow/task 默认接续最近的已释放原生 Conversation；不传 task 时恢复最近使用的 task。多 Profile 的第一次启动可用方向键选择，已有原生记录时优先恢复最近使用的 Profile。`--new` 新建 Conversation；`--conversation ID` 明确恢复。Persona 更新要求新的 Paveway Conversation，不会热改当前身份；原生 `/new` 只在本次加载的配置中创建另一个 OMP Session，要加载新 Persona 请用 `/paveway profile` 的 New conversation 或重新启动加 `--new`。
+同一 workflow/task 默认接续最近的原生 Conversation；不传 task 时使用最近使用的 task。多 Profile 的第一次启动可用方向键选择，已有原生记录时优先恢复最近使用的 Profile。`--new` 从 Workflow 默认 Workspace 新建 Conversation；`--conversation ID` 明确恢复，未显式提供的 Workflow 和 task 从该记录推导。Persona 更新要求新的 Paveway Conversation，不会热改当前身份；原生 `/new` 只在同一 Conversation 与目录下创建另一个 OMP Session。要加载新 Persona，请用 `/paveway profile` 的 **New conversation**，或重新启动加 `--new`。
 
 `--new` 与 `--conversation ID` 互斥，且仅适用于原生入口；`--legacy-ui` 或 `PAVEWAY_UI=legacy` 下明确拒绝，不会静默忽略。两者都不传时保留默认续接行为，不会为了绕过所有权冲突而自动新建。
 
 初次升级需在空闲时重启 daemon，使其加载新的 frontend IPC；旧 daemon 不支持该协议时入口明确拒绝，已有请求不被打断。原生入口目前只精确加载 Paveway trusted extension，不自动发现其他用户 Extension；内建工具、Workspace MCP、Skills 和 Rules 仍由 OMP 提供，并遵守配置权限。
 
 默认接续的旧对话尚未释放时，启动入口显示 Session recovery 选择：uncertain 可选择恢复旧对话、新建或取消；仍处于 active/idle/starting 的旧 owner 只提供新建或取消。方向键／空格选择，Tab 切到确认按钮，Enter 确认。恢复必须经 Runtime 检查旧进程死亡、锁已释放及历史完整性，不能凭失去心跳接管；失败不会偷偷改为新对话，也不重发旧输入。新建保留原记录，缺失或损坏的 Session 仍需核查并使用新对话。
+
+## 原生项目目录
+
+- `/paveway cwd`，或从 `/paveway` 菜单选择 `cwd`：显示当前目录和 Workflow 默认 Workspace，用 OMP 原生输入框输入路径，再确认或取消。
+- `/paveway cwd <路径>`：直接切换，无第二次确认。支持绝对路径、`~`、`~/…`、相对于当前目录的路径，以及包含空格的路径；可加一对外层引号。目录必须已存在、可读取并可进入；不会创建目录。指向当前目录时不重启。
+- `/paveway profile` → **Resume conversation**：在当前 Workflow/task 中选择另一条已释放的对话。也可用 `./paveway.sh --conversation ID` 恢复；`/coach` 显示当前 Conversation ID 和目录。`uncertain` 仍走启动时的显式恢复。
+
+切换只在前台空闲时接受，活动回合或工具尚未结束时拒绝。Runtime 确认旧 owner 和 Session 文件锁均已释放后才启动新 OMP。新 Conversation 有独立 ID 和 Session 目录，不搬迁 Session、不重发输入，也不更改后台 Run 的绑定或 Workflow 默认 Workspace。目标目录如果在切换期间消失，启动会报错，不回退到其他目录；旧对话可用原 ID 打开。
+
+OMP 用目标 cwd 启动，因此工具、Git、`AGENTS.md`、项目 Agent、Rules、Skills 和其他项目设置照常从目标项目发现，受原有发现开关限制。Paveway 仍使用同一 Workflow、Profile、Persona、追加 Prompt、个人 Skills 和记忆作用域；切换时携带当前模型与 Thinking，不改已保存的偏好。不会把源项目配置复制到目标项目。Workflow 管理的 Tijian MCP 是例外，见 [Tijian MCP 配置继承](tijian.md#在其他项目使用-workflow-的-tijian-mcp)。
+
+OMP 18.16.0 的 `/move` 会搬移当前 JSONL 与 artifacts、改写 Session header cwd，并重新绑定进程 cwd、项目设置和部分发现缓存。Paveway 不使用这条路径；受管前台不允许 `/move`、`/wt` 或持久化 `!cd` 改变已绑定 cwd。需要 worktree 时可先在外部创建，再用 `/paveway cwd` 打开；普通 `!pwd`、`!cd dir && command` 等局部 shell 操作不迁移对话。
+
+cwd 是本机 Session 身份，不是跨设备 Git 文字归档的可移植设置。目录移动或删除后，恢复会报错，需恢复原路径或新建 Conversation。直接使用 `oicoach-runtime native` 时，先用 `./paveway.sh` 安全升级并启动匹配构建的 Runtime。
 
 ## 原生菜单
 
@@ -149,7 +163,8 @@ batch 为 `{ "file": "<预览的路径>", "sha256": "<预览的 ZIP 摘要>", "s
 | prompt | 查看／编辑／清空用户自定义追加 Prompt |
 | skills | 新建、查看、编辑、启停、删除单文件 Skill；原样安装／替换完整包；OI Introduce、user information、personal skill 同时按需发现 |
 | persona | 编辑独立 Persona，CAS 保存，新的 Paveway Conversation 生效 |
-| profile | 创建／切换 Profile、新 Conversation、重启原生进程；先正常释放旧进程再启动目标环境 |
+| profile | 创建／切换 Profile、新建／恢复 Conversation、重启原生进程 |
+| cwd | 显示当前目录、输入或直接切换到新目录并新建 Conversation |
 | model / thinking | 可携带到其他设备的配置偏好，下次启动生效；本次 OMP 的模型／思考选择仍使用原生命令和快捷键 |
 | events | 当前作用域的事件详情、CAS 取消／重排 |
 | memory | Profile 或 task 的笔记 CRUD；不与 OMP 原生 Memory 混为一谈 |

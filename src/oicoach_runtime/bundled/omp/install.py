@@ -22,7 +22,7 @@ VERSION = "18.16.0"
 COMMIT = "650f3a108229ee11bf68ba3377f4e8c3391cd424"
 BUN_VERSION = "1.4.4"
 RESOURCES = Path(__file__).resolve().parent
-PATCHES = ("statusline.patch", "conversation.patch", "composer.patch", "banner.patch")
+PATCHES = ("statusline.patch", "conversation.patch", "composer.patch", "banner.patch", "workspace.patch", "workflow-mcp.patch")
 BUN_URL = "https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-1.4.4.tgz"
 BUN_INTEGRITY = "FBU6T21NT+i+rESbi0Z8A8G5xN51c+WZ0v6pIjI6szSzOlqVNv64nf7FPnwNIyxKD1M7Wg5cEobLC/QbzCeLtA=="
 NATIVE_URL = "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-x64/-/pi-natives-linux-x64-18.16.0.tgz"

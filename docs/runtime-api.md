@@ -133,6 +133,8 @@ IPC command 為 `status/schedule/events.list/events.upcoming/events.show/events.
 
 受管扩展使用 `frontend.begin/started/attest/observe/inference/finish` 及版本化 `frontend:v1:` 元数据登记。绑定作用域、generation 与 owner_token 校验；owner_token 仅通过私密启动配置及本地 socket 传递，公开记录不返回 token_hash。`agent_end` 的 `observed_loop_only` 不代表严格 settled。前后台物理 Session 分离，原 RPC 完成契约不变。
 
+原生 Conversation 的 `workspace` 是 Workflow 默认 Workspace，`cwd` 是该 Conversation 固定的项目目录。旧 `frontend:v1:` 记录没有 `cwd` 时以 `workspace` 读取，不需要数据库迁移。受管 launcher 可仅在创建新 Conversation 时向 `frontend.begin` 传绝对 `cwd`；已存在记录不可改写。启动校验 OMP 进程的实际目录和物理 Session 身份；释放、恢复及历史读取仍验证 JSONL header 的 cwd 与 ID。后台 Session 绑定不读取前台 `cwd`。
+
 原生工具调用统一传 `{conversation_id, generation, owner_token, parameters}`：
 
 | IPC command | parameters |

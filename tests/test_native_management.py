@@ -3,6 +3,7 @@ import json
 import os
 import zipfile
 from pathlib import Path
+from dataclasses import replace
 import pty
 import select
 import struct
@@ -14,6 +15,7 @@ import threading
 
 from test_native_omp import NativeFixture
 from oicoach_runtime import coaches, customization
+from oicoach_runtime.config import config_text
 from oicoach_runtime.compatibility import probe_daemon
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
@@ -162,14 +164,16 @@ class NativeManagementTests(NativeFixture):
         exit_ui()
         self.assertEqual(request(self.config.server.socket_path, "memory.show", {"workflow_id": "native-test", "task_id": "training", "key": "bypass-fixture"})["version"], 1)
 
-    def open_ui(self, launcher=False, recover=False, *, columns=120, screen=None, args=()):
+    def open_ui(self, launcher=False, recover=False, *, columns=120, screen=None, args=(),
+                workflow="native-test", ready=None):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, columns, 0, 0))
         stream = pyte.ByteStream(screen) if screen is not None else None
         argv = [sys.executable, "-m", "oicoach_runtime", "native"]
         if launcher:
             argv = [str(Path(__file__).resolve().parents[1] / "paveway.sh")]
-        process = subprocess.Popen([*argv, "--config", str(self.path), "--workflow", "native-test", *args],
+        scope = ["--workflow", workflow] if workflow else []
+        process = subprocess.Popen([*argv, "--config", str(self.path), *scope, *args],
             env={**self.env, "PAVEWAY_PYTHON": sys.executable}, cwd=self.root, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         os.set_blocking(master, False)
@@ -224,9 +228,12 @@ class NativeManagementTests(NativeFixture):
         if recover:
             until("Session recovery")
             send(b" \t\r")
-        until("", lambda: any(row["status"] == "idle" and row.get("session_id")
-            for row in frontend_rows()))
-        pump(.15)
+        if ready is None:
+            ready = lambda rows: any(row["workflow_id"] == workflow and row["status"] == "idle"
+                                     and row.get("session_id") for row in rows)
+        until("PAVEWAY" if columns >= 100 else "", lambda: ready(frontend_rows()))
+        if columns < 100:
+            pump(.15)
         return process, raw, send, until, pump, exit_ui
 
     def open_settings_ui(self, *, columns=120):
@@ -287,7 +294,7 @@ class NativeManagementTests(NativeFixture):
     def test_settings_is_reachable_from_native_paveway_menu_without_chat(self):
         screen, raw, send, until, pump, exit_ui = self.open_settings_ui()
         send("/paveway\r")
-        until("Paveway")  # A random startup tip can contain "prompt" before the menu is mounted.
+        until("persona")  # A menu row, not the Paveway heading from the welcome banner.
         # Existing native menu order: prompt through vjudge, then settings.
         send(b"\x1b[B" * 10)
         until("settings")
@@ -808,6 +815,328 @@ class NativeManagementTests(NativeFixture):
         self.assertEqual(saved["skills"][0]["content"], draft["content"])
         self.assertEqual(saved["system_prompt"]["text"], "CONCURRENT_IMPORT_PROMPT")
         self.assertEqual(len(self.server.requests), 1)
+        exit_ui()
+
+    def cwd_record(self, conversation_id):
+        return request(self.config.server.socket_path, "frontend.show", {"conversation_id": conversation_id})
+
+    def assert_conversation_cwd(self, row, cwd):
+        self.assertEqual(row["workspace"], str(self.root / "workspace"))
+        self.assertEqual(row["cwd"], str(cwd))
+        self.assertEqual(Path(f'/proc/{row["omp_pid"]}/cwd').resolve(strict=True), cwd)
+
+    def switched_cwd_record(self, until, previous, cwd):
+        def find():
+            return next((row for row in request(self.config.server.socket_path, "frontend.list")
+                         if row["conversation_id"] != previous["conversation_id"] and row["cwd"] == str(cwd)
+                         and row["status"] == "idle" and row["session_id"]), None)
+        until("PAVEWAY", lambda: find() is not None)
+        current = find()
+        self.assert_conversation_cwd(current, cwd)
+        self.assertEqual(self.cwd_record(previous["conversation_id"])["status"], "released")
+        self.assertNotEqual(current["omp_pid"], previous["omp_pid"])
+        self.assertFalse(Path(f'/proc/{previous["omp_pid"]}/cwd').exists())
+        self.assertNotEqual(current["session_id"], previous["session_id"])
+        self.assertEqual(current["workflow_id"], previous["workflow_id"])
+        self.assertEqual(current["task_id"], previous["task_id"])
+        self.assertEqual(current["coach_id"], previous["coach_id"])
+        return current
+
+    def test_cwd_dialog_cancels_or_opens_a_new_conversation_with_resumable_history(self):
+        if pyte is None:
+            self.skipTest("install .[test] to verify the native cwd input and confirmation")
+        workspace = self.root / "workspace"
+        target = self.root / "checkout with spaces"
+        target.mkdir()
+        alias = self.root / "checkout alias"
+        alias.symlink_to(target, target_is_directory=True)
+        other = self.root / "home checkout"
+        other.mkdir()
+        denied = self.root / "unreadable checkout"
+        denied.mkdir(mode=0)
+        self.addCleanup(denied.chmod, 0o700)
+        manifest = self.config.workflow_root / "native-test/workflow.toml"
+        original_manifest = manifest.read_bytes()
+        self.env["REDUCED_MOTION"] = "1"
+        screen = WideScreen(240, 40)
+        process, raw, send, until, pump, exit_ui = self.open_ui(columns=240, screen=screen)
+        original, = request(self.config.server.socket_path, "frontend.list")
+        self.assert_conversation_cwd(original, workspace)
+        self.assertEqual(self.server.requests, [])
+
+        def rendered():
+            return "\n".join(screen.display)
+
+        def open_input(current):
+            send("/paveway cwd\r")
+            until("", lambda: f"Current directory: {current}" in rendered()
+                  and f"Workflow workspace: {workspace}" in rendered())
+
+        confirm = "Start a new conversation here?"
+        send("/paveway\r")
+        until("", lambda: "Paveway" in rendered() and "persona" in rendered())
+        send(b"\x1b[B" * 11)
+        until("", lambda: "cwd" in rendered())
+        send("\r")
+        until("", lambda: f"Current directory: {workspace}" in rendered()
+              and f"Workflow workspace: {workspace}" in rendered())
+        send(b"\x1b")
+        until("", lambda: "Workflow workspace" not in rendered())
+        argument = '"../checkout alias"'
+        for dismiss in (b"\x1b", b"\x1b[B\r"):
+            open_input(workspace)
+            send(argument + "\r")
+            until("", lambda: all(text in rendered() for text in (confirm, "Yes", "No")))
+            send(dismiss)
+            until("", lambda: confirm not in rendered())
+            unchanged, = request(self.config.server.socket_path, "frontend.list")
+            self.assertEqual(unchanged["conversation_id"], original["conversation_id"])
+            self.assertEqual(unchanged["omp_pid"], original["omp_pid"])
+            self.assert_conversation_cwd(unchanged, workspace)
+
+        invalid_paths = [("./missing", "Directory does not exist"), (str(manifest), "Not a directory")]
+        if not os.access(denied, os.R_OK | os.X_OK):
+            invalid_paths.append((str(denied), "Permission denied for working directory"))
+        for path, message in invalid_paths:
+            raw.clear()
+            send(f"/paveway cwd {path}\r")
+            until(message)
+        for command in (f"/move {other}", f'!cd "{other}"'):
+            raw.clear()
+            send(command + "\r")
+            until("Use /paveway cwd")
+        unchanged, = request(self.config.server.socket_path, "frontend.list")
+        self.assertEqual(unchanged["conversation_id"], original["conversation_id"])
+        self.assertEqual(unchanged["omp_pid"], original["omp_pid"])
+        self.assert_conversation_cwd(unchanged, workspace)
+        self.assertEqual(self.server.requests, [])
+
+        send("ORIGINAL_DIRECTORY_TURN\r")
+        until("M0_REPLY", lambda: self.prompt_requests("ORIGINAL_DIRECTORY_TURN")
+              and self.cwd_record(original["conversation_id"])["status"] == "idle")
+        original_history = Path(original["session_file"])
+        self.assertIn("ORIGINAL_DIRECTORY_TURN", original_history.read_text())
+
+        open_input(workspace)
+        send(argument + "\r")
+        until("", lambda: all(text in rendered() for text in (confirm, "Yes", "No", str(target))))
+        send("\r")  # Yes is the first option in OMP's native confirmation.
+        moved = self.switched_cwd_record(until, original, target)
+        saved_original = original_history.read_bytes()
+        self.assertIn(b"ORIGINAL_DIRECTORY_TURN", saved_original)
+        raw.clear()
+        send("MOVED_DIRECTORY_TURN")
+        until("MOVED_DIRECTORY_TURN")
+        send("\r")
+        until("M0_REPLY", lambda: self.prompt_requests("MOVED_DIRECTORY_TURN")
+              and self.cwd_record(moved["conversation_id"])["status"] == "idle")
+        self.assertNotIn("ORIGINAL_DIRECTORY_TURN", json.dumps(self.prompt_requests("MOVED_DIRECTORY_TURN")[-1]))
+        moved_history = Path(moved["session_file"])
+        self.assertNotEqual(moved_history, original_history)
+        with moved_history.open() as history:
+            header = next(row for row in map(json.loads, history) if row["type"] == "session")
+            self.assertEqual(header["cwd"], str(target))
+        self.assertIn("MOVED_DIRECTORY_TURN", moved_history.read_text())
+        self.assertNotIn("ORIGINAL_DIRECTORY_TURN", moved_history.read_text())
+
+        open_input(target)
+        send(b"\x1b")
+        until("", lambda: "Workflow workspace" not in rendered())
+        raw.clear()
+        send("/paveway cwd ~/home checkout\r")  # Unquoted spaces are part of the path.
+        home = self.switched_cwd_record(until, moved, other)
+        self.assertNotIn(confirm.encode(), raw)
+        self.assertIsNone(process.poll())
+        exit_ui()
+
+        process, raw, send, until, pump, exit_ui = self.open_ui(
+            launcher=True, workflow=None, args=("--conversation", moved["conversation_id"]),
+            ready=lambda rows: any(row["conversation_id"] == moved["conversation_id"] and row["status"] == "idle"
+                                   for row in rows))
+        resumed = self.cwd_record(moved["conversation_id"])
+        self.assert_conversation_cwd(resumed, target)
+        self.assertEqual(resumed["session_id"], moved["session_id"])
+        self.assertEqual(resumed["session_file"], moved["session_file"])
+        self.assertGreater(resumed["generation"], moved["generation"])
+        self.assertEqual(self.cwd_record(home["conversation_id"])["status"], "released")
+        send("RESUMED_DIRECTORY_TURN")
+        until("RESUMED_DIRECTORY_TURN")
+        send("\r")
+        until("M0_REPLY", lambda: self.prompt_requests("RESUMED_DIRECTORY_TURN")
+              and self.cwd_record(moved["conversation_id"])["status"] == "idle")
+        self.assertIn("MOVED_DIRECTORY_TURN", json.dumps(self.prompt_requests("RESUMED_DIRECTORY_TURN")[-1]))
+        raw.clear()
+        send("/paveway profile\r")
+        until("Restart native session")
+        send(b"\x1b[B" * 4 + b"\r")
+        until(home["conversation_id"])
+        send("\r")
+        until("", lambda: self.cwd_record(home["conversation_id"])["status"] == "idle")
+        reopened = self.cwd_record(home["conversation_id"])
+        self.assert_conversation_cwd(reopened, other)
+        self.assertEqual(reopened["session_id"], home["session_id"])
+        self.assertEqual(self.cwd_record(moved["conversation_id"])["status"], "released")
+        exit_ui()
+        self.assertIn("RESUMED_DIRECTORY_TURN", moved_history.read_text())
+        self.assertEqual(original_history.read_bytes(), saved_original)
+        self.assertEqual(manifest.read_bytes(), original_manifest)
+
+    def test_direct_cwd_loads_target_project_context_without_losing_profile_and_inference(self):
+        self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True, skills_enabled=True))
+        self.path.write_text(config_text(self.config))
+        profile = coaches.create(self.config, "cwd-profile", "native-test", "RETAINED_CWD_PERSONA")
+        workflow = profile["runtime_workflow_id"]
+        settings = customization.update(self.config, workflow, profile["revision"], "prompt", content="RETAINED_CWD_PROMPT")
+        customization.update(self.config, workflow, settings["settings"]["revision"], "skill-put",
+                             name="retained-personal-cwd-skill", description="RETAINED_CWD_PERSONAL_SKILL",
+                             content="Fixture personal skill.")
+        manifest = self.config.workflow_root / workflow / "workflow.toml"
+        original_manifest = manifest.read_bytes()
+
+        workspace = self.root / "workspace"
+        target = self.root / "absolute checkout"
+        target.mkdir()
+        (workspace / "AGENTS.md").write_text("OLD_DIRECTORY_AGENT_INSTRUCTIONS\n")
+        (target / "AGENTS.md").write_text("TARGET_DIRECTORY_AGENT_INSTRUCTIONS\n")
+        project = target / ".omp"
+        project.mkdir()
+        (project / "RULES.md").write_text("TARGET_DIRECTORY_STICKY_RULE\n")
+        (project / "agents").mkdir()
+        (project / "agents/target-cwd-agent.md").write_text(
+            "---\nname: target-cwd-agent\ndescription: Target project fixture\n---\nFixture agent.\n")
+        extra_skills = self.root / "extra cwd fixture skills"
+        for parent, name, marker in (
+            (project / "skills", "target-native-skill", "TARGET_DIRECTORY_NATIVE_SKILL"),
+            (extra_skills, "target-configured-skill", "TARGET_DIRECTORY_CONFIGURED_SKILL"),
+        ):
+            path = parent / name / "SKILL.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(f"---\nname: {name}\ndescription: {marker}\n---\nFixture skill.\n")
+        project_config = project / "config.yml"
+        project_settings = json.dumps({"skills": {"customDirectories": [str(extra_skills)]}})
+        project_config.write_text(project_settings)
+
+        models = self.root / "agent/models.yml"
+        model_config = json.loads(models.read_text())
+        registered = model_config["providers"]["paveway-m0"]["models"]
+        registered.append({**registered[0], "id": "cwd-reasoning-probe", "name": "cwd-reasoning-probe",
+            "reasoning": True, "compat": {"supportsReasoningEffort": True, "thinkingFormat": "openai"}})
+        models.write_text(json.dumps(model_config))
+        self.env["REDUCED_MOTION"] = "1"
+
+        process, raw, send, until, pump, exit_ui = self.open_ui(workflow=workflow, columns=180)
+        original, = request(self.config.server.socket_path, "frontend.list")
+        self.assert_conversation_cwd(original, workspace)
+        self.assertEqual(original["coach_id"], "cwd-profile")
+        send("/switch paveway-m0/cwd-reasoning-probe:medium\r")
+        until("Session-only model: paveway-m0/cwd-reasoning-probe")
+        send("BEFORE_PROJECT_CWD_TURN\r")
+        until("M0_REPLY", lambda: self.prompt_requests("BEFORE_PROJECT_CWD_TURN")
+              and self.cwd_record(original["conversation_id"])["status"] == "idle")
+
+        raw.clear()
+        send(f"/paveway cwd {target}\r")
+        moved = self.switched_cwd_record(until, original, target)
+        self.assertNotIn(b"Start a new conversation here?", raw)
+        raw.clear()
+        # This regular file exists relative to the conversation, not the Workflow.
+        send("/paveway cwd .omp/config.yml\r")
+        until("Not a directory")
+        self.assert_conversation_cwd(self.cwd_record(moved["conversation_id"]), target)
+        send("!!test -f .omp/RULES.md && printf '%s%s\\n' TARGET_ TERMINAL_RESULT\r")
+        until("TARGET_TERMINAL_RESULT")
+        raw.clear()
+        send("AFTER_PROJECT_CWD_TURN\r")
+        until("M0_REPLY", lambda: self.prompt_requests("AFTER_PROJECT_CWD_TURN")
+              and self.cwd_record(moved["conversation_id"])["status"] == "idle")
+        before = self.prompt_requests("BEFORE_PROJECT_CWD_TURN")[-1]
+        after = self.prompt_requests("AFTER_PROJECT_CWD_TURN")[-1]
+        before_context = json.dumps(before["messages"])
+        after_context = json.dumps(after["messages"])
+        for body in (before, after):
+            self.assertEqual(body["model"], "cwd-reasoning-probe")
+            self.assertEqual(body.get("reasoning_effort"), "medium")
+            self.assertIn("RETAINED_CWD_PERSONA", json.dumps(body["messages"]))
+            self.assertIn("RETAINED_CWD_PROMPT", json.dumps(body["messages"]))
+            self.assertIn("retained-personal-cwd-skill", json.dumps(body["messages"]))
+        self.assertIn("OLD_DIRECTORY_AGENT_INSTRUCTIONS", before_context)
+        self.assertNotIn("OLD_DIRECTORY_AGENT_INSTRUCTIONS", after_context)
+        for marker in ("TARGET_DIRECTORY_AGENT_INSTRUCTIONS", "TARGET_DIRECTORY_STICKY_RULE",
+                       "TARGET_DIRECTORY_NATIVE_SKILL", "TARGET_DIRECTORY_CONFIGURED_SKILL"):
+            self.assertNotIn(marker, before_context)
+            self.assertIn(marker, after_context)
+        self.assertEqual(manifest.read_bytes(), original_manifest)
+        self.assertEqual(project_config.read_text(), project_settings)
+        raw.clear()
+        send("/agents\r")
+        until("target-cwd-agent")
+        raw.clear()
+        send(b"\x1b")
+        until("\x1b[?1049l")  # The alternate screen closes without repainting the composer.
+        exit_ui()
+
+    def test_cwd_waits_for_foreground_activity_without_interrupting_running_background(self):
+        workspace = self.root / "workspace"
+        target = self.root / "independent checkout"
+        target.mkdir()
+        foreground_prompt = "HOLD_FOREGROUND_CWD_TURN"
+        background_prompt = "HOLD_BACKGROUND_CWD_TURN"
+        foreground_started = threading.Event()
+        foreground_release = threading.Event()
+        background_started = threading.Event()
+        background_release = threading.Event()
+
+        def response(body):
+            last = json.dumps(body["messages"][-1])
+            if foreground_prompt in last:
+                foreground_started.set()
+                foreground_release.wait(40)
+            elif background_prompt in last:
+                background_started.set()
+                background_release.wait(40)
+            return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]
+
+        self.server.response_factory = response
+        process, raw, send, until, pump, exit_ui = self.open_ui()
+        self.addCleanup(foreground_release.set)
+        self.addCleanup(background_release.set)
+        original, = request(self.config.server.socket_path, "frontend.list")
+        send(f"/wakeup in 1s {background_prompt}\r")
+        until("native_wakeup", background_started.is_set)
+        event, = request(self.config.server.socket_path, "events.upcoming",
+                         {"workflow_id": "native-test"})
+
+        def background():
+            return request(self.config.server.socket_path, "events.show", {"event_id": event["event_id"]})
+
+        running = background()
+        self.assertEqual(running["status"], "running")
+        send(f"{foreground_prompt}\r")
+        until("", lambda: foreground_started.is_set() and
+              self.cwd_record(original["conversation_id"])["status"] == "active")
+        send(f"/paveway cwd {target}\r")
+        until("Wait for the current activity before switching/restarting")
+        unchanged, = request(self.config.server.socket_path, "frontend.list")
+        self.assertEqual(unchanged["conversation_id"], original["conversation_id"])
+        self.assertEqual(unchanged["omp_pid"], original["omp_pid"])
+        self.assertEqual(unchanged["status"], "active")
+        self.assert_conversation_cwd(unchanged, workspace)
+        foreground_release.set()
+        until("M0_REPLY", lambda: self.cwd_record(original["conversation_id"])["status"] == "idle")
+
+        send(f"/paveway cwd {target}\r")
+        self.switched_cwd_record(until, original, target)
+        surviving = background()
+        self.assertEqual(surviving["run_id"], running["run_id"])
+        self.assertEqual(surviving["status"], "running")
+        background_release.set()
+        until("", lambda: background()["status"] == "succeeded")
+        run = request(self.config.server.socket_path, "runs.show", {"run_id": running["run_id"]})
+        directory = self.config.state_dir / "sessions" / run["binding_id"]
+        history, = (path for path in directory.glob("*.jsonl") if background_prompt in path.read_text())
+        with history.open() as source:
+            header = next(row for row in map(json.loads, source) if row["type"] == "session")
+            self.assertEqual(header["cwd"], str(workspace))
         exit_ui()
 
     def test_profile_switch_releases_old_process_before_new_scope(self):

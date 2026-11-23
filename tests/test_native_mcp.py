@@ -6,12 +6,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from test_native_omp import NativeFixture
 
 from oicoach_runtime.cli import initialize, main
-from oicoach_runtime.config import load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import ConflictError, WorkflowError
+from oicoach_runtime.ipc import request
 from oicoach_runtime import workflow_setup
 from oicoach_runtime.workflow_setup import connect_tijian, create, set_tijian, show_tijian
 
@@ -715,6 +718,97 @@ class StdioMcpProtocolBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(module=mod), self.assertRaises(ModuleNotFoundError):
                 __import__(mod)
+
+
+class NativeWorkflowMcpPtyTests(NativeFixture):
+    def test_cwd_inherits_only_managed_tijian_and_refuses_conflicts(self):
+        # Method-local import: management uses the stdio fixture defined in this module.
+        from test_native_management import NativeManagementTests
+
+        self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
+        self.path.write_text(config_text(self.config))
+        self.env["REDUCED_MOTION"] = "1"
+        workspace = self.root / "workspace"
+        target = self.root / "target checkout"
+        identical = self.root / "identical checkout"
+        conflict = self.root / "conflicting checkout"
+        trace = self.root / "launches.jsonl"
+
+        def server(name):
+            executable = self.root / f"{name}.py"
+            executable.write_text(FAKE_MCP_SERVER_CODE.replace(
+                "import sys, json\n", "import sys, json, os\n"
+                f"with open({str(trace)!r}, 'a') as log:\n"
+                f"    print(json.dumps([{name!r}, os.getcwd(), sys.argv[1:]]), file=log)\n",
+            ).replace("tijian_", name + "_"))
+            executable.chmod(0o700)
+            return {"command": str(executable), "args": ["--write-policy=none"]}
+
+        managed = server("tijian")
+        workspace_other = server("workspace_other")
+        target_other = server("target_other")
+        inputs = {}
+        for directory, servers in (
+            (workspace, {"tijian": managed, "workspace-other": workspace_other}),
+            (target, {"target-other": target_other}),
+            (identical, {"tijian": dict(managed)}),
+            (conflict, {"tijian": {**managed, "args": ["--write-policy=full"]}}),
+        ):
+            config = directory / ".omp/mcp.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            inputs[config] = json.dumps({"mcpServers": servers})
+            config.write_text(inputs[config])
+        user_config = self.root / "agent/mcp.json"
+        inputs[user_config] = '{"mcpServers":{},"enabledServers":["tijian"]}'
+        user_config.write_text(inputs[user_config])
+
+        def launches():
+            if not trace.exists():
+                return []
+            return [json.loads(line) for line in trace.read_text().splitlines()]
+
+        _, raw, send, until, _, exit_ui = NativeManagementTests.open_ui(self, columns=180)
+
+        def idle_at(directory):
+            return any(
+                row["cwd"] == str(directory) and row["status"] == "idle" and row["session_id"]
+                for row in request(self.config.server.socket_path, "frontend.list")
+            )
+
+        def switch(target):
+            raw.clear()
+            send(f"/paveway cwd {target}\r")
+            until("PAVEWAY", lambda: idle_at(target))
+
+        inherited_launch = ["tijian", str(workspace), ["--write-policy=none"]]
+        until("", lambda: inherited_launch in launches() and any(row[0] == "workspace_other" for row in launches()))
+        initial_workspace_other_count = sum(row[0] == "workspace_other" for row in launches())
+        switch(target)
+        until("", lambda: launches().count(inherited_launch) == 2
+              and ["target_other", str(target), ["--write-policy=none"]] in launches())
+        send("OVERRIDE_MCP_INHERITED\r")
+        until("M0_REPLY", lambda: self.prompt_requests("OVERRIDE_MCP_INHERITED") and idle_at(target))
+        inherited_request = json.dumps(self.prompt_requests("OVERRIDE_MCP_INHERITED")[-1])
+        self.assertIn("tijian_problem_get", inherited_request)
+        self.assertNotIn("tijian_database_reset", inherited_request)
+        self.assertEqual(sum(row[0] == "workspace_other" for row in launches()), initial_workspace_other_count)
+
+        switch(identical)
+        until("", lambda: ["tijian", str(identical), ["--write-policy=none"]] in launches())
+        before_conflict = launches()
+        switch(conflict)
+        until("Paveway disabled Tijian MCP")
+        for operation, message in (("enable", "Failed to enable server"), ("test", 'Failed to connect to "tijian"')):
+            raw.clear()
+            send(f"/mcp {operation} tijian\r")
+            until(message)
+            until("conflicting tijian definitions")
+        send("OVERRIDE_MCP_BLOCKED\r")
+        until("M0_REPLY", lambda: self.prompt_requests("OVERRIDE_MCP_BLOCKED") and idle_at(conflict))
+        self.assertNotIn("tijian_problem_get", json.dumps(self.prompt_requests("OVERRIDE_MCP_BLOCKED")[-1]))
+        self.assertEqual(launches(), before_conflict)
+        self.assertEqual({path: path.read_text() for path in inputs}, inputs)
+        exit_ui()
 
 
 if __name__ == "__main__":

@@ -62,6 +62,11 @@ jobs:
         run: |
           python -m unittest -v \
             test_native_omp \
+            test_native_management.NativeManagementTests.test_cwd_dialog_cancels_or_opens_a_new_conversation_with_resumable_history \
+            test_native_management.NativeManagementTests.test_direct_cwd_loads_target_project_context_without_losing_profile_and_inference \
+            test_native_management.NativeManagementTests.test_cwd_waits_for_foreground_activity_without_interrupting_running_background \
+            test_native_mcp.NativeWorkflowMcpPtyTests \
+            test_native_management.NativeManagementTests.test_settings_is_reachable_from_native_paveway_menu_without_chat \
             test_native_management.NativeManagementTests.test_skill_dialog_preserves_category_and_body_without_chat_submission \
             test_native_management.NativeManagementTests.test_skill_file_import_analyzes_reviews_and_saves_without_chat_history \
             test_native_management.NativeManagementTests.test_local_multi_skill_zip_selects_two_with_conflict_and_no_model_request \

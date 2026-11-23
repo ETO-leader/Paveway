@@ -79,12 +79,18 @@ Saved. Restart the Paveway native OMP session to apply Tijian MCP changes.
 
 ### 配置读取与安全更新
 
-- 唯一有效来源为 Workflow Workspace 的 `.omp/mcp.json`。不新增 `[tijian]`、数据库表或独立权限副本。只读查询不会创建文件／目录，不验证或执行 MCP 可执行文件。
+- Paveway 管理界面的配置来源为 Workflow Workspace 的 `.omp/mcp.json`。不新增 `[tijian]`、数据库表或独立权限副本。只读查询不会创建文件／目录，不验证或执行 MCP 可执行文件。
 - 仅接受 `command` 为绝对路径字符串、`args` 为已知完整参数列表的标准 Tijian 定义。旧 `["--read-only"]` → None，`[]` → Full；三个单独的 `["--write-policy=…"]` 分别识别。未知参数、混合参数或额外 Server 字段明确报错，拒绝猜成 Full 或自动覆盖。
 - 新增／替换的 executable 须存在且可执行；只改权限不要求旧文件仍存在，不自动重建 Workflow 或 GPT Profile。
 - 仅更改 `mcpServers.tijian`，保留其他 Server、`disabledServers` 和其他字段；Tijian 被显式禁用时拒绝修改，须人工核对。
 - 使用整个文件内容的 SHA-256 revision 检测过期编辑，提交前再次核对原始字节；临时文件 fsync 后原子创建／替换。拒绝 symlink、不安全目录和并发冲突，写入文件权限为 `0600`。
 - 未改变配置时不重复写盘，保留原文件字节、inode 和修改时间。保存结果及返回页面再次读取的配置均不等同 MCP 握手成功。
+
+### 在其他项目使用 Workflow 的 Tijian MCP
+
+用 `/paveway cwd` 打开其他项目时，Paveway 仍从 Workflow Workspace 的 `.omp/mcp.json` 读取受管 `mcpServers.tijian`。只继承这一项，不复制配置文件，也不继承 Workspace 的其他 MCP Server。继承的进程使用原 Workspace 启动，保留原命令和权限参数。
+
+目标项目和 OMP 用户级配置仍按 OMP 的规则发现。若可用配置中已有同名、同命令、同参数且无额外连接字段的定义，沿用 OMP 原生选择；不同定义会阻止本前台连接 `tijian`，并报告冲突，不从两侧择一提升权限。请移除冲突定义，或显式把两边配置为相同权限。Workflow 明确禁用 `tijian`、定义无法识别或配置不安全时也不自动连接。继承尊重 OMP 的项目 MCP 开关、发现开关和禁用设置；后台 Worker 仍只使用其原有绑定目录的配置。
 
 ### `workflow tijian show/set`
 

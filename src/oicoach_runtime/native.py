@@ -25,6 +25,12 @@ from .proxy import child_environment
 from .workflows import WorkflowProvider
 
 
+SWITCH_FIELDS = {
+    "new": (), "legacy": (), "resume": (), "profile": ("coach_id",),
+    "cwd": ("cwd", "model", "thinking"), "reopen": ("conversation_id",),
+}
+
+
 def recovery_choice(config, workflow_id, task_id, conversation_id, new):
     """Explicit startup recovery; never infer release from a lost heartbeat."""
     if new:
@@ -63,19 +69,24 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
     from .proxy import synchronize
     synchronize(config_path)
     config = replace(config, agent=replace(config.agent, executable=prepare_native_host()))
+    cwd, inference = None, None
     while True:
         conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
         if cancelled:
             return 0
-        code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new)
+        code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd, inference)
         if code or not action:
             return code
+        cwd, inference = None, None
         if action["kind"] == "profile":
             from .coaches import resolve
             workflow_id = resolve(config, action["coach_id"])["runtime_workflow_id"]
             conversation_id, new = None, False
-        elif action["kind"] == "new":
+        elif action["kind"] in ("cwd", "new"):
             conversation_id, new = None, True
+            cwd = action["cwd"]
+            if action["kind"] == "cwd":
+                inference = {key: action[key] for key in ("model", "thinking")}
         elif action["kind"] == "legacy":
             from .tui import run as run_ui
             run_ui(config_path, workflow=workflow_id, task=task_id)
@@ -84,7 +95,7 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
             conversation_id, new = action["conversation_id"], False
 
 
-def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
+def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd=None, inference=None):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
@@ -107,8 +118,9 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
     # Admission is serialized by the actual session lock, not by a compensating
     # finish(None) after a failed acquisition. Begin still provides token/CAS fencing.
     try:
+        target = {"cwd": cwd} if cwd is not None else {}
         lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
-                        "conversation_id": conversation_id, "new": False})
+                        "conversation_id": conversation_id, **target})
     except BaseException:
         lock.close()
         raise
@@ -120,9 +132,12 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
             workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
             if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
                 raise RuntimeContractError("Profile changed during launch; no prompt was sent")
-        code, action = _run_owned(config, config_path, workflow, lease, lock)
+        code, switch_path, nonce = _run_owned(config, config_path, workflow, lease, lock, inference)
+        action = _read_switch(switch_path, nonce, workflow) if code == 0 and switch_path.exists() else None
         if action and action["kind"] in ("resume", "legacy"):
             action["conversation_id"] = lease["conversation_id"]
+        if action and action["kind"] == "new":
+            action["cwd"] = lease["cwd"] if lease["cwd"] != lease["workspace"] else None
         return code, action
     except BaseException:
         primary_failed = True
@@ -155,9 +170,10 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new):
             print(f"{failure.code}: {failure}", file=sys.stderr)
 
 
-def _run_owned(config, config_path, workflow, lease, lock):
+def _run_owned(config, config_path, workflow, lease, lock, inference=None):
     workflow_id, task_id = lease["workflow_id"], lease["task_id"]
     root = Path(lease["session_dir"])
+    cwd = lease["cwd"]
     launch_id = str(uuid.uuid4())
     nonce = secrets.token_hex(32)
     switch_path = root / ("switch-" + launch_id + ".json")
@@ -165,6 +181,8 @@ def _run_owned(config, config_path, workflow, lease, lock):
                 "coach_id": lease["coach_id"],
                 "background_task_id": lease["background_task_id"],
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
+                "cwd": cwd, "workspace": lease["workspace"], "session_dir": str(root),
+                "materialize": inference is not None,
                 "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled,
                 "memory_enabled": workflow.memory_enabled,
                 "paveway_version": __version__,
@@ -176,19 +194,21 @@ def _run_owned(config, config_path, workflow, lease, lock):
     extension = Path(str(files("oicoach_runtime").joinpath("bundled/paveway-native.mjs")))
     digest = hashlib.sha256(extension.read_bytes()).hexdigest()
     environment = dict(child_environment(config_path), PAVEWAY_NATIVE_DATA=str(private), PAVEWAY_NATIVE_NONCE=nonce)
-    argv = [config.agent.executable, "--cwd", str(workflow.workspace), "--session-dir", str(root),
+    environment.pop("PAVEWAY_WORKFLOW_WORKSPACE", None)
+    if cwd != lease["workspace"]:
+        environment["PAVEWAY_WORKFLOW_WORKSPACE"] = lease["workspace"]
+    argv = [config.agent.executable, "--cwd", cwd, "--session-dir", str(root),
             "--no-extensions", "--trusted-extension", str(extension)]
     if lease["session_file"]:
-        path = Path(lease["session_file"])
-        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-            raise RuntimeContractError("Native session is missing or unsafe; use --new, preserving the old conversation")
-        argv += ["--resume", str(path)]
+        from .git_sync import validate_session_header
+        validate_session_header(lease, root)
+        argv += ["--resume", lease["session_file"]]
     if config.agent.profile:
         argv += ["--profile", config.agent.profile]
-    inference = workflow.customization.get("inference", {})
+    preference = workflow.customization.get("inference", {})
     if not lease["session_file"] or lease["inference_changed"]:
         for option in ("model", "thinking"):
-            value = inference.get(option) or getattr(config.agent, option)
+            value = (inference or {}).get(option) or preference.get(option) or getattr(config.agent, option)
             if value:
                 argv += ["--" + option, value]
     for option in ("tools", "skills", "rules"):
@@ -197,7 +217,7 @@ def _run_owned(config, config_path, workflow, lease, lock):
     directories = ()
     if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
         from .omp_config import skill_directories
-        directories = asyncio.run(skill_directories(config, str(workflow.workspace), environment))
+        directories = asyncio.run(skill_directories(config, cwd, environment))
     argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
                      base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories,
                      package_root=config.state_dir / "skill-packages")
@@ -206,7 +226,10 @@ def _run_owned(config, config_path, workflow, lease, lock):
     overlay.chmod(0o600)
     argv += ["--config", str(overlay)]
 
+    admitted = False
+
     def ready(frame, guardian):
+        nonlocal admitted
         pid = frame.get("pid")
         if (type(frame.get("apiVersion")) is not int or frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or frame.get("extensionDigest") != digest or
                 frame.get("contextPolicy") != "omp-native" or type(pid) is not int):
@@ -217,14 +240,23 @@ def _run_owned(config, config_path, workflow, lease, lock):
             raise RuntimeContractError("Native OMP exited before admission") from None
         if int(stat[1]) != guardian.pid:
             raise RuntimeContractError("Native OMP is not the owned guardian child")
+        try:
+            matches_cwd = Path(f"/proc/{pid}/cwd").samefile(cwd)
+        except OSError:
+            matches_cwd = False
+        if not matches_cwd:
+            raise RuntimeContractError("Native OMP process cwd does not match its conversation")
         session_file = Path(frame.get("sessionFile") or "")
         if not session_file.is_absolute() or not session_file.resolve().is_relative_to(root.resolve()) or not frame.get("sessionId"):
             raise RuntimeContractError("Native OMP session escaped its dedicated directory")
+        if not admitted and lease["session_file"] and (str(session_file), frame["sessionId"]) != (lease["session_file"], lease["session_id"]):
+            raise RuntimeContractError("Native OMP did not open the requested physical session")
         observed = request(config.server.socket_path, "frontend.attest", {**owner(), "omp_pid": pid,
             "session_id": frame["sessionId"], "session_file": str(session_file)})
         # Keep the final owner identity from our own authenticated attestation,
         # including OMP /new switches; finish needs no extra frontend.show round trip.
         lease["generation"] = settings["generation"] = observed["generation"]
+        admitted = True
 
     def owner():
         return {key: settings[key] for key in ("conversation_id", "generation", "owner_token")}
@@ -234,16 +266,25 @@ def _run_owned(config, config_path, workflow, lease, lock):
 
     code = run_terminal(argv, environment, ready=ready, started=started,
                         timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))
-    action = None
-    if code == 0 and switch_path.exists():
-        info = switch_path.lstat()
-        if switch_path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 4096:
-            raise RuntimeContractError("Native switch request is not private")
-        action = json.loads(switch_path.read_text())
-        switch_path.unlink()
-        if action.pop("nonce", None) != nonce or action.get("kind") not in ("new", "profile", "resume", "legacy") or \
-                set(action) != ({"kind", "coach_id"} if action.get("kind") == "profile" else {"kind"}):
-            raise RuntimeContractError("Native switch request identity mismatch")
-        if "coach_id" in action:
-            validate_id(action["coach_id"])
-    return code, action
+    return code, switch_path, nonce
+
+
+def _read_switch(switch_path, nonce, workflow):
+    info = switch_path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 4096:
+        raise RuntimeContractError("Native switch request is not private")
+    action = json.loads(switch_path.read_text())
+    switch_path.unlink()
+    if not isinstance(action, dict) or action.pop("nonce", None) != nonce:
+        raise RuntimeContractError("Native switch request identity mismatch")
+    kind = action.get("kind")
+    if not isinstance(kind, str) or kind not in SWITCH_FIELDS or set(action) != {"kind", *SWITCH_FIELDS[kind]}:
+        raise RuntimeContractError("Native switch request identity mismatch")
+    if kind in ("profile", "reopen"):
+        validate_id(action[SWITCH_FIELDS[kind][0]])
+    if kind == "cwd":
+        from .frontend import check_directory
+        from .customization import validate
+        check_directory(action["cwd"], canonical=True)
+        validate({**workflow.customization, "inference": {key: action[key] for key in ("model", "thinking")}})
+    return action

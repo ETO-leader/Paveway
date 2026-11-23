@@ -1,0 +1,106 @@
+diff --git a/packages/coding-agent/src/modes/controllers/command-controller.ts b/packages/coding-agent/src/modes/controllers/command-controller.ts
+--- a/packages/coding-agent/src/modes/controllers/command-controller.ts
++++ b/packages/coding-agent/src/modes/controllers/command-controller.ts
+@@ -1799,6 +1799,10 @@
+ 
+ 	/** Save source settings before acquiring the gate for a complete relocation operation. */
+ 	async #withSessionMove(operation: () => Promise<boolean>): Promise<boolean> {
++		if (process.env.PAVEWAY_NATIVE_DATA) {
++			this.ctx.showWarning("Use /paveway cwd to change projects without moving this Conversation.");
++			return false;
++		}
+ 		try {
+ 			await this.ctx.settings.flush();
+ 		} catch (err) {
+diff --git a/packages/coding-agent/src/extensibility/extensions/types.ts b/packages/coding-agent/src/extensibility/extensions/types.ts
+--- a/packages/coding-agent/src/extensibility/extensions/types.ts
++++ b/packages/coding-agent/src/extensibility/extensions/types.ts
+@@ -319,6 +319,8 @@
+ export interface ExtensionUIContext {
++	/** Foreground handoff state, available only at a safe managed shutdown boundary. */
++	getManagedHandoffState?(): { thinking: ConfiguredThinkingLevel | undefined } | undefined;
+ 	/** True when selector timeouts start only after the dialog is presented. */
+ 	timeoutStartsOnPresentation?: boolean;
+ 	/** True when pasteToEditor updates a local or remote composer; absent means unsupported. */
+ 	supportsEditor?: boolean;
+ 	/** Show a selector and return the selected label, even when an option also includes a description. */
+diff --git a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+--- a/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
++++ b/packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+@@ -182,6 +182,10 @@
+ 		// Create and set hook & tool UI context
+ 		const uiContext: ExtensionUIContext = {
++			getManagedHandoffState: () =>
++				process.env.PAVEWAY_NATIVE_DATA && this.ctx.canHandoffManagedSession?.()
++					? { thinking: this.ctx.session.configuredThinkingLevel() }
++					: undefined,
+ 			timeoutStartsOnPresentation: true,
+ 			supportsEditor: true,
+ 			select: (title, options, dialogOptions) => this.showCollabAwareSelector(title, options, dialogOptions),
+ 			confirm: (title, message, dialogOptions) => this.showHookConfirm(title, message, dialogOptions),
+diff --git a/packages/coding-agent/src/modes/controllers/selector-controller.ts b/packages/coding-agent/src/modes/controllers/selector-controller.ts
+--- a/packages/coding-agent/src/modes/controllers/selector-controller.ts
++++ b/packages/coding-agent/src/modes/controllers/selector-controller.ts
+@@ -2059,6 +2059,8 @@
+ 	async #relocateFromRemovedWorktree(
+ 		sessionPath: string,
+ 	): Promise<{ sessionPath: string; movedFrom?: string } | undefined> {
++		// Let the trusted extension authorize resume without mutating any session first.
++		if (process.env.PAVEWAY_NATIVE_DATA) return { sessionPath };
+ 		const sessionManager = this.ctx.sessionManager;
+ 		// Never move the live session out from under its own writer.
+ 		if (sessionManager.getSessionFile() === sessionPath) return { sessionPath };
+diff --git a/packages/coding-agent/src/modes/interactive-mode.ts b/packages/coding-agent/src/modes/interactive-mode.ts
+--- a/packages/coding-agent/src/modes/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive-mode.ts
+@@ -3134,6 +3134,10 @@
+ 	 */
+ 	async applyCwdChange(newCwd: string): Promise<boolean> {
+ 		const previousCwd = getProjectDir();
++		if (process.env.PAVEWAY_NATIVE_DATA && newCwd !== previousCwd) {
++			this.showWarning("Use /paveway cwd to change projects without moving this Conversation.");
++			return false;
++		}
+ 		try {
+ 			setProjectDir(newCwd);
+ 		} catch (error) {
+@@ -8162,6 +8166,20 @@
+ 		popTerminalTitle();
+ 		this.stop();
+ 	}
++
++	/** Do not turn a managed project handoff into cancellation of foreground work. */
++	canHandoffManagedSession(): boolean {
++		return !(
++			this.shutdownRequested || this.isShuttingDown ||
++			this.hasPendingSubmission() ||
++			// The handoff command is itself an admitted submission. requestShutdown drains it and any others.
++			this.session.isBusyForSnapshot ||
++			this.session.queuedMessageCount > 0 ||
++			this.session.hasPendingAsyncWork() ||
++			this.#liveCommandController.active ||
++			this.hasActiveBtw() || this.hasActiveOmfg() || this.hasActiveCleanse()
++		);
++	}
+ 
+ 	requestShutdown(): void {
+ 		this.shutdownRequested = true;
+@@ -8935,6 +8953,7 @@
+ 	 * failures become a warning so startup continues.
+ 	 */
+ 	async maybeAutoCreateWorktree(): Promise<void> {
++		if (process.env.PAVEWAY_NATIVE_DATA) return;
+ 		try {
+ 			const policy = cfgWorktreeOnStart.get(this.settings);
+ 			if (policy === "off" || !(await canAutoCreateWorktree(this.sessionManager.getCwd()))) return;
+diff --git a/packages/coding-agent/src/modes/types.ts b/packages/coding-agent/src/modes/types.ts
+--- a/packages/coding-agent/src/modes/types.ts
++++ b/packages/coding-agent/src/modes/types.ts
+@@ -364,6 +364,7 @@
+ 	shutdown(): Promise<void>;
+ 	/** Tear down like {@link shutdown}, then relaunch the CLI with the original launch flags, resuming this session. */
+ 	restart(): Promise<void>;
++	canHandoffManagedSession?(): boolean;
+ 	/** Request graceful shutdown at the next fully settled boundary, including background turns. */
+ 	requestShutdown(): void;
+ 	checkShutdownRequested(): Promise<void>;

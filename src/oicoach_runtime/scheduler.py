@@ -237,7 +237,7 @@ class Runtime:
             frontend = Frontend(self.store)
             operation = command.removeprefix("frontend.")
             if operation == "begin":
-                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new"), ("workflow_id", "task_id"))
+                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new", "cwd"), ("workflow_id", "task_id"))
                 workflow = self.provider.describe(raw["workflow_id"])
                 instructions = ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,

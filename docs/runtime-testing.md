@@ -444,3 +444,14 @@ PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest \
 ```
 
 CI 真实 OMP 验收：GitHub Actions native job 新增独立步骤，设置 `PAVEWAY_TEST_NATIVE=1`、`PAVEWAY_REQUIRE_REAL_OMP_PACKAGE=1`，执行 `test_skill_packages_omp`。缺少真实 OMP host 时该测试在导入期抛错（fail-on-skip），不再可能因环境变量缺失而显示成功。该测试复用 CI 已准备的 18.16.0 host 与 loopback fixture provider（无外部模型、无用户凭据），先安装完整 ZIP、删除 ZIP、从持久配置新建 RPC 会话，再用 `omp read skill://plain-oi-editorials:raw` 与 `skill://plain-oi-editorials/references/nested/b.md:raw` 验证字节；本机用 `packaging/omp` launcher + 同一 18.16.0 缓存复跑通过。
+
+## 原生工作目录切换
+
+使用已准备好的 OMP 18.16.0 固定宿主，PATH 上需要 `omp`（可使用仓库的 `packaging/omp` 启动器），并安装测试依赖 `.[test]`：
+
+```bash
+PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest -v \
+  -k cwd -k settings_is_reachable test_frontend test_native_management test_native_mcp
+```
+
+PTY 用真实 Paveway 启动器和 OMP Host，模型响应来自本机 loopback fixture。验收对比 `/proc/<omp_pid>/cwd`、Session JSONL header、owner 状态和退出重开前后的 Conversation／Session ID，以实际工具输出与模型请求验证目标项目上下文、原 Profile 设置和背景任务隔离。Tijian 权限使用本地 stdio fixture 验证，不连接上游业务服务。CI 的 native job 运行同一组 PTY 用例。

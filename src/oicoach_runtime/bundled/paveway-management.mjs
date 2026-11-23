@@ -1,9 +1,28 @@
 // User-only dialogs. Private prompt/Skill/credential values never become chat.
 import {randomUUID} from "node:crypto";
-import {writeFileSync, unlinkSync} from "node:fs";
-import {dirname, join} from "node:path";
+import {accessSync, constants, realpathSync, statSync, writeFileSync, unlinkSync} from "node:fs";
+import {homedir} from "node:os";
+import {dirname, join, resolve} from "node:path";
 import {loadNativeTui, openSettings} from "./paveway-settings.mjs";
 import {analyzeSkillSource, reviewSkillImport, selectLocalSkills} from "./paveway-skill-import.mjs";
+
+function workingDirectory(value, cwd) {
+    let input = value.trim().replace(/^(["'])(.*)\1$/u, "$2");
+    if (!input || /[\x00-\x1f\x7f]/u.test(input)) throw new Error("Enter a directory path");
+    if (input === "~" || input.startsWith("~/")) input = homedir() + input.slice(1);
+    try {
+        const target = realpathSync(resolve(cwd, input));
+        if (/[\x00-\x1f\x7f]/u.test(target)) throw new Error("Directory path contains unsupported control characters");
+        if (!statSync(target).isDirectory()) throw new Error("Not a directory");
+        accessSync(target, constants.R_OK | constants.X_OK);
+        return target;
+    } catch (error) {
+        if (error.code === "ENOENT") throw new Error("Directory does not exist");
+        if (error.code === "ENOTDIR") throw new Error("Not a directory");
+        if (error.code === "EACCES" || error.code === "EPERM") throw new Error("Permission denied for working directory");
+        throw error;
+    }
+}
 
 export function registerManagement(pi, config, requestSwitch) {
     const drafts = new Map();
@@ -69,6 +88,23 @@ export function registerManagement(pi, config, requestSwitch) {
         const value = await ctx.ui.editor(title, drafts.get(key) ?? original);
         if (value !== undefined) drafts.set(key, value);
         return value;
+    };
+    const cwdInput = async ctx => {
+        const {Input, Text} = await loadNativeTui();
+        return ctx.ui.custom((tui, theme, _keys, done) => {
+            const header = new Text(`Current directory: ${ctx.cwd}\nWorkflow workspace: ${config.workspace}\nNew directory:`, 0, 0);
+            const footer = new Text(theme.fg("muted", "Enter review · Esc cancel"), 0, 0);
+            const input = new Input();
+            input.onSubmit = done;
+            input.onEscape = () => done(undefined);
+            return {
+                get focused() { return input.focused; },
+                set focused(value) { input.focused = value; },
+                render(width) { return [...header.render(width), ...input.render(width), ...footer.render(width)]; },
+                invalidate() { header.invalidate(); input.invalidate(); footer.invalidate(); },
+                handleInput(data) { input.handleInput(data); tui.requestRender(); },
+            };
+        });
     };
     const actions = {};
     actions.prompt = async ctx => {
@@ -224,7 +260,7 @@ export function registerManagement(pi, config, requestSwitch) {
     };
     actions.profile = async ctx => {
         const profiles = (await cli(["coach", "list"])).profiles;
-        const choice = await ctx.ui.select("GPT profiles", ["Switch profile", "Create profile", "New conversation", "Restart native session"]);
+        const choice = await ctx.ui.select("GPT profiles", ["Switch profile", "Create profile", "New conversation", "Restart native session", "Resume conversation"]);
         if (choice === "Switch profile") {
             const id = await ctx.ui.select("Select GPT profile", profiles.map(row => row.coach_id));
             if (id) requestSwitch(ctx, {kind: "profile", coach_id: id});
@@ -238,6 +274,17 @@ export function registerManagement(pi, config, requestSwitch) {
             show(ctx, await privateInput(persona, file => cli(["coach", "create", id, "--workflow", source, "--persona-file", file])));
         } else if (choice === "New conversation") requestSwitch(ctx, {kind: "new"});
         else if (choice === "Restart native session") requestSwitch(ctx, {kind: "resume"});
+        else if (choice === "Resume conversation") {
+            const {result} = await cli(["frontend", "list", "--workflow", config.workflow_id, "--task", config.task_id]);
+            const rows = result.filter(row => row.status === "released" && row.conversation_id !== config.conversation_id);
+            if (!rows.length) return show(ctx, "No other released conversations in this Workflow/task");
+            const labels = rows.map(row => `${row.cwd} · ${row.conversation_id}`);
+            const selected = await ctx.ui.select("Resume conversation", labels);
+            if (selected === undefined) return;
+            const row = rows[labels.indexOf(selected)];
+            workingDirectory(row.cwd, ctx.cwd);
+            requestSwitch(ctx, {kind: "reopen", conversation_id: row.conversation_id});
+        }
     };
     actions.events = async ctx => {
         const events = await cli(["events", "upcoming", "--workflow", config.workflow_id, "--task", config.task_id]);
@@ -370,6 +417,16 @@ export function registerManagement(pi, config, requestSwitch) {
         cli, workflowId: config.workflow_id, preferences: settings, model: actions.model, thinking: actions.thinking,
     }, page);
     actions.settings = async ctx => openSettingsPage(ctx, "settings");
+    actions.cwd = async (ctx, argument) => {
+        const {cwd} = ctx;
+        const dialog = argument === undefined;
+        const value = dialog ? await cwdInput(ctx) : argument;
+        if (value === undefined) return;
+        const target = workingDirectory(value, cwd);
+        if (target === realpathSync(cwd)) return show(ctx, "Already in this working directory");
+        if (dialog && !(await ctx.ui.confirm("Start a new conversation here?", target))) return;
+        requestSwitch(ctx, {kind: "cwd", cwd: target});
+    };
     actions.tijian = async ctx => openSettingsPage(ctx, "tijian");
     actions.notifications = async ctx => {
         const action = await ctx.ui.select("定时任务桌面弹窗", ["status", "test popup", "enable", "enable (hide body)", "disable"]);
@@ -418,6 +475,8 @@ export function registerManagement(pi, config, requestSwitch) {
     };
     const run = async (args, ctx) => {
         try {
+            const direct = /^cwd\s+(.+)$/su.exec(args.trim());
+            if (direct) return await actions.cwd(ctx, direct[1]);
             const action = args.trim() || await ctx.ui.select("Paveway", Object.keys(actions));
             if (actions[action]) await actions[action](ctx);
             else if (action) show(ctx, "Use /paveway to select an action; /paveway status shows Runtime health");

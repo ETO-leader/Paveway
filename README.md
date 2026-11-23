@@ -51,7 +51,8 @@ omp --version
 | `/paveway prompt` | 查看和编辑用户系统 Prompt，保留 append/replace 模式 |
 | `/paveway skills` | 三类 Skills 的创建、查看、编辑、启停和删除；原样安装完整 ZIP Skill 包并只读查看其入口与资源 |
 | `/paveway persona` | 编辑当前 GPT 的独立 Persona |
-| `/paveway profile` | 创建／切换 GPT Profile、新对话、重启原生进程 |
+| `/paveway profile` | 创建／切换 GPT Profile、新建／恢复对话、重启原生进程 |
+| `/paveway cwd [路径]` | 原生目录输入或直接切换项目；保留旧对话，新对话使用目标目录 |
 | `/paveway model`、`thinking` | 跨设备保存模型／思考偏好，下次启动生效 |
 | `/paveway memory`、`history` | Paveway 笔记 CRUD、原生历史分页与检索 |
 | `/paveway events`、`recover` | 事件详情、取消／重排、明确确认后的恢复 |
@@ -62,6 +63,8 @@ omp --version
 | `/paveway status`、`/coach` | Runtime 状态、绑定 Profile 与 Session |
 | `/reminder`、`/wakeup`、`/inbox` | 纯提醒、后台 Agent 任务与持久消息，见下文 |
 | `/paveway notifications` | Ubuntu／WSL 桌面到期弹窗的启停、状态和测试 |
+
+例如 `/paveway cwd ~/Developing/Tijian` 或 `/paveway cwd ../project with spaces`。目录是每个原生 Conversation 的属性，不修改 Workflow Workspace 或 GPT Profile。用 `/paveway profile` → **Resume conversation** 或 `./paveway.sh --conversation ID` 恢复此前对话及其目录。详见[原生项目目录](docs/native-ui.md#原生项目目录)。
 
 Paveway 不覆盖 OMP 原生 `/memory`、`/skills` 等命令。OMP 原生 Memory 和 Paveway 笔记是不同存储。当前只精确加载随包的 trusted extension，不自动发现其他用户 Extension；原生工具、Workspace MCP、Skills 和 Rules 继续受配置权限控制。
 

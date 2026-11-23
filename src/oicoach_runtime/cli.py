@@ -586,12 +586,13 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(path)
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise RuntimeContractError("OMP native UI requires an interactive terminal")
-            state = request(config.server.socket_path, "status")
-            if state.get("native_protocol_version") != 1:
-                raise RuntimeContractError("Restart the Runtime in an idle state before using this native UI version; existing requests were not interrupted")
+            from .compatibility import check_runtime_compatibility
+            check_runtime_compatibility(request(config.server.socket_path, "status"), path)
             previous = request(config.server.socket_path, "frontend.list")
             previous.sort(key=lambda row: row.get("last_opened_at", row["created_at"]), reverse=True)
-            workflow_id = args.workflow
+            selected = request(config.server.socket_path, "frontend.show", {
+                "conversation_id": args.conversation}) if args.conversation else None
+            workflow_id = args.workflow or (selected["workflow_id"] if selected else None)
             if args.coach:
                 from .coaches import resolve
                 workflow_id = resolve(config, args.coach)["runtime_workflow_id"]
@@ -612,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
                         finish_owned_runtime(config, path, 0)
                         return 0
             recent = next((row for row in previous if row["workflow_id"] == workflow_id), None)
-            task = args.task or (recent["task_id"] if recent else "training")
+            task = args.task or (selected["task_id"] if selected else recent["task_id"] if recent else "training")
             code = run(config, path, workflow_id, task, args.conversation, args.new)
             finish_owned_runtime(config, path, code)
             return code
