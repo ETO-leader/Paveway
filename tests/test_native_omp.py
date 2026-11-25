@@ -164,7 +164,12 @@ class NativeFixture(unittest.TestCase):
                 self.assertTrue(list((self.config.state_dir / "sessions").glob("*/*.jsonl")))
             baseline = len(self.server.requests)
             conversation = request(self.config.server.socket_path, "frontend.list")[0]["conversation_id"]
-            send(b"\x1b[200~" + body.encode() + b"\x1b[201~\r")
+            send(b"\x1b[200~" + body.encode() + b"\x1b[201~")
+            # Wait for the native editor to process the paste before pressing
+            # Enter; an attested process can still be repainting its first view.
+            tail = body.rstrip().splitlines()[-1][-8:]
+            until("", predicate=lambda: any(tail in row for row in screen.display))
+            send(b"\r")
             until("M0_REPLY", requests=baseline + 1, predicate=lambda:
                 request(self.config.server.socket_path, "frontend.show", {"conversation_id": conversation})["status"] == "idle" and evidence())
             if wakeup:

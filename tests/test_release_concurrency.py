@@ -60,7 +60,10 @@ def slow(self,record,**kwargs):
         else:
             lock.close();Path(sys.argv[2]+'.commit').write_text('lost')
     self.store.connection.set_trace_callback(commit)
-    Path(sys.argv[2]).write_text(str(self.store.connection.in_transaction))
+    marker=Path(sys.argv[2])
+    pending=marker.with_suffix('.pending')
+    pending.write_text(str(self.store.connection.in_transaction))
+    pending.replace(marker)
     end=time.monotonic()+8
     while not Path(sys.argv[3]).exists() and time.monotonic()<end:time.sleep(.01)
     return result
