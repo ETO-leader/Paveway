@@ -387,18 +387,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(session["prompts"]), 1)
         self.assertEqual(request(self.socket_path, "status")["supervisor"]["consecutive_failures"], 0)
 
-    def test_restart_waits_for_another_task_and_rejects_duplicate_request(self):
+    def test_restart_leaves_another_task_running_and_rejects_duplicate_request(self):
+        # Hold both the original turn and the restart probe at explicit barriers.
+        self.stop()
+        config = replace(self.config, agent=replace(
+            self.config.agent, startup_timeout_seconds=8, turn_timeout_seconds=8))
+        self.config_path.write_text(config_text(config))
+        self.start()
         self.wait_status(self.schedule("idle", task="b")["event_id"])
+        launches = self.root / "fake-starts.jsonl"
+        idle_launch = json.loads(launches.read_text().splitlines()[0])
         active = self.schedule("hold", task="a", mode="hold")
         self.wait_status(active["event_id"], ("running",))
-        job = request(self.socket_path, "agent.restart", {"task_id": "b"})
-        self.assertEqual(request(self.socket_path, "agent.show", {"restart_id": job["restart_id"]})["status"], "requested")
-        with self.assertRaises(RuntimeContractError):
-            request(self.socket_path, "agent.restart", {"task_id": "b"})
-        self.assertEqual(self.event(active["event_id"])["status"], "running")
-        (self.root / "fake-release").touch()
-        self.wait_status(active["event_id"])
-        self.wait_restart(job["restart_id"])
+        deadline = time.monotonic() + 5
+        while not (self.root / "fake-entered").exists():
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        (self.root / "fake-mode").write_text("hold-before-ready")
+        try:
+            job = request(self.socket_path, "agent.restart", {"task_id": "b"})
+            self.assertEqual(job["status"], "requested")
+            self.wait_restart(job["restart_id"], ("running",))
+            with self.assertRaisesRegex(RuntimeContractError, "A restart is already pending"):
+                request(self.socket_path, "agent.restart", {"task_id": "b"})
+            self.assertEqual(self.event(active["event_id"])["status"], "running")
+            (self.root / "fake-ready-release").touch()
+            self.wait_restart(job["restart_id"])
+            self.assertEqual(self.event(active["event_id"])["status"], "running")
+            (self.root / "fake-release").touch()
+            self.assertEqual(self.wait_status(active["event_id"])["attempt"], 1)
+            _, active_launch, restarted = map(json.loads, launches.read_text().splitlines())
+            self.assertNotEqual(active_launch["session_dir"], idle_launch["session_dir"])
+            self.assertEqual(restarted["session_dir"], idle_launch["session_dir"])
+            self.assertTrue(restarted["resumed"])
+        finally:
+            (self.root / "fake-ready-release").touch()
+            (self.root / "fake-release").touch()
 
     def test_failed_restart_does_not_reset_circuit(self):
         self.wait_status(self.schedule()["event_id"])

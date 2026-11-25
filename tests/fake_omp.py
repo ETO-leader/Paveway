@@ -66,6 +66,9 @@ def main():
         return 9
     if startup_mode == "hang-before-ready":
         time.sleep(30)
+    if startup_mode == "hold-before-ready":
+        while not (args.cwd / "fake-ready-release").exists():
+            time.sleep(0.01)
     args.session_dir.mkdir(parents=True, exist_ok=True)
     session_file = args.resume or args.session_dir / "session.json"
     if args.resume:
