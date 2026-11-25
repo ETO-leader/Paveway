@@ -222,6 +222,11 @@ console.log("CLOSE_{label}");''')
                         else:
                             release_close[departed].set()
                             require("close", [departed])
+                            survivor = lambda label: self.api("events.show", event_id=events[label])
+                            ended = self.until(lambda: (row if (row := survivor(departed))["status"]
+                                in ("succeeded", "failed", "blocked", "uncertain", "dead_letter") else None),
+                                "first Worker exited before releasing surviving tabs")
+                            self.assertEqual(ended["status"], "succeeded", ended)
                         for label in labels[1:]:
                             release_close[label].set()
                         require("close", labels[1:])
