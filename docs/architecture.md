@@ -89,6 +89,8 @@ Runtime 與 guardian 都使用 Linux subreaper；OMP root 在 guardian 死亡時
 
 Runtime 生命週期由 `launcher.py` 與 daemon 內的 `lifecycle.*` IPC 共同協調。launcher 以獨立 `launcher.lock` 序列化並發啟動器，daemon 仍以 `runtime.lock` 與 socket lock 作為唯一實例權威。檢查版本／Build ID／原生協議後，若需替換，daemon 在單一 quiesce 區段內先設 draining、拒絕新工作，再檢查 leased/running run 與實時前台 owner；有 dispatch intent 或活動模型工作時 fail-closed，只有未派發租約會退回 queued（不記為完成或失敗）。drain / shutdown / resume 共用同一個生命週期互斥鎖與 running→draining→（running|stopping）→exit 狀態機：resume 不能插入 drain 的取消與複查臨界區，已接受的 shutdown 拒絕 resume 且只建立一個停止計時器，drain 失敗回復 running。檢查涵蓋全部活動 run 而非單槽。確認安全後才排程停止，launcher 等進程身份與兩個鎖真正釋放（zombie 視為已退出）再啟動新實例；超時或舊 daemon 缺少交接協議時不啟動競爭實例。`--shutdown-on-exit` 另以私密所有權記錄（runtime instance、pid identity、config、socket、一次性 token）證明本次啟動擁有獨立實例，systemd 托管與共享實例永不取得該所有權。
 
+Runtime 选择一次官方 OMP 绝对路径和文件身份，前台准入与 RPC Worker、Agent restart、受管 Skill／模型查询使用同一选择。检测到安装变更后仅暂停新 OMP 工作，不进入 Runtime draining、不占用熔断器、不停止纯 Reminder。已获得租约但未产生 dispatch intent 的竞争失败走原有 `abort_claim` 事务，保留 Run/audit 证据、归还排队事件和本次尝试额度；已经产生 intent 的执行不自动重放。官方 ELF 在 `exec` 边界以文件描述符固定 inode。安装替换仍由同一套 lifecycle handoff 处理。
+
 0.11.0 的 Git 同步任务独立于前景 scheduler，在后台线程用独立只读 SQLite 事务导出终态记录。共享配置按父版本图识别冲突，导入只通过 customization 的锁/CAS，不写活动队列。同步设置可热加载；网络失败保留本地提交并记录独立状态，不修改 Agent 熔断器。详见 [Git 同步](git-sync.md)。
 
 0.11.1 在独立同步任务首次运行时初始化默认本地仓库；仓库身份在 Runtime/state_dir 层级，全部 workflow/task 共用，不按对话创建仓库。无 remote 不发起网络操作，已有配置（包括暂停）不被初始化覆盖。初始化失败只记录同步状态并退避，不阻止队列服务。

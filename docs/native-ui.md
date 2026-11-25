@@ -6,7 +6,7 @@ Paveway 直接启动用户安装的官方 OMP。OMP 负责聊天、模型／认�
 
 - Aurora × Pathline 字标现在是官方 `ui.setWidget` 提供的静态启动组件，显示 Paveway／OMP 版本和 Workflow；首次提交或开始运行后移除。窄终端缩短字标与提示。没有启动首帧替换、入场光流或驻留到滚动历史的动画。
 - Paveway Chrome 通过 `registerComposerShape()` 注册，受管启动选择 `paveway.chrome`。实际输入、光标、IME、粘贴、补全、草稿、历史和键位由 OMP 自己实现。不再覆写普通 User／Assistant 消息，因此没有旧的紫色用户行或逐消息 GPT 标签。
-- Windline 通过 `ui.setStatus` 更新一个原生状态项：Profile／Workflow、工作中、Wakeup 和未读 Inbox。无事件及零未读不常驻；模型、Thinking、费用、Context／Compaction 由 OMP 原样显示。不再替换整个状态栏、绘制 Bubble 圆帽、自定义双阈值轨或 Chevron 波浪。旧 TOML 的 `[statusline]` 保留读取和写回，但不改变 OMP 原生外观。
+- Windline 是输入框下方一个 `ui.setWidget`：显示 Profile／task，空间充足时显示不同的 Workflow，优先给前台运行、Wakeup 和未读 Inbox 留空间；没有待办和零未读时不绘制这些项。不替换 OMP 的模型、Thinking、费用或 Context／Compaction 状态栏；旧 TOML 的 `[statusline]` 字段仍保留读取和写回。
 
 这些是显示差异；Workflow、Prompt、Memory、Session 持久化及 Runtime 所有权不依赖视觉接口。
 
@@ -23,6 +23,10 @@ oicoach-runtime verify-omp --config /absolute/config.toml --json
 ```
 
 升级也可使用 [官方发行页](https://github.com/can1357/oh-my-pi/releases)。不用构建或应用补丁，不会改动 OMP 安装、会话或用户凭据。`doctor` 报告解析路径、版本和 CLI 检查；Runtime `status.omp` 区分已观察到的 Extension attestation、RPC 兼容性以及正在运行的 RPC 数量。无模型时 `verify-omp` 可能不能启动 RPC；具备凭据后，`--with-model` 才发真实请求。
+
+`status.omp.installation_status` 为 `selected`、`unavailable` 或 `handoff_required`。若安装文件在 Runtime 运行时被删除、替换、失去执行权限或改变身份，已启动的前台与后台会话可以自然结束；新前台、Worker、Agent restart 和该会话发起的 OMP 查询不得自动切到新文件。待执行 Wakeup 保持排队，纯 Reminder、Inbox 和控制面不依赖 OMP，照常运行。独立 `doctor` 和直接从终端运行的 `workflow models` 仍可检查用户当前选择的安装。
+
+Linux／WSL 在 `exec` 前验证打开的文件描述符并从该描述符运行，原子替换不能重定向这次启动。常见 shebang 包装器也执行同一个已验证文件，但解释器看到的是 fd 路径；依赖 `$0` 所在目录或可变下游链接的 shim，请改为指向官方 ELF 的绝对路径。只固定已选文件，不审计包装器依赖或把可变文件变成不可变快照，不承诺抵御任意原地并发改写。软链接只在选择安装时解析；已运行的 Runtime 不跟随原始别名改指。
 
 如果新版不再满足能力契约，保留文件和原会话，改选一份已验证的官方 OMP（`--omp` 或 `agent.executable`），空闲时安全重启 Runtime。能回退可执行文件不代表旧 OMP 能读取新版写过的全部 Session 格式；先保留备份，不编辑或重放 uncertain 对话。
 
