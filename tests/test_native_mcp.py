@@ -721,63 +721,130 @@ class StdioMcpProtocolBoundaryTests(unittest.TestCase):
 
 
 class NativeWorkflowMcpPtyTests(NativeFixture):
+    def _stdio_server(self, name, permission):
+        executable = self.root / f"{name}.py"
+        trace = self.root / "launches.jsonl"
+        executable.write_text(FAKE_MCP_SERVER_CODE.replace("tijian_", name + "_").replace(
+            "import sys, json\n", "import sys, json, os\n"
+            f"with open({str(trace)!r}, 'a') as log:\n"
+            f"    print(json.dumps([{name!r}, os.getcwd(), sys.argv[1:]]), file=log)\n",
+        ))
+        executable.chmod(0o700)
+        return {"command": str(executable), "args": [f"--write-policy={permission}"]}
+
+    def _launches(self):
+        trace = self.root / "launches.jsonl"
+        return [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
+
+    @staticmethod
+    def _write_native_mcp(path, servers):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}, indent=2) + "\n")
+
+    @staticmethod
+    def _visible_mcp_tools(body, names):
+        import re
+
+        # OMP can expose MCP as model functions, an xd:// device, or CLI commands.
+        identifiers = {tool["function"]["name"] for tool in body.get("tools", [])}
+        for message in body["messages"]:
+            if message["role"] == "system":
+                identifiers.update(re.findall(r"\bmcp__[\w-]+\b", json.dumps(message["content"])))
+        return {name for name in names if any(
+            identifier == name or identifier.endswith("_" + name) for identifier in identifiers
+        )}
+
+    def test_settings_overlay_cannot_select_managed_tijian_over_project_conflict(self):
+        # `--config` is a config.yml overlay, not an MCP provider. Project MCP
+        # stays enabled: blanket suppression would also remove unrelated servers.
+        target = self.root / "target checkout"
+        self._write_native_mcp(target / ".omp/mcp.json", {"tijian": self._stdio_server("conflict", "full")})
+        self._write_native_mcp(Path(self.env["PI_CODING_AGENT_DIR"]) / "mcp.json",
+                               {"global_fixture": self._stdio_server("global_fixture", "none")})
+        overlay = self.root / "tijian-overlay.yml"
+        overlay.write_text(json.dumps({
+            "mcp": {"enableProjectConfig": True, "startupTimeoutMs": 0},
+            "mcpServers": {"tijian": self._stdio_server("tijian", "none")},
+        }))
+        result = subprocess.run(
+            [self.config.agent.executable, "--cwd", str(target), "--config", str(overlay),
+             "--mode", "rpc", "--no-ui", "--no-session", "--no-extensions", "--no-rules",
+             "--no-skills", "--model", "paveway-m0/probe"],
+            env=self.env, input='{"id":"overlay-probe","type":"get_state"}\n',
+            capture_output=True, text=True, timeout=25,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertTrue(any(reply.get("id") == "overlay-probe" and reply.get("success")
+                            for reply in replies), result.stderr)
+        # The conflicting command has already executed without a model turn.
+        launches = self._launches()
+        self.assertIn(["conflict", str(target), ["--write-policy=full"]], launches)
+        self.assertIn(["global_fixture", str(target), ["--write-policy=none"]], launches)
+        self.assertFalse(any(name == "tijian" for name, _, _ in launches), launches)
+        self.assertEqual(self.server.requests, [])
+
     def test_managed_tijian_is_native_and_cross_cwd_refuses_unverified_inheritance(self):
         # Method-local import: management uses the stdio fixture defined in this module.
         from test_native_management import NativeManagementTests
 
         self.config = replace(self.config, agent=replace(self.config.agent, tools_enabled=True))
         self.path.write_text(config_text(self.config))
+        self.env["OMP_MCP_STARTUP_TIMEOUT_MS"] = "0"  # Wait for both stdio catalogs, not just process spawn.
+        self.env["OMP_MCP_TIMEOUT_MS"] = "5000"
         workspace = self.root / "workspace"
         target = self.root / "target checkout"
-        trace = self.root / "launches.jsonl"
+        source_path = workspace / ".omp/mcp.json"
+        global_path = Path(self.env["PI_CODING_AGENT_DIR"]) / "mcp.json"
+        target_path = target / ".omp/mcp.json"
+        approved = self._stdio_server("tijian", "none")
+        self._write_native_mcp(global_path, {"global_fixture": self._stdio_server("global_fixture", "none")})
+        self._write_native_mcp(target_path, {"tijian": self._stdio_server("conflict", "full")})
 
-        def server(name):
-            executable = self.root / f"{name}.py"
-            executable.write_text(FAKE_MCP_SERVER_CODE.replace(
-                "import sys, json\n", "import sys, json, os\n"
-                f"with open({str(trace)!r}, 'a') as log:\n"
-                f"    print(json.dumps([{name!r}, os.getcwd(), sys.argv[1:]]), file=log)\n",
-            ).replace("tijian_", name + "_"))
-            executable.chmod(0o700)
-            return {"command": str(executable), "args": ["--write-policy=none"]}
+        def conversations():
+            return request(self.config.server.socket_path, "frontend.list", {"workflow_id": "native-test"})
 
-        managed = server("tijian")
-        inputs = {}
-        for directory, server_config in ((workspace, managed),
-                                         (target, {**managed, "args": ["--write-policy=full"]})):
-            config = directory / ".omp/mcp.json"
-            config.parent.mkdir(parents=True, exist_ok=True)
-            inputs[config] = json.dumps({"mcpServers": {"tijian": server_config}})
-            config.write_text(inputs[config])
+        basic = {"tijian_problem_get", "global_fixture_problem_get"}
+        managed = basic | {"tijian_problem_ensure"}
+        full = managed | {"tijian_database_reset"}
+        owner_fields = ("conversation_id", "generation", "cwd", "session_id",
+                        "omp_pid", "omp_identity", "guardian_pid", "guardian_identity", "status")
+        for permission, expected in (("none", basic), ("managed", managed), ("full", full)):
+            with self.subTest(permission=permission):
+                set_tijian(self.config, "native-test", executable=approved["command"], permission=permission,
+                           expected_revision=show_tijian(self.config, "native-test")["revision"],
+                           confirm_full=permission == "full")
+                inputs = {path: path.read_bytes() for path in (source_path, global_path, target_path)}
+                _, raw, send, until, _, exit_ui = NativeManagementTests.open_ui(self, columns=180, args=("--new",))
+                prompt = f"WORKSPACE_NATIVE_MCP_{permission.upper()}"
+                before = next(row for row in conversations() if row["status"] == "idle")
 
-        def launches():
-            if not trace.exists():
-                return []
-            return [json.loads(line) for line in trace.read_text().splitlines()]
+                def current():
+                    return request(self.config.server.socket_path, "frontend.show",
+                                   {"conversation_id": before["conversation_id"]})
 
-        _, raw, send, until, _, exit_ui = NativeManagementTests.open_ui(self, columns=180)
+                # Both native servers are visible to the same model turn in the Workspace.
+                send(prompt + "\r")
+                until("M0_REPLY", lambda: bool(self.prompt_requests(prompt)) and current()["status"] == "idle")
+                self.assertEqual(self._visible_mcp_tools(self.prompt_requests(prompt)[0], full), expected)
+                launches = self._launches()
+                self.assertIn(["tijian", str(workspace), [f"--write-policy={permission}"]], launches)
+                self.assertIn(["global_fixture", str(workspace), ["--write-policy=none"]], launches)
+                self.assertTrue(all(cwd == str(workspace) and name != "conflict" for name, cwd, _ in launches), launches)
 
-        def current():
-            return request(self.config.server.socket_path, "frontend.list")[0]
-
-        approved = ["tijian", str(workspace), ["--write-policy=none"]]
-        until("", lambda: approved in launches())
-        send("WORKSPACE_NATIVE_MCP\r")
-        until("M0_REPLY", lambda: self.prompt_requests("WORKSPACE_NATIVE_MCP") and current()["status"] == "idle")
-        model_request = json.dumps(self.prompt_requests("WORKSPACE_NATIVE_MCP")[-1])
-        self.assertIn("tijian_problem_get", model_request)
-        self.assertNotIn("tijian_database_reset", model_request)
-
-        before = current()
-        raw.clear()
-        send(f"/paveway cwd {target}\r")
-        until("cannot safely inherit managed Tijian MCP")
-        after = current()
-        self.assertEqual((before["conversation_id"], before["generation"], before["cwd"]),
-                         (after["conversation_id"], after["generation"], after["cwd"]))
-        self.assertTrue(launches() and all(entry == approved for entry in launches()), launches())
-        self.assertEqual({path: path.read_text() for path in inputs}, inputs)
-        exit_ui()
+                # A valid same-cwd permission does not authorize cross-cwd inheritance.
+                before = current()
+                ids = {row["conversation_id"] for row in conversations()}
+                raw.clear()
+                send(f"/paveway cwd {target}\r")
+                until("cannot safely inherit managed Tijian MCP")
+                after = current()
+                self.assertEqual({key: after[key] for key in owner_fields},
+                                 {key: before[key] for key in owner_fields})
+                self.assertEqual({row["conversation_id"] for row in conversations()}, ids)
+                self.assertEqual(self._launches(), launches)
+                self.assertEqual({path: path.read_bytes() for path in inputs}, inputs)
+                exit_ui()
 
 
 if __name__ == "__main__":
