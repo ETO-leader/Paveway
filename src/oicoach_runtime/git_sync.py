@@ -659,7 +659,7 @@ def export_history(config, repo, device):
                 continue
             export_error = None
             try:
-                archive = export_session(config, binding, device)
+                archive = export_session(config, dict(binding), device)
             except (OSError, RuntimeContractError) as error:
                 export_error = error
             # The export transaction may predate a newly leased turn. Recheck outside
