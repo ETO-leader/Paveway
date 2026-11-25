@@ -41,6 +41,16 @@ class NativeFixture(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.env = Probe(self.root, shutil.which("omp"), self.server).env
+        if cache := os.environ.get("PAVEWAY_TEST_NATIVE_CACHE"):
+            # Share only OMP's officially versioned addon extraction directory.
+            # Each fixture still owns its HOME, auth, settings and sessions.
+            directory = Path(cache).resolve()
+            if not directory.is_relative_to(Path(tempfile.gettempdir()).resolve()) or directory == Path(tempfile.gettempdir()).resolve():
+                self.fail("PAVEWAY_TEST_NATIVE_CACHE must be inside the private test TMPDIR")
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
+                self.fail("PAVEWAY_TEST_NATIVE_CACHE must be a private directory")
+            self.env["PI_NATIVES_DIR"] = str(directory)
         project = Path(__file__).resolve().parents[1]
         self.env["PYTHONPATH"] = str(project / "src")
         self.path = self.root / "config.toml"

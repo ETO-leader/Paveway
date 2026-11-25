@@ -31,6 +31,7 @@ jobs:
           unset OICOACH_TEST_REAL_OMP_CONFIG PAVEWAY_TEST_RELAY_ROOT PAVEWAY_OMP_SOURCE
           unset PAVEWAY_TEST_NATIVE PAVEWAY_TEST_CACHE_OMP PAVEWAY_REQUIRE_REAL_OMP_PACKAGE
           unset PAVEWAY_TEST_SYSTEMD OICOACH_TEST_SYSTEMD PAVEWAY_TEST_WHEEL
+          unset PAVEWAY_OMP_PATH
           raw_log="$(mktemp "$TMPDIR/paveway-foundation.XXXXXX")"
           trap 'rm -f -- "$raw_log"' EXIT
           status=0
@@ -116,6 +117,7 @@ jobs:
           OMP_REPLACEMENT_VERSION: ${{ matrix.replacement-version }}
         run: |
           unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+          unset PAVEWAY_OMP_PATH
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           if ! systemctl --user show-environment >/dev/null 2>&1; then
             sudo systemctl start "user@$(id -u).service"
@@ -152,9 +154,10 @@ jobs:
         run: |
           unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
           unset OICOACH_TEST_REAL_OMP_CONFIG PAVEWAY_TEST_RELAY_ROOT PAVEWAY_OMP_SOURCE
-          umask 077
+          unset PAVEWAY_OMP_PATH PAVEWAY_TEST_CACHE_OMP_EXECUTABLE
+          export PAVEWAY_TEST_NATIVE_CACHE="$TMPDIR/omp-natives"
           ulimit -c 0
-          raw_log="$TMPDIR/unittest.private.log"
+          raw_log="$(mktemp "$TMPDIR/unittest.XXXXXX")"
           trap 'rm -f -- "$raw_log"' EXIT
           status=0
           timeout --kill-after=20s 35m python -m unittest discover -s tests -v >"$raw_log" 2>&1 || status=$?
