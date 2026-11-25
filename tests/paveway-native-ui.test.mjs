@@ -11,6 +11,9 @@ function host() {
     const statuses = new Map();
     const widgets = new Map();
     const shapes = [];
+    let redraws = 0;
+    const tui = {terminal: {rows: 24}, requestRender() { redraws++; }};
+    const theme = {fg: (_role, text) => text, getColorMode: () => "none", getSymbolPreset: () => "unicode"};
     const pi = {
         on(event, handler) { handlers.set(event, handler); },
         registerComposerShape(shape) { shapes.push(shape); },
@@ -20,45 +23,49 @@ function host() {
         ui: {
             setStatus(key, text) { statuses.set(key, text); },
             setWidget(key, widget, options) {
-                if (widget) widgets.set(key, {widget, options});
+                widgets.get(key)?.component.dispose?.();
+                if (widget) widgets.set(key, {component: widget(tui, theme), options});
                 else widgets.delete(key);
             },
         },
     };
-    return {pi, ctx, statuses, widgets, shapes, emit: (event, target = ctx) => handlers.get(event)?.({type: event}, target)};
+    return {pi, ctx, statuses, widgets, shapes, tui, redraws: () => redraws,
+        emit: (event, target = ctx) => handlers.get(event)?.({type: event}, target)};
 }
 
-const status = statuses => [...statuses.values()][0];
-
-test("Paveway publishes Runtime facts as one native status, not a footer replacement", () => {
-    const {pi, ctx, statuses, shapes} = host();
+test("Windline fits live runtime facts in narrow terminals and doesn't redraw unchanged state", () => {
+    const {pi, ctx, statuses, widgets, redraws} = host();
     const show = registerNativePresentation(pi, config);
-    expect(shapes.map(shape => shape.style.id)).toEqual(["paveway.chrome"]);
-    show(ctx, {wakeup: {timing: "1m2s"}, inbox: 2, busy: true});
-    expect(statuses.size).toBe(1);
-    expect(status(statuses)).toBe("PAVEWAY olympiad/practice (training) · Wake 1m2s · Inbox 2 · Busy");
+    const active = {wakeup: {timing: "1m2s"}, inbox: 2, busy: true};
+    show(ctx, active);
+    const [{component, options}] = [...widgets.values()];
+    expect(options.placement).toBe("belowEditor");
+    expect(statuses.size).toBe(0);
+    const line = component.render(42)[0];
+    expect(Bun.stringWidth(line)).toBeLessThanOrEqual(42);
+    for (const label of ["PAVEWAY", "Wake 1m2s", "Inbox 2", "Busy"]) expect(line).toContain(label);
+    show(ctx, {...active});
+    expect(redraws()).toBe(0);
     show(ctx, {wakeup: {running: true}, inbox: 0});
-    expect(status(statuses)).toBe("PAVEWAY olympiad/practice (training) · Wake running");
-    expect(status(statuses)).not.toContain("Busy");
-    show({...ctx, isIdle: () => false}, {wakeup: {unavailable: true}});
-    expect(status(statuses)).toContain("Wake unavailable · Inbox ? · Busy");
+    expect(redraws()).toBe(1);
+    expect(component.render(80)[0]).toContain("Wake running");
+    expect(component.render(80)[0]).not.toMatch(/\b(?:Inbox|Busy)\b/);
     show(ctx, {wakeup: {timing: "none"}, inbox: 0});
-    expect(status(statuses)).toBe("PAVEWAY olympiad/practice (training)");
-    show(ctx, {});
-    expect(status(statuses)).toContain("Wake ? · Inbox ?");
+    const idle = component.render(80)[0];
+    expect(idle).toContain("olympiad/practice");
+    expect(idle).toContain("Workflow training");
+    expect(idle).not.toMatch(/\b(?:Wake|Inbox|Busy)\b/);
 });
 
 test("the welcome is a width-bounded startup widget that disappears on main input", () => {
-    const {pi, ctx, widgets, emit} = host();
+    const {pi, ctx, widgets, emit, tui} = host();
     const show = registerNativePresentation(pi, config);
     show(ctx, {});
-    expect(widgets.size).toBe(0);
+    expect(widgets.has("paveway.welcome")).toBe(false);
     show(ctx, {}, {banner: true});
-    expect(widgets.size).toBe(1);
-    const [{widget, options}] = [...widgets.values()];
+    const {component, options} = widgets.get("paveway.welcome");
     expect(options.placement).toBe("aboveEditor");
-    const tui = {terminal: {rows: 24}};
-    const component = widget(tui, {getColorMode: () => "none", getSymbolPreset: () => "unicode"});
+    // Render the installed widget at several physical terminal dimensions.
     for (const width of [80, 40, 16, 5]) {
         expect(component.render(width).every(row => Bun.stringWidth(row) <= width)).toBe(true);
     }
@@ -68,11 +75,11 @@ test("the welcome is a width-bounded startup widget that disappears on main inpu
     expect(component.render(80)).toHaveLength(1);
     emit("agent_start", {...ctx, agent: {kind: "subagent"}});
     show(ctx, {inbox: 1});
-    expect(widgets.size).toBe(1);
+    expect(widgets.has("paveway.welcome")).toBe(true);
     emit("input");
-    expect(widgets.size).toBe(0);
+    expect(widgets.has("paveway.welcome")).toBe(false);
     show(ctx, {inbox: 2});
-    expect(widgets.size).toBe(0);
+    expect(widgets.has("paveway.welcome")).toBe(false);
 });
 
 test("presentation never accesses child or headless UI and tolerates missing visual hooks", () => {

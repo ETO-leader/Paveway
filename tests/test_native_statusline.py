@@ -1,5 +1,6 @@
 """Public Paveway Runtime status on a real OMP terminal."""
 
+import json
 import fcntl
 import os
 import pty
@@ -45,7 +46,7 @@ class Terminal:
 
     @property
     def status(self):
-        return next((row.strip() for row in self.screen.display if "PAVEWAY native-test/training" in row), "")
+        return next((row.strip() for row in self.screen.display if "PAVEWAY native-test/" in row), "")
 
     def pump(self, seconds=.15):
         deadline = time.monotonic() + seconds
@@ -121,6 +122,22 @@ class NativeStatusLineTests(NativeFixture):
         terminal = Terminal(self, columns=80)
         terminal.until(lambda: self.idle_status(terminal) and "probe" in terminal.text)
         self.assertEqual(self.server.requests, [])
+
+    def test_light_narrow_terminal_reserves_live_status_and_keeps_draft_on_resize(self):
+        from pathlib import Path
+        config = Path(self.env["PI_CODING_AGENT_DIR"]) / "config.yml"
+        settings = json.loads(config.read_text())
+        settings["theme"] = {"dark": "light", "light": "light"}
+        config.write_text(json.dumps(settings))
+        terminal = Terminal(self, columns=42)
+        terminal.send("/wakeup in 80s NARROW_WAKEUP\r")
+        terminal.until(lambda: "Wake " in terminal.status)
+        terminal.send("\x1b[200~first line\n第二行 draft\x1b[201~")
+        terminal.until(lambda: "第二行 draft" in terminal.editor_line and "Wake " in terminal.status)
+        terminal.resize(92)
+        terminal.until(lambda: "PAVEWAY native-test/training" in terminal.status
+                       and "Wake " in terminal.status and "第二行 draft" in terminal.editor_line)
+        self.assertFalse(self.server.requests)
 
     def test_wakeup_countdown_until_cancelled(self):
         terminal = Terminal(self)
