@@ -47,7 +47,8 @@ class FrontendTests(unittest.TestCase):
             with patch("oicoach_runtime.native.request", side_effect=lambda _socket, command, args=None: runtime.dispatch_api(command, args or {})), \
                     patch("oicoach_runtime.native._run_owned") as launch:
                 with self.assertRaises(ConflictError):
-                    _run_once(self.config, self.root / "config.toml", "example", "training", lease["conversation_id"], False)
+                    _run_once(self.config, self.root / "config.toml", "example", "training", lease["conversation_id"], False,
+                              installation=runtime.omp_installation)
                 launch.assert_not_called()
             self.assertEqual(self.frontend.get(lease["conversation_id"]), original)
         finally:

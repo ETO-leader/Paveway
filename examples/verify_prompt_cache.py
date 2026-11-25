@@ -212,19 +212,21 @@ class NativeConversation:
                 data = os.read(self.master, 65536)
             except OSError:
                 data = b""
+            query_start = max(0, len(self.output) - 3)
             self.output.extend(data)
             self.stream.feed(data)
-            if b"\x1b[6n" in data:
+            if self.output.find(b"\x1b[6n", query_start) != -1:
                 os.write(self.master, b"\x1b[1;1R")
 
     def until(self, predicate):
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
             self.pump()
+            exit_code = self.process.poll()
             if predicate():
                 return
-            if self.process.poll() is not None:
-                raise RuntimeError(f"native OMP exited ({self.process.returncode}) before the requested fixture state: " +
+            if exit_code is not None:
+                raise RuntimeError(f"native OMP exited ({exit_code}) before the requested fixture state: " +
                                    self.output.decode(errors="replace")[-3000:])
         raise TimeoutError("native OMP did not reach the requested fixture state: " +
                            self.output.decode(errors="replace")[-1500:])
@@ -247,7 +249,10 @@ class NativeConversation:
             if not any(main_request(body, marker) for body in candidates):
                 return False
             record = self.fixture.api("frontend.show", {"conversation_id": self.record["conversation_id"]})
-            if record["status"] != "idle":
+            # OMP advertises the future Session filename during handshake.
+            # Runtime idle may still describe the previous turn while OMP
+            # is writing the first response; wait for persisted evidence.
+            if record["status"] != "idle" or not Path(record["session_file"]).is_file():
                 return False
             self.record = record
             entries = read_archive(record["session_file"], self.fixture.root)
@@ -292,7 +297,9 @@ class NativeConversation:
         new_messages = {entry["id"]: entry for entry in after if entry.get("type") in ("message", "custom_message")}
         require(all(new_messages.get(key) == value for key, value in old_messages.items()),
                 "/clear rewrote persisted message history")
-        require(len(self.fixture.server.requests) == requests, "/clear unexpectedly called the model")
+        unexpected = self.fixture.server.requests[requests:]
+        endings = [canonical(body.get("messages", [])[-1:])[:512] for body in unexpected]
+        require(not unexpected, f"/clear unexpectedly called the model; fixture request endings: {endings}")
 
     def close(self):
         try:

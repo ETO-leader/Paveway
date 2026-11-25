@@ -66,7 +66,9 @@ class InstalledWheelTests(unittest.TestCase):
             environment = root / "venv"
             subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True, capture_output=True, text=True)
             python = str(environment / "bin" / "python")
-            install = subprocess.run([python, "-m", "pip", "install", str(wheel)], capture_output=True, text=True)
+            environment_vars = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+            install = subprocess.run([python, "-m", "pip", "install", str(wheel)], cwd=root,
+                                     env=environment_vars, capture_output=True, text=True)
             self.assertEqual(install.returncode, 0, install.stdout + install.stderr)
             script = '''
 import json, sys

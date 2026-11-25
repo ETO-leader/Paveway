@@ -1,6 +1,6 @@
 """Opt-in real raw RPC boundaries; all HTTP/cache responses are synthetic.
 
-Native/TUI owns /clear. Pinned raw RPC treats that spelling as user text;
+Native/TUI owns /clear. Official raw RPC treats that spelling as user text;
 this proof must never manufacture a reset receipt or reset_boundary for it.
 """
 
@@ -29,10 +29,9 @@ class RpcMemoryBoundaryTests(unittest.TestCase):
         from verify_rpc_memory_boundaries import effective_notes, verify_rpc_memory_boundaries
 
         result = asyncio.run(verify_rpc_memory_boundaries(self.fixture))
-        self.assertTrue(Path(result["build"]["executable"]).is_file())
-        self.assertTrue(Path(result["build"]["source"]).is_dir())
-        self.assertTrue(Path(result["build"]["bun"]).is_file())
-        self.assertEqual(len(result["build"]["commit"]), 40)
+        from oicoach_runtime.omp_installation import omp_version, resolve_omp
+        executable = resolve_omp()
+        self.assertEqual(result["build"], {"executable": executable, "version": omp_version(executable)})
         self.assertIn("synthetic", result["usage"])
         self.assertIn("real Runtime IPC", result["transport"])
 

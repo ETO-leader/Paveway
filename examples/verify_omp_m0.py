@@ -79,11 +79,12 @@ class Probe:
         # parent-agent configuration. Never load the user's real profile.
         self.env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(root),
                     "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TERM": "xterm-256color",
-                    "PI_CODING_AGENT_DIR": str(self.agent)}
+                    "PI_CODING_AGENT_DIR": str(self.agent), "PI_NO_TITLE": "1"}
         for kind in ("CONFIG", "STATE", "DATA", "CACHE"):
             self.env[f"XDG_{kind}_HOME"] = str(root / kind.lower())
         (self.agent / "config.yml").write_text(json.dumps({
-            "startup": {"setupWizard": False, "showSplash": False}}))
+            "startup": {"setupWizard": False, "showSplash": False, "checkUpdate": False},
+            "update": {"auto": False}}))
         (self.agent / "models.yml").write_text(json.dumps({"providers": {"paveway-m0": {
             "baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "auth": "none",
             "api": "openai-completions", "models": [{"id": "probe", "name": "probe",

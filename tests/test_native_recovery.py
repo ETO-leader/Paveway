@@ -43,7 +43,10 @@ class NativeRecoveryTests(NativeFixture):
             "delivery_id": first["delivery_id"], "expected_version": first["version"]})
         process, raw, send, until, pump, exit_ui = self.open_ui()
         due = (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat()
-        send(f'/reminder reschedule {event["event_id"]} {event["version"]} {due}\r')
+        command = f'/reminder reschedule {event["event_id"]} {event["version"]} {due}'
+        send(command)
+        until(command)
+        send("\r")
         until("", lambda: request(self.config.server.socket_path, "events.show", {"event_id": event["event_id"]})["version"] > event["version"])
         deadline = time.monotonic() + 10
         rows = []

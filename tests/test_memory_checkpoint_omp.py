@@ -1,6 +1,6 @@
 """Opt-in real OMP checkpoint crash/abort/recovery proof; loopback only.
 
-PAVEWAY_TEST_CACHE_OMP=1 enables the pinned prepared host in a temporary profile.
+PAVEWAY_TEST_CACHE_OMP=1 uses the selected official OMP in a temporary profile.
 The seed is 63 completed RPC model turns, never synthetic session-manager rows.
 """
 
@@ -21,8 +21,6 @@ class MemoryCheckpointOmpTests(unittest.TestCase):
 
         temporary = tempfile.TemporaryDirectory(prefix="pw-checkpoint-test-")
         self.addCleanup(temporary.cleanup)
-        # Deliberately use CacheHarness's pinned native host, not a PATH OMP or
-        # PAVEWAY_TEST_CACHE_OMP_EXECUTABLE inherited from another acceptance run.
         self.fixture = CacheHarness(Path(temporary.name))
         self.addCleanup(self.fixture.close)
 

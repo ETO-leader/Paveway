@@ -21,7 +21,8 @@ class BunMemoryTestCase(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.environment = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root),
-                            "PI_CODING_AGENT_DIR": str(self.root / "agent"), "PYTHON": sys.executable}
+                            "PI_CODING_AGENT_DIR": str(self.root / "agent"), "PYTHON": sys.executable,
+                            "TMPDIR": tempfile.gettempdir()}
         for kind in ("CONFIG", "STATE", "DATA", "CACHE"):
             self.environment[f"XDG_{kind}_HOME"] = str(self.root / kind.lower())
 

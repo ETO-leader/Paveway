@@ -105,11 +105,16 @@ class NativeFixture(unittest.TestCase):
         os.close(slave)
         os.set_blocking(master, False)
         output = bytearray()
+        import pyte
+        from terminal_screen import WideScreen
+        screen = WideScreen(120, 40)
+        stream = pyte.ByteStream(screen)
+
         def received(chunk):
             start = max(0, len(output) - 3)
             output.extend(chunk)
+            stream.feed(chunk)
             return output.find(b"\x1b[6n", start) != -1
-
 
         def send(data):
             pending = bytearray(data)
@@ -142,7 +147,9 @@ class NativeFixture(unittest.TestCase):
                 "\nFixture tool evidence: " + json.dumps(tools, ensure_ascii=False)[-2000:])
 
         try:
-            until("PAVEWAY")
+            until("", predicate=lambda: any("PAVEWAY " in row for row in screen.display) and any(
+                row["workflow_id"] == workflow and row["status"] == "idle" and row["session_id"]
+                for row in request(self.config.server.socket_path, "frontend.list")))
             if background:
                 with self.assertRaises(RuntimeContractError):
                     request(self.config.server.socket_path, "frontend.begin", {"workflow_id": "native-test", "task_id": "training"})

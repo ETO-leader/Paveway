@@ -190,10 +190,11 @@ class NativeManagementTests(NativeFixture):
             if select.select([master], [], [], timeout)[0]:
                 try: chunk = os.read(master, 65536)
                 except OSError: return
+                start = max(0, len(raw) - 3)
                 raw.extend(chunk)
                 if stream is not None:
                     stream.feed(chunk)
-                if b"\x1b[6n" in chunk:
+                if raw.find(b"\x1b[6n", start) != -1:
                     os.write(master, b"\x1b[1;1R")
         def until(text, predicate=lambda: True):
             deadline = time.monotonic() + 20
