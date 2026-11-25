@@ -168,7 +168,7 @@ class NativeFixture(unittest.TestCase):
             # Wait for the native editor to process the paste before pressing
             # Enter; an attested process can still be repainting its first view.
             tail = body.rstrip().splitlines()[-1][-8:]
-            until("", predicate=lambda: any(tail in row for row in screen.display))
+            until("", predicate=lambda: any(tail in row or "📄 #1" in row for row in screen.display))
             send(b"\r")
             until("M0_REPLY", requests=baseline + 1, predicate=lambda:
                 request(self.config.server.socket_path, "frontend.show", {"conversation_id": conversation})["status"] == "idle" and evidence())
