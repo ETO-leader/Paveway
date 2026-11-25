@@ -18,7 +18,7 @@ from .customization import snapshot
 from .errors import ConflictError, RuntimeContractError
 from .ipc import request
 from .models import validate_id
-from .native_host import prepare_native_host
+from .omp_installation import OMP_PATH_ENV, omp_file_identity, resolve_omp
 from .native_terminal import run_terminal
 from .processes import InstanceLock
 from .proxy import child_environment
@@ -68,13 +68,20 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     from .proxy import synchronize
     synchronize(config_path)
-    config = replace(config, agent=replace(config.agent, executable=prepare_native_host()))
+    executable = resolve_omp(config.agent.executable)
+    config = replace(config, agent=replace(config.agent, executable=executable))
     cwd, inference = None, None
     while True:
         conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
         if cancelled:
             return 0
-        code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd, inference)
+        omp = request(config.server.socket_path, "status").get("omp", {})
+        if omp.get("path") != executable or omp.get("file_identity") != omp_file_identity(executable):
+            raise RuntimeContractError(
+                f"Foreground OMP ({executable}) does not match the Runtime installation ({omp.get('path') or 'unavailable'}). "
+                "Set agent.executable consistently and safely restart Runtime.")
+        code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd, inference,
+                                 omp_version=omp.get("version"))
         if code or not action:
             return code
         cwd, inference = None, None
@@ -95,7 +102,7 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
             conversation_id, new = action["conversation_id"], False
 
 
-def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd=None, inference=None):
+def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd=None, inference=None, *, omp_version=None):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
@@ -105,6 +112,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
     elif conversation_id is None:
         rows = request(config.server.socket_path, "frontend.list", {"workflow_id": workflow_id, "task_id": task_id})
         conversation_id = rows[0]["conversation_id"] if rows else None
+    resuming = conversation_id is not None
     conversation_id = conversation_id or str(uuid.uuid4())
     validate_id(conversation_id)
     root = session_directory(config, workflow_id, task_id, conversation_id)
@@ -118,9 +126,18 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
     # Admission is serialized by the actual session lock, not by a compensating
     # finish(None) after a failed acquisition. Begin still provides token/CAS fencing.
     try:
+        target_cwd = cwd
+        if target_cwd is None and resuming:
+            target_cwd = request(config.server.socket_path, "frontend.show", {"conversation_id": conversation_id})["cwd"]
+        if target_cwd is not None and Path(target_cwd) != workflow.workspace:
+            from .workflow_setup import show_tijian
+            if show_tijian(config, workflow_id)["configured"]:
+                raise RuntimeContractError(
+                    "Official OMP cannot safely inherit managed Tijian MCP outside the Workflow Workspace. "
+                    "Use a conversation in the Workflow Workspace; no MCP configuration was changed.")
         target = {"cwd": cwd} if cwd is not None else {}
         lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
-                        "conversation_id": conversation_id, **target})
+                        "conversation_id": conversation_id, "omp_executable": config.agent.executable, **target})
     except BaseException:
         lock.close()
         raise
@@ -132,7 +149,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
             workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
             if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
                 raise RuntimeContractError("Profile changed during launch; no prompt was sent")
-        code, switch_path, nonce = _run_owned(config, config_path, workflow, lease, lock, inference)
+        code, switch_path, nonce = _run_owned(config, config_path, workflow, lease, lock, inference, omp_version)
         action = _read_switch(switch_path, nonce, workflow) if code == 0 and switch_path.exists() else None
         if action and action["kind"] in ("resume", "legacy"):
             action["conversation_id"] = lease["conversation_id"]
@@ -170,7 +187,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
             print(f"{failure.code}: {failure}", file=sys.stderr)
 
 
-def _run_owned(config, config_path, workflow, lease, lock, inference=None):
+def _run_owned(config, config_path, workflow, lease, lock, inference=None, omp_version=None):
     workflow_id, task_id = lease["workflow_id"], lease["task_id"]
     root = Path(lease["session_dir"])
     cwd = lease["cwd"]
@@ -179,6 +196,7 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None):
     switch_path = root / ("switch-" + launch_id + ".json")
     settings = {"socket_path": config.server.socket_path, "workflow_id": workflow_id, "task_id": task_id,
                 "coach_id": lease["coach_id"],
+                "workflow_source": workflow.customization.get("coach", {}).get("workflow_source", workflow_id),
                 "background_task_id": lease["background_task_id"],
                 "conversation_id": lease["conversation_id"], "generation": lease["generation"],
                 "cwd": cwd, "workspace": lease["workspace"], "session_dir": str(root),
@@ -186,17 +204,16 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None):
                 "owner_token": lease["owner_token"], "tools_enabled": config.agent.tools_enabled,
                 "memory_enabled": workflow.memory_enabled,
                 "paveway_version": __version__,
+                "omp_version": omp_version,
                 "cli_prefix": [sys.executable, "-m", "oicoach_runtime"], "config_path": str(config_path),
-                "switch_path": str(switch_path), "statusline": {"cap_style": config.statusline.cap_style}}
+                "switch_path": str(switch_path)}
     private = root / (launch_id + ".json")
     private.write_text(json.dumps(settings), encoding="utf-8")
     private.chmod(0o600)
     extension = Path(str(files("oicoach_runtime").joinpath("bundled/paveway-native.mjs")))
     digest = hashlib.sha256(extension.read_bytes()).hexdigest()
     environment = dict(child_environment(config_path), PAVEWAY_NATIVE_DATA=str(private), PAVEWAY_NATIVE_NONCE=nonce)
-    environment.pop("PAVEWAY_WORKFLOW_WORKSPACE", None)
-    if cwd != lease["workspace"]:
-        environment["PAVEWAY_WORKFLOW_WORKSPACE"] = lease["workspace"]
+    environment[OMP_PATH_ENV] = config.agent.executable
     argv = [config.agent.executable, "--cwd", cwd, "--session-dir", str(root),
             "--no-extensions", "--trusted-extension", str(extension)]
     if lease["session_file"]:
@@ -217,12 +234,17 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None):
     directories = ()
     if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
         from .omp_config import skill_directories
-        directories = asyncio.run(skill_directories(config, cwd, environment))
+        directories = asyncio.run(skill_directories(config, config.agent.executable, cwd, environment))
     argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
                      base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories,
                      package_root=config.state_dir / "skill-packages")
     overlay = root / "native.yml"
-    overlay.write_text(json.dumps({"autoResume": False, "startup": {"setupWizard": False}}))
+    overlay.write_text(json.dumps({
+        "autoResume": False,
+        "startup": {"setupWizard": False, "showSplash": False},
+        "worktree": {"onStart": "off"},
+        "composer": {"shape": "paveway.chrome"},
+    }))
     overlay.chmod(0o600)
     argv += ["--config", str(overlay)]
 
@@ -230,6 +252,9 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None):
 
     def ready(frame, guardian):
         nonlocal admitted
+        failure = frame.get("failure")
+        if frame.get("nonce") == nonce and isinstance(failure, str) and 0 < len(failure) <= 120 and failure.isprintable():
+            raise RuntimeContractError(f"Paveway Extension rejected the session: {failure}")
         pid = frame.get("pid")
         if (type(frame.get("apiVersion")) is not int or frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or frame.get("extensionDigest") != digest or
                 frame.get("contextPolicy") != "omp-native" or type(pid) is not int):

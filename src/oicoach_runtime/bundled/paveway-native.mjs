@@ -7,49 +7,76 @@ import {registerWakeups} from "./paveway-wakeup.mjs";
 import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
 import {registerMemoryContext} from "./paveway-memory-context.mjs";
-import {loadNativeTui} from "./paveway-settings.mjs";
-import {createStatusLine} from "./paveway-statusline.mjs";
-import {installComposer} from "./paveway-composer.mjs";
-import {presentationColor} from "./paveway-presentation.mjs";
+import {registerNativePresentation} from "./paveway-native-ui.mjs";
 
-function stop() {
-    try { writeSync(2, "paveway_native_failed: required native integration failed\n"); }
-    finally { process.kill(process.pid, "SIGKILL"); }
+const admissionDescriptor = Number(process.env.PAVEWAY_NATIVE_FD);
+const admissionNonce = process.env.PAVEWAY_NATIVE_NONCE;
+
+function stop(stage) {
+    try {
+        writeSync(admissionDescriptor, JSON.stringify({failure: stage, nonce: admissionNonce}) + "\n");
+    } finally { process.kill(process.pid, "SIGKILL"); }
+}
+
+const workspaceNotice = "Use /paveway cwd to change projects without moving this Conversation.";
+const resumeNotice = "Use /paveway profile → Resume conversation for another Paveway conversation";
+const isShellChain = /^(?:'[^']*'|"[^"]*"|\\.|[^"'\\&;|\r\n])*[&;|\r\n]/;
+
+function managedInput(text) {
+    const input = text.trim();
+    if (/^\/(?:move|wt|worktree)(?:\s|$)/.test(input)) return workspaceNotice;
+    if (/^\/(?:resume|import)(?:\s|$)/.test(input)) return resumeNotice;
+    if (/^\/(?:restart|reload-plugins)(?:\s|$)/.test(input))
+        return "Use /paveway restart to restart this Conversation through Runtime.";
+    const shell = /^!!?\s*(cd(?:\s|$)[\s\S]*)$/.exec(input)?.[1];
+    if (shell && !isShellChain.test(shell)) return workspaceNotice;
 }
 
 
 export default async function paveway(pi) {
+    let stage = "invalid Paveway Extension launch data";
     try {
         const file = process.env.PAVEWAY_NATIVE_DATA;
         const info = lstatSync(file);
-        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077)) stop();
+        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077)) stop(stage);
         const config = JSON.parse(readFileSync(file, "utf8"));
-        const descriptor = Number(process.env.PAVEWAY_NATIVE_FD);
-        const nonce = process.env.PAVEWAY_NATIVE_NONCE;
-        if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop();
+        const descriptor = admissionDescriptor;
+        const nonce = admissionNonce;
+        if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop(stage);
+        stage = "cannot read the loaded Paveway Extension source";
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
-        const statusState = {coach: config.coach_id, workflow: `${config.coach_id}/${config.task_id}`};
-        let statusContext;
-        const nativeTui = await loadNativeTui();
-        const statusLine = createStatusLine(() => statusState, nativeTui,
-            {capStyle: config.statusline?.cap_style});
-        const roleColor = text => presentationColor(nativeTui, "brand", text);
-        const conversationPresentation = {
-            user: {compact: true, accent: roleColor},
-            assistant: {label: "GPT", labelColor: roleColor},
+        const statusState = {};
+        let statusContext, removeResumeKeyGuard;
+        stage = "OMP Extension registration failed";
+        const showPresentation = registerNativePresentation(pi, config);
+        const refreshPresentation = () => {
+            if (statusContext) showPresentation(statusContext, statusState);
         };
         const publishStatus = update => {
-            if (JSON.stringify(update) === JSON.stringify({wakeup: statusState.wakeup, inbox: statusState.inbox})) return;
             Object.assign(statusState, update);
-            statusContext?.ui.setStatusLine(statusLine);
+            refreshPresentation();
         };
+        pi.on("input", (event, ctx) => {
+            if (ctx.agent?.kind !== "main") return;
+            if (!admitted || ctx.cwd !== config.cwd) stop("main input outside admitted Conversation");
+            const notice = managedInput(event.text);
+            if (notice) {
+                ctx.ui.notify(notice, "warning");
+                return {handled: true};
+            }
+        });
+        pi.on("before_agent_start", (_event, ctx) => {
+            if (ctx.agent?.kind === "main" && (!admitted || ctx.cwd !== config.cwd))
+                stop("OMP main context escaped the admitted Conversation");
+        });
         const management = registerManagement(pi, config, (ctx, action) => {
-            const handoff = ctx.agent?.kind === "main" && ctx.ui.getManagedHandoffState?.();
-            if (!handoff)
+            const jobs = ctx.getAsyncJobSnapshot?.();
+            if (ctx.agent?.kind !== "main" || !admitted || !ctx.isIdle() || ctx.hasPendingMessages() ||
+                    jobs?.running?.length || jobs?.delivery?.queued || jobs?.delivery?.delivering)
                 return ctx.ui.notify("Wait for the current activity before switching/restarting", "warning");
             const inference = action.kind === "cwd" ? {
-                model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "", thinking: handoff.thinking ?? "off",
+                model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "", thinking: pi.getThinkingLevel() || "off",
             } : {};
             const payload = JSON.stringify({nonce, ...action, ...inference});
             if (Buffer.byteLength(payload) > 4096) throw new Error("Working directory is too long for native handoff");
@@ -72,7 +99,7 @@ export default async function paveway(pi) {
                 {...bound(), parameters: {known}}),
             fail: (_error, diagnostic) => {
                 writeSync(2, JSON.stringify({component: "memory", ...diagnostic}) + "\n");
-                stop();
+                stop("Runtime Memory context failed");
             },
         });
         const sessionReady = async (_event, ctx) => {
@@ -80,28 +107,38 @@ export default async function paveway(pi) {
                 // OMP emits spawned-session hooks in the same extension host.
                 // A child is neither a main-session switch nor a TUI failure.
                 if (ctx.agent?.kind !== "main") return;
-                if (!ctx.hasUI || ctx.cwd !== config.cwd) stop();
+                stage = "OMP cannot provide the managed interactive context";
+                const prompt = ctx.getSystemPrompt();
+                if (!ctx.hasUI || ctx.cwd !== config.cwd || !Array.isArray(ctx.sessionManager.getBranch()) ||
+                    !(typeof prompt === "string" || (Array.isArray(prompt) && prompt.every(part => typeof part === "string")))) stop(stage);
+                if (!removeResumeKeyGuard) {
+                    stage = "OMP cannot install the managed resume key guard";
+                    const {getKeybindings} = await import("@oh-my-pi/pi-tui");
+                    const keys = getKeybindings();
+                    removeResumeKeyGuard = ctx.ui.onTerminalInput(data => {
+                        if (!keys.matches(data, "app.session.resume")) return;
+                        ctx.ui.notify(resumeNotice, "warning");
+                        return {consume: true};
+                    });
+                }
                 if (config.materialize && _event.type === "session_start") await ctx.sessionManager.ensureOnDisk();
+                stage = "Runtime Extension handshake failed";
                 await runtimeRequest(config.socket_path, "status");
                 const frame = Buffer.from(JSON.stringify({apiVersion: 1, nonce, pid: process.pid,
                     extensionDigest: sha, sessionId: ctx.sessionManager.getSessionId(),
                     sessionFile: ctx.sessionManager.getSessionFile(), contextPolicy: "omp-native"}) + "\n");
                 writeSync(descriptor, frame);
                 const ack = Buffer.alloc(1);
-                if (readSync(descriptor, ack, 0, 1, null) !== 1 || ack[0] !== 65) stop();
+                if (readSync(descriptor, ack, 0, 1, null) !== 1 || ack[0] !== 65) stop(stage);
                 const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
                 config.generation = owner.generation;
                 admitted = true;
-                if (typeof ctx.ui.setStatusLine !== "function")
-                    throw new Error("Paveway requires the pinned OMP status-line bridge; run packaging/omp/install.py");
-                if (typeof ctx.ui.setConversationPresentation !== "function")
-                    throw new Error("Paveway requires the pinned OMP conversation bridge");
-                ctx.ui.setConversationPresentation(conversationPresentation);
-                await installComposer(ctx, nativeTui);
                 statusContext = ctx;
-                ctx.ui.setStatusLine(statusLine);
+                showPresentation(ctx, statusState, {banner: _event.type === "session_start" && !statusState.started});
+                statusState.started = true;
+                stage = "Runtime Wakeup state unavailable";
                 await wakeups.refresh(ctx);
-            } catch { stop(); }
+            } catch { stop(stage); }
         };
         pi.on("session_start", sessionReady);
         pi.on("session_switch", sessionReady);
@@ -112,12 +149,14 @@ export default async function paveway(pi) {
                 const within = relative(realpathSync(config.session_dir), file);
                 if (within && within !== ".." && !within.startsWith(".." + sep) && !isAbsolute(within)) return;
             } catch { /* Reject missing paths without changing the active session. */ }
-            ctx.ui.notify("Use /paveway profile → Resume conversation for another Paveway conversation", "warning");
+            ctx.ui.notify(resumeNotice, "warning");
             return {cancel: true};
         });
         for (const phase of ["agent_start", "agent_end", "session_shutdown"]) {
             pi.on(phase, async (_event, ctx) => {
                 if (!admitted || ctx.agent?.kind !== "main") return;
+                statusState.busy = phase === "agent_start";
+                if (phase !== "session_shutdown") refreshPresentation();
                 try { await runtimeRequest(config.socket_path, "frontend.observe", {...bound(), phase}); }
                 catch { /* Unknown observation is not a completion or retry. */ }
             });
@@ -130,11 +169,12 @@ export default async function paveway(pi) {
         pi.on("session_shutdown", (_event, ctx) => {
             if (ctx.agent?.kind !== "main") return;
             clearInterval(heartbeat);
+            removeResumeKeyGuard?.();
             admitted = false;
             statusContext = undefined;
         });
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
-            if (!admitted) stop();
+            if (!admitted) stop("Paveway command before Runtime admission");
             try {
                 if (args.trim() === "cache") {
                     const usage = await runtimeRequest(config.socket_path, "cache.stats",
@@ -154,5 +194,5 @@ export default async function paveway(pi) {
         pi.registerCommand("coach", {description: "Show the bound GPT environment", handler: async (_args, ctx) => {
             ctx.ui.notify(`GPT · ${config.coach_id}/${config.task_id}\nCurrent directory: ${ctx.cwd}\nConversation: ${config.conversation_id}\nSession: ${ctx.sessionManager.getSessionId()}`, "info");
         }});
-    } catch { stop(); }
+    } catch { stop(stage); }
 }

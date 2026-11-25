@@ -1,10 +1,12 @@
 // Real OMP SessionManager/context reconstruction only; no model or network calls.
+// bun examples/verify_omp_memory_boundaries.mjs <prepared-OMP-checkout> <temporary-output-directory>
 import assert from "node:assert/strict";
 import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {resolve, join} from "node:path";
 import {pathToFileURL} from "node:url";
 import {MEMORY_TYPE, memoryState, planMemory, restoreCompactedMemory} from "../src/oicoach_runtime/bundled/paveway-memory-context.mjs";
 
+assert.ok(process.argv[2] && process.argv[3], "Pass a prepared OMP checkout and a temporary output directory");
 const source = resolve(process.argv[2]);
 const directory = resolve(process.argv[3]);
 assert.ok(directory.startsWith("/tmp/"), "SDK probe must use disposable /tmp storage");

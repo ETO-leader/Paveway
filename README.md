@@ -10,7 +10,7 @@ Paveway 是基于 OMP（oh-my-pi）的 OI GPT 运行框架。原生 OMP TUI 负�
 
 ## 环境与安装
 
-支持 Linux；本轮实际环境为 WSL2、Python 3.12.3、Bun 1.4.3、OMP 18.10.4。需要 Python 3.11+、venv/pip、Git，以及已安装并完成模型认证的 `omp`。登录自启需要可用的 systemd 用户服务。
+支持 Linux／WSL2；需要 Python 3.11+、venv/pip、Git，以及已安装并完成模型认证的[官方 OMP](https://github.com/can1357/oh-my-pi/releases)。Paveway 不构建、不补丁、不分发 OMP 或 Bun。登录自启需要可用的 systemd 用户服务。
 
 ```bash
 git clone https://github.com/ETO-leader/Paveway.git
@@ -33,9 +33,12 @@ omp --version
 ./paveway.sh --legacy-ui
 ./paveway.sh --shutdown-on-exit
 ./paveway.sh --restart-runtime
+./paveway.sh --omp /absolute/path/to/omp
 ```
 
 `--shutdown-on-exit` 只在本次启动创建了独立（非 systemd）Runtime、没有其他活动会话/后台工作、前台会话已释放且进程身份与所有权记录一致时，才在正常退出后关闭它；共享 Runtime 不会被取得所有权。`--restart-runtime` 用于主动安全重启，平时不需要。
+
+前台 Extension 与后台 RPC 使用同一个实际 OMP：`--omp`／`PAVEWAY_OMP_PATH` 优先于配置 `agent.executable`，缺省走 `PATH`。可用 `omp update` 或替换官方发行包正常升级，无需重新编译 Paveway；systemd 用 `agent.executable` 的绝对路径。诊断和安全回退见[原生 UI 使用说明](docs/native-ui.md#omp-选择诊断与升级)。
 
 `--new` 显式新建 Conversation；`--conversation ID` 选择已有 Conversation。两者不可同时使用，且仅适用于原生界面；与 `--legacy-ui`（包括 `PAVEWAY_UI=legacy` 默认值）一起使用会在启动 Runtime 前报错。未指定时沿用原生界面的默认会话选择，不自动添加 `--new`。`--workflow`／`--coach`、`--task` 和 `--config` 的用法不变。
 
@@ -69,6 +72,8 @@ omp --version
 Paveway 不覆盖 OMP 原生 `/memory`、`/skills` 等命令。OMP 原生 Memory 和 Paveway 笔记是不同存储。当前只精确加载随包的 trusted extension，不自动发现其他用户 Extension；原生工具、Workspace MCP、Skills 和 Rules 继续受配置权限控制。
 
 详细操作、异常状态和回退见 [原生 UI 使用说明](docs/native-ui.md)。
+
+两份官方发行版的实测证据、视觉差异和受管 Tijian 跨目录限制见 [Extension-First 验收](docs/verification/official-omp.md)。
 
 ## GPT Profile、Prompt 与 Skills
 

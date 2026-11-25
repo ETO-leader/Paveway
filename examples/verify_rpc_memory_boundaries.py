@@ -13,6 +13,8 @@ from pathlib import Path
 import sys
 import tempfile
 
+from oicoach_runtime.omp_installation import omp_version
+
 try:
     from .verify_prompt_cache import (
         CacheHarness, TIMEOUT, WORKFLOW, canonical, compare_requests,
@@ -130,10 +132,8 @@ def memory_environment(fixture, *, name="rpc-memory-data.json"):
 
 
 def build_labels(fixture):
-    manifest_path = Path(fixture.env["PAVEWAY_OMP_CACHE"]) / "runtime.json"
-    runtime = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return {"executable": str(fixture.probe.executable),
-            **{key: runtime[key] for key in ("source", "commit", "patch", "bun")}}
+    executable = fixture.probe.executable
+    return {"executable": str(executable), "version": omp_version(executable)}
 
 
 def current_request(body, marker):
@@ -178,9 +178,9 @@ def effective_notes(body):
 
 
 async def verify_rpc_memory_boundaries(fixture):
-    """Prove supported raw administrative RPC semantics on the prepared host.
+    """Prove supported raw administrative RPC semantics on the official host.
 
-    In pinned OMP /clear is TUI-only. RPC forwards it as ordinary user input;
+    In OMP /clear is TUI-only. RPC forwards it as ordinary user input;
     it must not be represented as a reset proof. Native covers real /clear.
     """
     keep = "RPC_BOUNDARY_CURRENT_KEEP"
@@ -254,7 +254,7 @@ async def verify_rpc_memory_boundaries(fixture):
         clear_result = await rpc.prompt("/clear")
         require(clear_result.get("status") == "completed" and clear_result.get("agentInvoked") is True
                 and clear_result.get("sessionSettled") is True,
-                "pinned raw RPC /clear should complete as ordinary model input, not a local reset")
+                "raw RPC /clear should complete as ordinary model input, not a local reset")
         require((await rpc.state())["isSettled"] is True, "RPC /clear input did not settle")
         clear_wires = [body for body in fixture.server.requests[request_start:] if current_request(body, "/clear")]
         require(len(clear_wires) == 1, "raw RPC /clear did not reach exactly one loopback model request")
@@ -267,7 +267,7 @@ async def verify_rpc_memory_boundaries(fixture):
         entries_after_clear = read_archive(session_file, fixture.root)
         boundaries_after = sum(entry.get("type") == "reset_boundary" for entry in entries_after_clear)
         require(boundaries_after == boundaries_before == 0,
-                "pinned raw RPC /clear unexpectedly appended a reset_boundary")
+                "raw RPC /clear unexpectedly appended a reset_boundary")
         require(receipt_count(session_file) == receipts_before_clear,
                 "raw RPC /clear resent an unchanged Memory receipt")
         wires["steady"] = await capture_prompt(rpc, "RPC_BOUNDARY_UNCHANGED")

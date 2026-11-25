@@ -22,7 +22,7 @@ const producer = spawnSync(process.env.PYTHON || "python3",
     });
 if (producer.status !== 0) throw new Error(producer.stderr || "Production Memory fixture generation failed");
 const fixture = JSON.parse(producer.stdout);
-const sourceRoot = process.argv[4] || process.env.PAVEWAY_OMP_SOURCE;
+const sourceRoot = process.argv[4];
 let tokenizer;
 if (sourceRoot) {
     const {Tokenizer} = await import(pathToFileURL(join(resolve(sourceRoot), "packages/agent/src/tokenizer.ts")).href);
@@ -131,7 +131,7 @@ const result = {schema: 1, engine_module: modulePath, engine_sha256: createHash(
         update: "one note per round, cyclic selection, fixed content length, CAS-style version increments", initial_receipts: 1,
         compactions: 0, paid_provider_calls: 0, journal_format: "OMP v3 session/custom_message/user/assistant shapes; synthetic values"},
     producer: fixture.producer,
-    token_counter: tokenizer ? "OMP Tokenizer.countTokens(text, strict); appended Memory text only, not provider billing" : "unavailable; supply pinned OMP source",
+    token_counter: tokenizer ? "OMP Tokenizer.countTokens(text, strict); appended Memory text only, not provider billing" : "unavailable; pass a prepared OMP checkout to enable token accounting",
     byte_accounting: "Cumulative persisted Memory contents (not cumulative provider prompt tokens); JSON costs include value serialization, not property names. state_json_bytes is a subset of details_json_bytes.",
     limit_bytes: limit, first_crossing: firstCrossing ?? null, checkpoints: rows};
 writeFileSync(join(directory, "report.json"), JSON.stringify(result, null, 2) + "\n");

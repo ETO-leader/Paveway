@@ -1,6 +1,5 @@
-import json
+from dataclasses import replace
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -61,31 +60,21 @@ class NativeEntryTests(unittest.TestCase):
         with patch("oicoach_runtime.native.request", return_value={"workflow_id": "other", "task_id": "training"}):
             with self.assertRaises(RuntimeContractError): recovery_choice(self.config, "example", "training", "saved", False)
 
-    def test_host_preparation_failure_never_acquires_ownership_or_starts_ui(self):
+    def test_invalid_omp_never_acquires_ownership_or_starts_ui(self):
         with tempfile.TemporaryDirectory(prefix="pw-native-entry-") as directory:
             root = Path(directory)
             config = Config(root / "state", root / "workflows")
             launcher = root / "omp"
             launcher.write_text("#!/bin/sh\nexit 0\n")
             launcher.chmod(0o600)
-            outcomes = (
-                OSError("installer unavailable"),
-                subprocess.CalledProcessError(1, ["installer"]),
-                subprocess.CompletedProcess(["installer"], 0, stdout="not JSON"),
-                subprocess.CompletedProcess(["installer"], 0, stdout="{}"),
-                subprocess.CompletedProcess(["installer"], 0,
-                    stdout=json.dumps({"launcher": str(root / "missing")})),
-                subprocess.CompletedProcess(["installer"], 0,
-                    stdout=json.dumps({"launcher": str(launcher)})),
-            )
-            for outcome in outcomes:
-                with self.subTest(outcome=outcome):
+            for path in (launcher, root / "missing"):
+                with self.subTest(path=path):
+                    selected = replace(config, agent=replace(config.agent, executable=str(path)))
                     with patch("oicoach_runtime.native.os.isatty", return_value=True), \
                             patch("oicoach_runtime.proxy.synchronize"), \
-                            patch("oicoach_runtime.native_host.subprocess.run", side_effect=[outcome]), \
                             patch("oicoach_runtime.native.request") as remote, \
                             patch("oicoach_runtime.native.run_terminal") as terminal:
-                        with self.assertRaises(RuntimeContractError):
-                            run(config, root / "config.toml", "example", new=True)
+                        with self.assertRaisesRegex(RuntimeContractError, "agent.executable"):
+                            run(selected, root / "config.toml", "example", new=True)
                         remote.assert_not_called()
                         terminal.assert_not_called()

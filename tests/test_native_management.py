@@ -336,6 +336,29 @@ class NativeManagementTests(NativeFixture):
         exit_ui()
         self.assert_no_settings_chat()
 
+    def test_settings_accepts_a_future_thinking_level_and_can_reset_it(self):
+        screen, raw, send, until, pump, exit_ui = self.open_settings_ui()
+        send("/paveway settings\r")
+        until("Thinking preference")
+        send(b"\x1b[B\x1b[B\r")
+        until("Enter a level manually")
+        # The fixture's non-reasoning model has no catalog efforts.
+        send(b"\x1b[B\r")
+        until("OMP thinking level")
+        send("ultra-v2\r")
+        until("Paveway / Settings", lambda: "ultra-v2" in "\n".join(screen.display))
+        self.assertEqual(customization.show(self.config, "native-test")["settings"]["inference"]["thinking"], "ultra-v2")
+        send("\r")
+        until("inherit (Runtime / OMP default)")
+        send("\r")
+        until("Paveway / Settings", lambda: any("Thinking preference" in row and "inherit" in row
+              for row in screen.display) and customization.show(self.config, "native-test")["settings"]["revision"] == 2)
+        self.assertEqual(customization.show(self.config, "native-test")["settings"]["inference"]["thinking"], "")
+        send(b"\x1b")
+        until("", lambda: "Paveway / Settings" not in "\n".join(screen.display))
+        exit_ui()
+        self.assert_no_settings_chat()
+
     def test_settings_navigation_alias_and_first_tijian_path_save_survive_reopen(self):
         executable = self.tijian_fixture()
         screen, raw, send, until, pump, exit_ui = self.open_settings_ui()

@@ -19,49 +19,64 @@ jobs:
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        omp-version: ['19.0.0', '19.1.1']
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install '.[test]'
-      - uses: actions/cache@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          path: ~/.cache/paveway/omp
-          key: paveway-native-linux-${{ hashFiles('src/oicoach_runtime/bundled/omp/**') }}
-      - name: Install pinned native host (installation failures fail this step)
+          bun-version: '1.4.4'
+      - name: Install and verify official OMP release
+        env:
+          OMP_VERSION: ${{ matrix.omp-version }}
         run: |
-          python packaging/omp/install.py
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          runtime = json.loads((Path.home() / '.cache/paveway/omp/18.16.0/runtime.json').read_text())
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write('PAVEWAY_OMP_SOURCE=' + runtime['source'] + '\n')
-              f.write('PAVEWAY_PINNED_BUN=' + runtime['bun'] + '\n')
-          with open(os.environ['GITHUB_PATH'], 'a') as f:
-              f.write(str(Path.cwd() / 'packaging/omp') + '\n')
-          PY
-      - name: Check native prerequisites (no silent skip)
+          set -euo pipefail
+          install_dir="$(mktemp -d "$RUNNER_TEMP/omp.XXXXXXXX")"
+          cd "$install_dir"
+          release="https://github.com/can1357/oh-my-pi/releases/download/v$OMP_VERSION"
+          curl -fsSL --retry 3 -O "$release/SHA256SUMS.txt"
+          curl -fsSL --retry 3 -O "$release/omp-linux-x64"
+          awk '$2 == "omp-linux-x64" { print }' SHA256SUMS.txt | sha256sum --check --strict
+          install -m 0755 omp-linux-x64 omp
+          rm omp-linux-x64 SHA256SUMS.txt
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+      - name: Check official OMP and JS test prerequisites (no silent skip)
+        env:
+          OMP_VERSION: ${{ matrix.omp-version }}
         run: |
           python -c 'import pyte; from shutil import which; assert which("omp")'
-          omp --version
-          "$PAVEWAY_PINNED_BUN" --version
-      - name: Bun UI regressions
-        run: '"$PAVEWAY_PINNED_BUN" test tests/*.test.mjs'
+          python -c 'import os; from oicoach_runtime.omp_installation import omp_version, resolve_omp; assert omp_version(resolve_omp()) == os.environ["OMP_VERSION"]'
+          bun --version
+      - name: Bun UI regressions and synthetic memory pressure
+        env:
+          PYTHONPATH: src:tests
+        run: |
+          bun test tests/*.test.mjs
+          python -m unittest -v test_omp_memory_boundaries.MemoryPressureTests
       - name: Real OMP complete Skill package (ZIP install, restart, skill:// reads; no model)
         env:
           PAVEWAY_TEST_NATIVE: '1'
           PAVEWAY_REQUIRE_REAL_OMP_PACKAGE: '1'
           PYTHONPATH: src:tests
         run: python -m unittest -v test_skill_packages_omp
-      - name: Real native host with local provider and PTY (no external model)
+      - name: Official OMP with local provider and PTY (no external model)
         env:
           PAVEWAY_TEST_NATIVE: '1'
           PYTHONPATH: src:tests
         run: |
           python -m unittest -v \
             test_native_omp \
+            test_native_banner \
+            test_native_conversation \
+            test_native_statusline \
             test_native_management.NativeManagementTests.test_cwd_dialog_cancels_or_opens_a_new_conversation_with_resumable_history \
             test_native_management.NativeManagementTests.test_direct_cwd_loads_target_project_context_without_losing_profile_and_inference \
             test_native_management.NativeManagementTests.test_cwd_waits_for_foreground_activity_without_interrupting_running_background \
@@ -76,8 +91,9 @@ jobs:
             test_native_management.NativeManagementTests.test_skill_import_invalid_analysis_does_not_save \
             test_native_management.NativeManagementTests.test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings \
             test_native_management.NativeManagementTests.test_memory_context_explicit_off_and_on_changes_next_model_request \
-            test_system_prompt_template.RealOmpTemplateSmokeTests.test_skills_indexed_and_content_readable_without_full_injection \
-            test_system_prompt_template.RealOmpTemplateSmokeTests.test_tool_inventory_label_rendering_and_descriptors_mode \
+            test_system_prompt_template.RealOmpTemplateSmokeTests \
             test_native_recovery \
             test_native_capabilities.NativeCapabilityTests.test_native_memory_tool_persists_scoped_fact_and_reports_version \
+            test_native_capabilities.NativeCapabilityTests.test_native_mcp_discovers_and_invokes_stdio_server \
+            test_native_capabilities.NativeCapabilityTests.test_native_subagent_uses_its_own_session_and_returns_result \
             test_native_capabilities.NativeCapabilityTests.test_training_checkpoint_reads_latest_task_note_after_native_exit

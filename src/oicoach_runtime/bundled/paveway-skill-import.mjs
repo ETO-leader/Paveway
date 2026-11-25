@@ -56,9 +56,10 @@ Each analysis value must be nonempty text (use 'None identified' when appropriat
 Name max 64 characters. Description and content each max 65536 UTF-8 bytes. The user will review before saving.`;
 
 async function loadHost() {
-    const resolve = name => Bun.resolveSync(name, process.argv[1]);
-    const [ai, agent] = await Promise.all([import(resolve("@oh-my-pi/pi-ai")), import(resolve("@oh-my-pi/pi-coding-agent"))]);
-    return {complete: ai.completeSimple, Loader: agent.BorderedLoader};
+    const [{completeSimple}, {BorderedLoader}] = await Promise.all([
+        import("@oh-my-pi/pi-ai"), import("@oh-my-pi/pi-tui/overlays/bordered-loader"),
+    ]);
+    return {complete: completeSimple, Loader: BorderedLoader};
 }
 
 export async function analyzeSkillSource(pi, ctx, source, hostLoader = loadHost) {
@@ -88,7 +89,7 @@ export async function analyzeSkillSource(pi, ctx, source, hostLoader = loadHost)
                 systemPrompt: [SKILL_IMPORT_PROMPT],
                 messages: [{role: "user", content: [{type: "text", text: JSON.stringify({skill_source: source})}], timestamp: Date.now()}],
             }, {apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, maxTokens: 16384,
-                disableReasoning: thinking === "off", reasoning: ["minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking) ? thinking : undefined});
+                disableReasoning: thinking === "off", reasoning: thinking && thinking !== "off" ? thinking : undefined});
             if (finished) return;
             if (response.stopReason === "length") {
                 finish({error: "GPT 分析输出达到长度上限，尚未保存。请拆分源文件后重试。"});

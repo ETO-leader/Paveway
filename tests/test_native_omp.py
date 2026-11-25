@@ -43,9 +43,6 @@ class NativeFixture(unittest.TestCase):
         self.env = Probe(self.root, shutil.which("omp"), self.server).env
         project = Path(__file__).resolve().parents[1]
         self.env["PYTHONPATH"] = str(project / "src")
-        # Reuse only the public host build, never the user's OMP configuration/auth.
-        self.env["PAVEWAY_OMP_CACHE"] = os.environ.get("PAVEWAY_OMP_CACHE",
-            str(Path.home() / ".cache/paveway/omp/18.16.0"))
         self.path = self.root / "config.toml"
         initialize(self.path, str(self.root / "state"), str(self.root / "workflows"))
         config = load_config(self.path)
@@ -203,7 +200,7 @@ class NativeOmpTests(NativeFixture):
         self.chat(body, background=True)
         self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
 
-    def test_different_worker_version_does_not_block_isolated_host(self):
+    def test_frontend_and_worker_keep_same_selected_installation_after_alias_changes(self):
         worker = self.root / "worker-omp"
         invocations = self.root / "worker-invocations"
         worker.write_text(
@@ -216,9 +213,10 @@ class NativeOmpTests(NativeFixture):
             f'exec {shlex.quote(self.config.agent.executable)} "$@"\n')
         worker.chmod(0o700)
         self.stop_daemon()
-        self.config = replace(self.config, agent=replace(self.config.agent, executable=str(worker)))
-        saved_config = config_text(self.config)
-        self.path.write_text(saved_config)
+        selected = self.root / "omp-selected"
+        selected.symlink_to(worker)
+        self.env["PAVEWAY_OMP_PATH"] = str(selected)
+        saved_config = self.path.read_text()
         self.daemon = subprocess.Popen(
             [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
             env=self.env, stdout=self.log, stderr=self.log)
@@ -231,10 +229,51 @@ class NativeOmpTests(NativeFixture):
                 time.sleep(0.03)
         else:
             self.fail("isolated daemon did not restart")
-        self.chat("NATIVE_DIFFERENT_WORKER_VERSION", background=True)
+        # Runtime has selected the wrapper. Changing the original symlink must
+        # not silently move its next RPC Worker to the other installation.
+        selected.unlink()
+        selected.symlink_to(self.config.agent.executable)
+        self.env["PAVEWAY_OMP_PATH"] = str(worker)
+        self.chat("NATIVE_SHARED_EXECUTABLE", background=True)
         self.assertIn("--mode\nrpc\n", invocations.read_text())
-        self.assertNotIn("--trusted-extension", invocations.read_text())
+        self.assertIn("--trusted-extension", invocations.read_text())
+        status = request(self.config.server.socket_path, "status")["omp"]
+        self.assertEqual(status["path"], str(worker))
+        self.assertEqual(status["version"], "99.0.0")  # A version label is not a compatibility gate.
+        self.assertEqual(status["extension"], "attested")
+        self.assertEqual(status["rpc_compatibility"], "verified")
         self.assertEqual(self.path.read_text(), saved_config)
+
+    def test_active_rpc_restart_disposes_worker_without_replaying(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def response(_body):
+            yield {"role": "assistant", "content": "RPCACTIVE"}, None
+            entered.set()
+            release.wait(30)
+            yield {}, "stop"
+
+        self.server.response_factory = response
+        socket = self.config.server.socket_path
+        event = request(socket, "schedule", {"workflow_id": "native-test", "task_id": "rpc-cancel",
+            "reason": "cancel a live real OMP request", "dedupe_key": "live-cancel", "at": "now"})
+        try:
+            self.assertTrue(entered.wait(20), "Real OMP did not reach the loopback model")
+            job = request(socket, "agent.restart", {"workflow_id": "native-test", "task_id": "rpc-cancel"})
+            deadline = time.monotonic() + 18
+            while time.monotonic() < deadline:
+                result = request(socket, "agent.show", {"restart_id": job["restart_id"]})
+                if result["status"] not in ("requested", "running"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(result["status"], "succeeded", result)
+            cancelled = request(socket, "events.show", {"event_id": event["event_id"]})
+            self.assertEqual((cancelled["status"], cancelled["last_error_code"], cancelled["attempt"]),
+                             ("uncertain", "agent_restart_requested", 1))
+            self.assertEqual(len(request(socket, "runs.list")), 1)
+            self.assertEqual(len(self.server.requests), 1)
+        finally:
+            release.set()
 
     def test_native_resume_keeps_identity_and_readonly_archive(self):
         first = self.chat("FIRST_NATIVE_MESSAGE")

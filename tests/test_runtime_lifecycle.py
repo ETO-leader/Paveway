@@ -124,6 +124,22 @@ class RuntimeLifecycleTests(unittest.TestCase):
         self.assertIsNone(second.launch_token)
         self.assertEqual(second.status["runtime_instance"], first.status["runtime_instance"])
 
+    def test_replacing_omp_in_place_reloads_runtime_selection(self):
+        executable = self.root / "omp"
+        staging = self.root / "omp-install"
+        def install(version):
+            staging.write_text(f"#!/bin/sh\nprintf 'omp/{version}\\n'\n")
+            staging.chmod(0o700)
+            staging.replace(executable)
+
+        install("19.0.0")
+        first = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
+        install("19.1.1")
+        second = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
+        self.assertNotEqual(first.status["runtime_instance"], second.status["runtime_instance"])
+        self.assertEqual(first.status["omp"]["version"], "19.0.0")
+        self.assertEqual(second.status["omp"]["version"], "19.1.1")
+
     def test_restart_preserves_future_reminder_without_duplicate_execution(self):
         old = self.start_stale_daemon()
         due = utc_text(datetime.now(timezone.utc) + timedelta(days=1))

@@ -88,9 +88,9 @@ Saved. Restart the Paveway native OMP session to apply Tijian MCP changes.
 
 ### 在其他项目使用 Workflow 的 Tijian MCP
 
-用 `/paveway cwd` 打开其他项目时，Paveway 仍从 Workflow Workspace 的 `.omp/mcp.json` 读取受管 `mcpServers.tijian`。只继承这一项，不复制配置文件，也不继承 Workspace 的其他 MCP Server。继承的进程使用原 Workspace 启动，保留原命令和权限参数。
+OMP 从实际 cwd 和当前 OMP Profile 配置发现原生 MCP。官方 Extension API 不能在连接前注入 Workflow 的单个 Server 并对所有来源执行同名冲突检查。若 Workflow Workspace 存在受管 `tijian`，Paveway 拒绝在不同 cwd 新建或恢复该 Workflow 的原生 Conversation；不会偷偷采用目标项目不同权限的定义，也不复制或改写任何文件。
 
-目标项目和 OMP 用户级配置仍按 OMP 的规则发现。若可用配置中已有同名、同命令、同参数且无额外连接字段的定义，沿用 OMP 原生选择；不同定义会阻止本前台连接 `tijian`，并报告冲突，不从两侧择一提升权限。请移除冲突定义，或显式把两边配置为相同权限。Workflow 明确禁用 `tijian`、定义无法识别或配置不安全时也不自动连接。继承尊重 OMP 的项目 MCP 开关、发现开关和禁用设置；后台 Worker 仍只使用其原有绑定目录的配置。
+从 Workflow Workspace 使用原配置，或为目标项目建立单独 Workflow 并在那里显式配置所需权限。后台 Worker 始终在原有绑定目录使用原生发现。其他未配置受管 Tijian 的 Workflow 仍可使用 `/paveway cwd`。
 
 ### `workflow tijian show/set`
 

@@ -30,7 +30,7 @@ from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
-from oicoach_runtime.native_host import prepare_native_host
+from oicoach_runtime.omp_installation import resolve_omp
 from oicoach_runtime.workflow_setup import create
 
 try:
@@ -310,11 +310,8 @@ class NativeConversation:
 class CacheHarness:
     def __init__(self, root, executable=None):
         self.root = Path(root)
-        # Native always replaces its executable; consistency evidence must use that same host.
-        prepared = prepare_native_host()
-        require(executable is None or Path(executable).resolve() == Path(prepared).resolve(),
-                "Cache consistency capture requires the prepared Paveway OMP launcher for both Native and RPC")
-        executable = prepared
+        # Use the same official executable for Native and RPC.
+        executable = resolve_omp(executable or "omp")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), CacheProvider)
         self.server.requests = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -326,9 +323,6 @@ class CacheHarness:
             self.env = dict(self.probe.env)
             project = Path(__file__).resolve().parents[1]
             self.env["PYTHONPATH"] = str(project / "src")
-            # A public patched host build may be reused; no user settings/auth are read.
-            self.env["PAVEWAY_OMP_CACHE"] = os.environ.get("PAVEWAY_OMP_CACHE",
-                str(Path.home() / ".cache/paveway/omp/18.16.0"))
             self.path = self.root / "runtime.toml"
             initialize(self.path, str(self.root / "state"), str(self.root / "workflows"))
             config = load_config(self.path)
@@ -583,7 +577,7 @@ class CacheHarness:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--omp", help="Prepared Paveway launcher only; alternate builds are rejected to keep Native/RPC comparable")
+    parser.add_argument("--omp", help="Official OMP executable for Native and RPC (default: omp on PATH)")
     parser.add_argument("--output", type=Path, help="Write complete synthetic capture JSON")
     arguments = parser.parse_args()
     observations = {"provider": "loopback fixture, not real cache proof", "external_calls": False,

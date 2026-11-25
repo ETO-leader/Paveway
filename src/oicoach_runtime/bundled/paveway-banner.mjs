@@ -16,14 +16,10 @@ const LOGO = Array.from({length: 6}, (_, row) => Array.from({length: PIXELS[0].l
 }));
 const STOPS = [[228, 91, 196], [164, 99, 244], [104, 126, 255], [85, 197, 229]];
 const RAIL = [47, 58, 78];
-const DIM = [24, 29, 42];
 const MUTED = [128, 143, 165];
 const GOLD = [220, 182, 119];
 const RESET = "\x1b[0m";
-const STEPS = 48;
 const mix = (a, b, amount) => a.map((value, index) => Math.round(value + (b[index] - value) * amount));
-const clamp = value => Math.max(0, Math.min(1, value));
-const smooth = value => { const t = clamp(value); return t * t * (3 - 2 * t); };
 const ANCHORS = STOPS.map((_, index) => Math.round(index * (PIXELS[0].length - 1) / (STOPS.length - 1)));
 const GRADIENT = Array.from({length: PIXELS[0].length}, (_, col) => {
     const index = col <= ANCHORS[1] ? 0 : col <= ANCHORS[2] ? 1 : 2;
@@ -45,9 +41,9 @@ function color(rgb, mode) {
     return mode === "none" ? "" : mode === "truecolor"
         ? `\x1b[38;2;${rgb.join(";")}m` : `\x1b[38;5;${indexedColor(rgb)}m`;
 }
-function colorMode(ui) {
+function colorMode(theme) {
     if (process.env.NO_COLOR !== undefined || process.env.FORCE_COLOR === "0" || process.env.TERM === "dumb") return "none";
-    const mode = ui.theme.getColorMode();
+    const mode = theme.getColorMode();
     return mode === "none" || mode === false ? "none" : mode === "truecolor" ? "truecolor" : "ansi256";
 }
 function singleLine(value) {
@@ -55,35 +51,30 @@ function singleLine(value) {
 }
 const versionLabel = value => value.startsWith("v") ? value : `v${value}`;
 
-/**
- * The host owns timing. Call the returned renderer with its actual OMP version
- * and progress (0..1); omitting progress gives the exact resting transcript.
- * ui supplies only display-width helpers and theme capability getters.
- */
-export function createBanner({version, workflow}, ui) {
+const visibleWidth = text => Bun.stringWidth(Bun.stripANSI(text));
+const graphemes = new Intl.Segmenter(undefined, {granularity: "grapheme"});
+
+function clip(text, width) {
+    let cells = 0;
+    for (const {segment, index} of graphemes.segment(text)) {
+        cells += Bun.stringWidth(segment);
+        if (cells > width) return text.slice(0, index);
+    }
+    return text;
+}
+
+/** Render the original wordmark and pathline at rest, independently of startup timing. */
+export function createBanner({version, workflow}, theme) {
     const pavewayVersion = versionLabel(singleLine(version));
     const workflowName = singleLine(workflow);
-    // Frames share the bitmap and one color per column across all six rows.
-    // Keep only the active capability set and most recent resting layout.
-    let capability;
-    let artFrames = new Map();
+    let art;
     let resting;
-    const clip = (text, width) => width <= 0 ? "" : ui.truncateToWidth(text, width, "");
-    const shorten = (text, width, ascii) => ui.visibleWidth(text) <= width ? text
+    const shorten = (text, width, ascii) => visibleWidth(text) <= width ? text
         : width < 2 ? clip(text, width) : clip(text, width - 1) + (ascii ? "~" : "…");
 
-    function artwork(mode, step) {
-        const cached = artFrames.get(step);
-        if (cached) return cached;
-        const progress = step / STEPS;
-        const fade = smooth(progress / 0.4);
-        const sweep = (progress - 0.3) / 0.55;
-        const sweepStrength = progress > 0.3 && progress < 0.85 ? Math.sin(clamp(sweep) * Math.PI) * 0.28 : 0;
-        const columns = GRADIENT.map((rgb, col) => {
-            const distance = Math.abs(col / (GRADIENT.length - 1) - sweep);
-            const glow = Math.max(0, 1 - distance / 0.22) * sweepStrength;
-            return color(mix(mix(DIM, rgb, fade), [255, 244, 255], glow), mode);
-        });
+    function artwork(mode) {
+        if (art?.mode === mode) return art;
+        const columns = GRADIENT.map(rgb => color(rgb, mode));
         const logo = LOGO.map(row => {
             let line = "";
             let active = "";
@@ -97,57 +88,46 @@ export function createBanner({version, workflow}, ui) {
         });
         const letters = [..."PAVEWAY"].map((letter, index) =>
             columns[Math.round(index * (GRADIENT.length - 1) / 6)] + letter);
-        const result = {logo, letters, progress};
-        artFrames.set(step, result);
-        return result;
+        art = {mode, logo, letters};
+        return art;
     }
 
-    function pathline(length, mode, ascii, progress) {
-        if (length <= 0) return "";
-        const travel = smooth((progress - 0.35) / 0.65);
-        const dot = Math.round((length - 1) * 0.92 * travel);
-        let result = "";
-        let active = "";
-        for (let col = 0; col < length; col++) {
-            const illumination = smooth((travel - col / Math.max(1, length - 1)) * 6 + 1);
-            const rgb = col === dot ? mix(DIM, STOPS[3], smooth((progress - 0.35) / 0.2)) : mix(DIM, RAIL, illumination);
-            const next = color(rgb, mode);
-            if (next !== active) { result += next; active = next; }
-            result += col === dot ? (ascii ? "." : "●") : (ascii ? "-" : "─");
-        }
-        return result + (mode === "none" ? "" : RESET);
+    function pathline(length, mode, ascii) {
+        const dot = Math.round((length - 1) * 0.92);
+        const rail = color(RAIL, mode);
+        const rule = ascii ? "-" : "─";
+        return rail + rule.repeat(dot) + color(STOPS[3], mode) + (ascii ? "." : "●") +
+            rail + rule.repeat(length - dot - 1) + (mode === "none" ? "" : RESET);
     }
 
-    return function render(width, ompVersion, progress = 1) {
+    return function render(width, ompVersion) {
         width = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
         if (width === 0) return [];
-        const mode = colorMode(ui);
-        const ascii = process.env.TERM === "dumb" || ui.theme.getSymbolPreset() === "ascii";
+        const mode = colorMode(theme);
+        const ascii = process.env.TERM === "dumb" || theme.getSymbolPreset() === "ascii";
         const key = `${mode}:${ascii}`;
-        if (key !== capability) { capability = key; artFrames = new Map(); resting = undefined; }
         const hostVersion = singleLine(ompVersion).replace(/^v/, "");
-        const step = Math.round(clamp(Number.isFinite(progress) ? progress : 1) * STEPS);
-        if (step === STEPS && resting?.width === width && resting.hostVersion === hostVersion) return resting.lines;
-        const {logo, letters, progress: frameProgress} = artwork(mode, step);
+        if (resting?.key === key && resting.width === width && resting.hostVersion === hostVersion) return resting.lines;
+        const {logo, letters} = artwork(mode);
         const available = Math.min(width > 2 ? width - 2 : width, 65);
         const wide = !ascii && available >= 65;
-        const center = text => " ".repeat(Math.max(0, Math.floor((width - ui.visibleWidth(text)) / 2))) + text;
+        const center = text => " ".repeat(Math.max(0, Math.floor((width - visibleWidth(text)) / 2))) + text;
         const paint = (text, rgb, italic = false) => mode === "none" ? text
             : color(rgb, mode) + (italic ? "\x1b[3m" : "") + text + RESET;
         const line = (text, rgb, italic = false) => center(paint(shorten(text, available, ascii), rgb, italic));
         const smallLogo = letters.slice(0, Math.min(7, available)).join("") + (mode === "none" ? "" : RESET);
         const lines = wide ? logo.map(center) : [center(smallLogo)];
         lines.push("");
-        lines.push(center(pathline(available, mode, ascii, frameProgress)));
+        lines.push(center(pathline(available, mode, ascii)));
         lines.push("");
-        lines.push(line("OI COACHING RUNTIME", MUTED));
+        lines.push(line("OI TRAINING RUNTIME", MUTED));
         const join = ascii ? " | " : " · ";
         const prefix = `Paveway ${pavewayVersion}`;
         const suffix = `OMP ${hostVersion}`;
-        const remaining = available - ui.visibleWidth(prefix + join + join + suffix);
+        const remaining = available - visibleWidth(prefix + join + join + suffix);
         if (workflowName && remaining >= 1) {
             lines.push(line(prefix + join + shorten(workflowName, remaining, ascii) + join + suffix, MUTED));
-        } else if (ui.visibleWidth(prefix + join + suffix) <= available) {
+        } else if (visibleWidth(prefix + join + suffix) <= available) {
             lines.push(line(prefix + join + suffix, MUTED));
             if (workflowName) lines.push(line(shorten(`Workflow ${workflowName}`, available, ascii), MUTED));
         } else {
@@ -157,7 +137,7 @@ export function createBanner({version, workflow}, ui) {
         }
         lines.push("");
         lines.push(line("Tip: Find the insight. Build the solution.", GOLD, true));
-        if (step === STEPS) resting = {width, hostVersion, lines};
+        resting = {key, width, hostVersion, lines};
         return lines;
     };
 }

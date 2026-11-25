@@ -29,7 +29,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea, Frame
 
 from . import __version__
-from .customization import SKILL_CATEGORIES, THINKING_LEVELS, skill_category
+from .customization import SKILL_CATEGORIES, skill_category
 from .errors import RuntimeContractError
 from .models import parse_timestamp, validate_id
 from .ui_client import CliClient, CliFailure
@@ -630,8 +630,6 @@ class TerminalUI:
         self.scope_args()
         if len(args) > 1:
             raise RuntimeContractError("用法：/select-model [provider/model|default] 或 /select-thinking-hardness [LEVEL|default]")
-        if kind == "thinking" and args and args[0] not in (*THINKING_LEVELS, "default"):
-            raise RuntimeContractError("思考等级：default / " + " / ".join(THINKING_LEVELS))
         workflow, scope, generation = self.workflow, self.scope, self.generation
         def loaded(report):
             if self.scope != scope or self.generation != generation:
@@ -659,10 +657,11 @@ class TerminalUI:
                 title = "选择模型 · 输入筛选 · ↑↓ Enter · 切换后 thinking=auto"
             else:
                 model = next((model for model in report["models"] if model["selector"] == effective["model"]), None)
-                levels = model["thinking"] if model is not None else list(THINKING_LEVELS)
-                choices = [("", "继承 Runtime / OMP 默认"), ("auto", "auto · 由 OMP 自动决定")]
-                choices += [(level, level) for level in THINKING_LEVELS if level in levels and level != "auto"]
+                choices = [("", "继承 Runtime / OMP 默认")]
+                if model is not None:
+                    choices += [(level, level) for level in model["thinking"]]
                 title = "选择思考等级 · " + (effective["model"] or "OMP 默认模型") + " · ↑↓ Enter"
+                title += " · /select-thinking-hardness LEVEL 可直接输入"
             self.open_picker(title, [(("✓ " if value == current.get(kind, "") else "") + label,
                                       lambda value=value: save(value)) for value, label in choices])
         command = ("workflow", "customize", "show", workflow) if args else ("workflow", "models", workflow)

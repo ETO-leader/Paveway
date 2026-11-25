@@ -21,6 +21,7 @@ from .errors import AgentError, ConflictError, NotFoundError, SessionConflictErr
 from .ipc import MAX_REQUEST, handle_connection
 from .models import execution_scope, parse_timestamp, utc_text
 from .memory import Memory, History
+from .omp_installation import omp_file_identity, omp_version, resolve_omp
 from .processes import InstanceLock, enable_subreaper, process_identity
 from .store import Store, bounded_text
 from .compatibility import EXPECTED_LIFECYCLE_PROTOCOL_VERSION, EXPECTED_NATIVE_PROTOCOL_VERSION
@@ -47,6 +48,7 @@ class Runtime:
         self.store = None
         self.provider = WorkflowProvider(config.workflow_root)
         self.agent_health = "idle"
+        self.omp = {"path": None, "version": None, "extension": "not_attested", "rpc_compatibility": "not_tested"}
         self.lock_fds = ()
         self.clients = set()
         # One entry per active background Run: task, scope, state, progress.
@@ -237,7 +239,9 @@ class Runtime:
             frontend = Frontend(self.store)
             operation = command.removeprefix("frontend.")
             if operation == "begin":
-                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new", "cwd"), ("workflow_id", "task_id"))
+                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new", "cwd", "omp_executable"), ("workflow_id", "task_id"))
+                if "omp_executable" in raw and raw.pop("omp_executable") != self.omp["path"]:
+                    raise ConflictError("Runtime OMP selection changed before foreground admission")
                 workflow = self.provider.describe(raw["workflow_id"])
                 instructions = ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
@@ -264,7 +268,10 @@ class Runtime:
                 return frontend.public(frontend.get(**raw))
             if operation == "messages":
                 return frontend.messages(**raw)
-            return getattr(frontend, operation)(**raw)
+            result = getattr(frontend, operation)(**raw)
+            if operation == "attest":
+                self.omp["extension"] = "attested"
+            return result
         if command == "sync.request":
             arguments(raw, ())
             from . import git_sync
@@ -283,6 +290,7 @@ class Runtime:
                     "lifecycle_protocol_version": EXPECTED_LIFECYCLE_PROTOCOL_VERSION,
                     "runtime_instance": self.owner, "runtime_pid": self.runtime_pid,
                     "runtime_identity": self.runtime_identity, "draining": self.draining,
+                    "omp": {**self.omp, "rpc_active": sum(entry["state"] == "running" for entry in self.active_runs.values())},
                     "stopping": self.stopping,
                     "milestone": "M4", "agent_health": health, **supervisor}
         if command == "schedule":
@@ -792,7 +800,7 @@ class Runtime:
                                   "event_id": event["event_id"], "run_id": run_id,
                                   "transition": "blocked", "error_code": result["reason"]}), flush=True)
                 return
-        agent = OmpRpc(self.config, self.lock_fds, self.config_path)
+        agent = OmpRpc(self.config, self.lock_fds, self.config_path, executable=self.omp["path"])
         terminal = False
         failure_code = "dispatch_interrupted"
         failure_message = None
@@ -883,6 +891,8 @@ class Runtime:
             if state.get("isSettled") is not True:
                 raise ConflictError("Agent session is not settled before dispatch")
             self.store.record_session(run_id, state)
+            self.omp["rpc_compatibility"] = "verified"
+            self.omp.pop("rpc_error_code", None)
             stage = "dispatch"
             # This commit MUST happen before the first write of the prompt frame.
             self.store.dispatch(run_id)
@@ -932,6 +942,9 @@ class Runtime:
             raise
         except RuntimeContractError as error:
             failure_code = error.code
+            if stage in ("startup", "session"):
+                self.omp["rpc_compatibility"] = "failed"
+                self.omp["rpc_error_code"] = failure_code
             if isinstance(error, SessionConflictError):
                 failure_message = str(error)
             retryable = isinstance(error, AgentError) and stage in ("startup", "session")
@@ -1206,7 +1219,7 @@ class Runtime:
                 pass
 
     async def restart_agent(self, job):
-        adapter = OmpRpc(self.config, self.lock_fds, self.config_path)
+        adapter = OmpRpc(self.config, self.lock_fds, self.config_path, executable=self.omp["path"])
         status, error = "failed", "agent_restart_failed"
         self.store.update_restart(job["restart_id"], "running")
         self._health_override = "restarting"
@@ -1233,6 +1246,8 @@ class Runtime:
                 raise AgentError("Restarted agent did not report a settled session")
             if binding["session_file"] and (str(path) != binding["session_file"] or state["sessionId"] != binding["session_id"]):
                 raise ConflictError("Restarted agent returned another session identity")
+            self.omp["rpc_compatibility"] = "verified"
+            self.omp.pop("rpc_error_code", None)
             await adapter.stop()
             if adapter.process.returncode != 0:
                 raise AgentError("Restarted agent failed during disposal")
@@ -1318,6 +1333,13 @@ class Runtime:
 
     async def serve(self):
         enable_subreaper()
+        try:
+            executable = resolve_omp(self.config.agent.executable)
+            self.omp["path"] = executable
+            self.omp["file_identity"] = omp_file_identity(executable)
+            self.omp["version"] = await asyncio.to_thread(omp_version, executable)
+        except RuntimeContractError as error:
+            self.omp["diagnostic"] = str(error)
         ensure_private_directory(self.config.state_dir)
         ensure_private_directory(self.config.state_dir / "sessions")
         socket_path = Path(self.config.server.socket_path)

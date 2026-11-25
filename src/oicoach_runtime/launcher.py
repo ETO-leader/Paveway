@@ -26,6 +26,7 @@ from .compatibility import (
 from .config import ensure_private_directory
 from .errors import ConflictError, RuntimeContractError
 from .ipc import request
+from .omp_installation import OMP_PATH_ENV, omp_file_identity
 from .processes import InstanceLock, process_identity
 
 STARTUP_TIMEOUT = 20
@@ -229,7 +230,7 @@ def _wait_released(config, expected, timeout=SHUTDOWN_TIMEOUT):
         time.sleep(min(0.1, remaining))
 
 
-def _start_standalone(config, config_path):
+def _start_standalone(config, config_path, omp_path=None):
     ensure_private_directory(config.state_dir)
     log_path = config.state_dir / "startup.log"
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
@@ -240,6 +241,8 @@ def _start_standalone(config, config_path):
             raise RuntimeContractError("后台启动日志必须是当前用户拥有的私密普通文件。")
         argv = [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(config_path)]
         environment = {**os.environ, **service.read_environment(config_path)}
+        if omp_path is not None:
+            environment[OMP_PATH_ENV] = omp_path
         for key in ("PAVEWAY_SHUTDOWN_ON_EXIT", "PAVEWAY_LAUNCH_TOKEN", "PAVEWAY_RESTART_RUNTIME"):
             environment.pop(key, None)
         # Popen with close_fds keeps Python 3.11 working (POSIX_SPAWN_CLOSEFROM
@@ -277,15 +280,29 @@ def _problem_text(problem):
         "runtime_version": "运行时代码版本不一致",
         "runtime_build_id_missing": "旧 Runtime 缺少构建指纹",
         "runtime_build_id": "代码构建指纹不一致",
+        "omp_executable": "OMP 安装已变更",
     }.get(problem, "兼容性检查未通过")
 
 
-def ensure_runtime(config, config_path, *, restart=False):
+def ensure_runtime(config, config_path, *, restart=False, omp_path=None):
     """Start or reuse a compatible Runtime, safely handing off an incompatible one.
 
     The launcher lock serializes concurrent launchers. The Runtime's own
     runtime.lock/socket.lock remain authoritative for the daemon instance.
     """
+    selected_omp = (omp_path, omp_file_identity(omp_path)) if omp_path is not None else None
+
+    def check(status, *, managed=False):
+        problem = compatibility_problem(status)
+        runtime_omp = status.get("omp", {})
+        if not problem and selected_omp is not None and (runtime_omp.get("path"), runtime_omp.get("file_identity")) != selected_omp:
+            if managed:
+                raise RuntimeContractError(
+                    "systemd Runtime 的 OMP 安装与所选安装不一致；请将 agent.executable 配置为绝对路径，"
+                    "再使用受管服务的安全重启流程。")
+            return "omp_executable"
+        return problem
+
     ensure_private_directory(config.state_dir)
     try:
         launcher_lock = InstanceLock(config.state_dir / "launcher.lock", timeout=LAUNCHER_LOCK_TIMEOUT)
@@ -300,10 +317,10 @@ def ensure_runtime(config, config_path, *, restart=False):
                 status = _start_managed(config, config_path)
                 handle = _new_handle(status, reused=False, managed=True, created=False)
             else:
-                status = _start_standalone(config, config_path)
+                status = _start_standalone(config, config_path, omp_path)
                 handle = _new_handle(status, reused=False, managed=False, created=True)
                 write_ownership(config, config_path, status, handle.launch_token)
-            problem = compatibility_problem(status)
+            problem = check(status, managed=managed)
             if problem:
                 raise RuntimeContractError(
                     f"Runtime 已启动，但{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
@@ -320,16 +337,16 @@ def ensure_runtime(config, config_path, *, restart=False):
                     + restart_guidance(config_path))
             print("检测到旧 Runtime 正在安全退出；等待其释放后启动…", flush=True)
             _wait_released(config, status)
-            status = _start_standalone(config, config_path)
+            status = _start_standalone(config, config_path, omp_path)
             handle = _new_handle(status, reused=False, managed=False, created=True)
             write_ownership(config, config_path, status, handle.launch_token)
-            problem = compatibility_problem(status)
+            problem = check(status)
             if problem:
                 raise RuntimeContractError(
                     f"Runtime 已重新启动，但{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
             return handle
 
-        problem = compatibility_problem(status)
+        problem = check(status, managed=managed and not restart)
         if problem is None and status.get("draining") and not restart:
             try:
                 _request_resume(status, config.server.socket_path)
@@ -341,7 +358,7 @@ def ensure_runtime(config, config_path, *, restart=False):
             if status is None or status.get("draining"):
                 raise RuntimeContractError(
                     "Runtime 仍处于 draining；请等待其安全收尾完成后重试，不会启动第二个实例。")
-            problem = compatibility_problem(status)
+            problem = check(status, managed=managed)
 
         if problem is None and not restart:
             return _new_handle(status, reused=True, managed=managed, created=False)
@@ -366,7 +383,7 @@ def ensure_runtime(config, config_path, *, restart=False):
                 except RuntimeContractError:
                     pass
                 raise
-            problem = compatibility_problem(new_status)
+            problem = check(new_status, managed=True)
             if problem:
                 raise RuntimeContractError(
                     f"Runtime 已通过 systemd 重启，但{_problem_text(problem)}；未进入界面。\n\n"
@@ -378,10 +395,10 @@ def ensure_runtime(config, config_path, *, restart=False):
         if not stopped.get("accepted"):
             raise RuntimeContractError(_blocker_report(stopped))
         _wait_released(config, status)
-        new_status = _start_standalone(config, config_path)
+        new_status = _start_standalone(config, config_path, omp_path)
         handle = _new_handle(new_status, reused=False, managed=False, created=True)
         write_ownership(config, config_path, new_status, handle.launch_token)
-        problem = compatibility_problem(new_status)
+        problem = check(new_status)
         if problem:
             raise RuntimeContractError(
                 f"Runtime 已重启，但新实例仍{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")

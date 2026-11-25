@@ -2,7 +2,6 @@
 
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -12,28 +11,32 @@ from .config import Config
 from .db import inspect_database
 from .errors import RuntimeContractError
 from .ipc import request
+from .omp_installation import omp_version, resolve_omp
 from .workflows import WorkflowProvider
 
 REQUIRED_FLAGS = ("--cwd", "--session-dir", "--resume", "--mode", "--no-ui", "--system-prompt-template")
 
 
 def probe_omp(executable: str) -> list[dict]:
-    resolved = shutil.which(executable)
-    if not resolved:
-        return [{"check": "omp", "status": "FAIL", "detail": "Executable not found; storage remains usable"}]
     try:
-        version = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=10, check=False)
+        resolved = resolve_omp(executable)
+    except RuntimeContractError as error:
+        return [{"check": "omp", "status": "FAIL", "detail": str(error) + "; storage remains usable"}]
+    try:
+        version = omp_version(resolved)
         help_result = subprocess.run([resolved, "--help"], capture_output=True, text=True, timeout=10, check=False)
-        matched = re.search(r"\bomp(?:/| v?)(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)", version.stdout)
         # Do not echo arbitrary stdout/stderr; extensions may expose private data there.
-        if version.returncode or help_result.returncode or not matched:
-            return [{"check": "omp", "status": "FAIL", "detail": "OMP version/help probe failed or returned an unrecognized version"}]
+        if help_result.returncode:
+            return [{"check": "omp", "status": "FAIL", "detail": "OMP help probe failed", "path": resolved, "version": version}]
         missing = [flag for flag in REQUIRED_FLAGS if not re.search(re.escape(flag) + r"(?=[=\s,]|$)", help_result.stdout)]
         return [{"check": "omp", "status": "FAIL" if missing else "PASS",
-                 "detail": f"OMP {matched[1]}; missing flags: {', '.join(missing) if missing else 'none'}"},
-                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags only; use verify-omp --with-model to verify this configuration's RPC and model sessions"}]
+                 "path": resolved, "version": version,
+                 "detail": f"{resolved}: OMP {version}; missing flags: {', '.join(missing) if missing else 'none'}"},
+                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags only; use verify-omp with an OMP model configured for actual RPC admission"}]
+    except RuntimeContractError as error:
+        return [{"check": "omp", "status": "FAIL", "path": resolved, "detail": str(error)}]
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
-        return [{"check": "omp", "status": "FAIL", "detail": "OMP version/help probe failed or timed out"}]
+        return [{"check": "omp", "status": "FAIL", "path": resolved, "detail": "OMP help probe failed or timed out"}]
 
 
 def _private(path: Path, directory: bool) -> bool:

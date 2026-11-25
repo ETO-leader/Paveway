@@ -8,7 +8,7 @@ from .errors import AgentError
 MAX_CONFIG = 1048576
 
 
-async def skill_directories(config, workspace, environment):
+async def skill_directories(config, executable, workspace, environment):
     """Preserve native directories: OMP overlays replace list settings."""
     process = None
     try:
@@ -17,7 +17,7 @@ async def skill_directories(config, workspace, environment):
             query_environment["OMP_PROFILE"] = config.agent.profile
         async with asyncio.timeout(config.agent.startup_timeout_seconds):
             process = await asyncio.create_subprocess_exec(
-                config.agent.executable, "config", "get", "skills.customDirectories", "--json",
+                executable, "config", "get", "skills.customDirectories", "--json",
                 cwd=workspace, env=query_environment, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_CONFIG)
             try:

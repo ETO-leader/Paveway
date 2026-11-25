@@ -1,104 +1,30 @@
 # OMP 原生界面
 
-Paveway 使用原生 OMP TUI 处理聊天、流式回复、工具展示、滚动、模型选择和 Session。后台仍由原有 Runtime 队列与 RPC 执行，退出 UI 不停止 daemon。前后台使用独立物理 Session，不同时写同一个文件；通过配置快照、记忆和持久收件箱衔接。
+Paveway 直接启动用户安装的官方 OMP。OMP 负责聊天、模型／认证、工具、MCP、滚动和原生 Session；Paveway Extension 负责 Runtime 握手、管理命令和 Paveway 状态呈现。后台使用同一个绝对 OMP 路径启动 `--mode rpc`；前后台的物理 Session 独立，不同时写同一个文件。
 
-## Aurora × Pathline 顶部 Banner
+## 品牌、输入与状态
 
-正常对话顶部的 Welcome 现在显示 Paveway 字标，不另开 Splash。宽屏使用 63 列、6 行的标准块字符字标，横向渐变为 `#E45BC4 → #A463F4 → #687EFF → #55C5E5`；下方为 65 列暗蓝灰 Pathline、靠右的青色光点、运行信息和暖金色斜体 Tip。各层按终端显示列宽居中，保留终端默认背景；黑底终端最接近设计图，不修改全局主题。
+- Aurora × Pathline 字标现在是官方 `ui.setWidget` 提供的静态启动组件，显示 Paveway／OMP 版本和 Workflow；首次提交或开始运行后移除。窄终端缩短字标与提示。没有启动首帧替换、入场光流或驻留到滚动历史的动画。
+- Paveway Chrome 通过 `registerComposerShape()` 注册，受管启动选择 `paveway.chrome`。实际输入、光标、IME、粘贴、补全、草稿、历史和键位由 OMP 自己实现。不再覆写普通 User／Assistant 消息，因此没有旧的紫色用户行或逐消息 GPT 标签。
+- Windline 通过 `ui.setStatus` 更新一个原生状态项：Profile／Workflow、工作中、Wakeup 和未读 Inbox。无事件及零未读不常驻；模型、Thinking、费用、Context／Compaction 由 OMP 原样显示。不再替换整个状态栏、绘制 Bubble 圆帽、自定义双阈值轨或 Chevron 波浪。旧 TOML 的 `[statusline]` 保留读取和写回，但不改变 OMP 原生外观。
 
-Paveway 版本来自 Runtime 的 `__version__`，Workflow 来自当前前台 lease 的 `workflow_id`，通过已有 0600 临时启动数据传递。OMP 版本由实际 `WelcomeComponent` 提供，不使用概念图版本或另起进程／网络探测。标准信息行是 `Paveway v{版本} · {Workflow} · OMP {版本}`。长 Workflow 按 Unicode 显示列宽截短；不足 67 列或 ASCII 预设时改为单行 `PAVEWAY`，进一步缩窄时拆分版本信息并截短 Tip。
+这些是显示差异；Workflow、Prompt、Memory、Session 持久化及 Runtime 所有权不依赖视觉接口。
 
-固定 Host 的 `setHeader()` 在此版本是 no-op，而且 CLI 会在 Extension 的 `session_start` 之前预绘制 Welcome。因此 `banner.patch` 增加显式启用的 Welcome 呈现桥接；启动器仅在携带原生前台 admission 数据时预加载固定随包 `paveway-banner-host.mjs`，在首帧前注册 `paveway-banner.mjs`。不删除／过滤聊天组件，不替换 Transcript、输入区或胶囊状态栏。`Session-only model` 等真实运行提示仍由宿主显示；未注册呈现时保留 OMP 原行为。
+## OMP 选择、诊断与升级
 
-入口动画复用 Welcome 的 33ms 定时器、组件级重绘、静态帧缓存和历史提交门控：等待真实 `tui.motion` 设置，从首次渲染开始计时，约 700ms 内完成淡入、柔和扫光和 Pathline 点亮。新建和恢复对话均在本次进程首显时播放一次；原生 `/new` 不重播。恢复会话不再套用 OMP 对原始 Welcome 动画的跳过策略；未调度、被跳过或已停止的动画直接显示完整亮色静态帧，不把“尚未播放”误当成“正在等待”，避免字标和光点冻结在暗色初始位置。结束后停表，完整静态 Banner 随宿主进入终端历史，Resize 由原机制重排。关闭 **Status Line Motion**／`tui.motion: false`、`REDUCED_MOTION=1`、`PREFERS_REDUCED_MOTION=reduce`、非 TTY 或无色模式时静态显示。TrueColor 使用 RGB，有限色终端量化至 xterm 256 色；`NO_COLOR`、`FORCE_COLOR=0`、`TERM=dumb` 不输出 Banner ANSI 样式。
-
-验证入口（隔离用户目录与本地 loopback 模型，无付费请求）：
-
-```bash
-bun test tests/paveway-banner.test.mjs
-PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_banner.py -v
-```
-
-PTY 检查首帧不含原 OMP Logo、真实版本与 Workflow、静态／Reduced Motion／有限色模式、120→40→80→24 列 Resize、原生模型切换提示、后续流式回复及草稿保留；恢复已有历史时另检查实际动画颜色变化、动画禁用后的完整亮色帧、光点右端位置、历史不重发，以及 `/new` 后的静态帧。可设置 `PAVEWAY_STATUSLINE_EVIDENCE=/tmp/paveway-banner-evidence` 保存真实终端单元格和 ANSI。单元格重建图可检查比例、渐变、居中与留白，但不证明 Windows Terminal 的具体字体栅格效果；块字边缘、256 色阶和终端是否支持斜体仍受终端字体／配色限制。Banner 不依赖 Nerd Font、字体资源、图片或 SVG。
-
-## 对话与输入区域
-
-Paveway 只调整原生消息的呈现与输入 chrome，不替换 Transcript、Markdown 或编辑器。用户消息使用紧凑的细紫色强调线；GPT 消息保留透明背景及原生 Markdown，以低调的 `GPT` 标识区分角色。普通消息之外的 Tool Calls、自定义事件、Recap、压缩摘要继续走 OMP 各自的渲染器，不按显示文字猜测角色。
-
-消息由 `pi-tui/chat/user-message.ts`、`assistant-message.ts` 渲染。OMP 18.16.0 的 `registerMessageRenderer()` 仅针对自定义消息，`registerAssistantTextRenderer()` 是正文替换接口，不适合添加稳定的消息级角色标记。因此随包 `conversation.patch` 增加显式启用的 `ui.setConversationPresentation()`，在原生渲染器内部选择紧凑样式，并保留 Assistant 的流式稳定前缀账本；未设置时使用 OMP 原样行为。
-
-输入区通过公开 `registerComposerStyle()` 注册 Paveway chrome，由公开 `setEditorComponent()` 创建原生 `CustomEditor` 子类。形状元数据参与原生内容宽度、光标、IME 标记和高度预算，不把编辑结果事后套框或位移。`composer.patch` 仅补充 `CustomEditor.composerStyle`，让宿主同步偏好时保留工厂明确选择的形状；普通编辑器不受影响。输入、粘贴、历史、补全、Unicode 编辑、滚动与键盘分发仍属于 OMP。
-
-配色限定在本次两个区域：`paveway-presentation.mjs` 提供品牌紫、边界紫灰、次要灰和正文浅灰白语义色，复用状态栏的品牌值；不改全局主题或青色运行状态。TrueColor 使用 RGB，256 色使用校准色号；`NO_COLOR`、`FORCE_COLOR=0`、`TERM=dumb` 时新增呈现不输出颜色。标记不要求 Nerd Font。输入提示只占用可用空白，窄屏、低高度或无足够空间时隐藏；快捷键取自宿主绑定，而不是写死默认值。
-
-补丁按 `statusline.patch`、`conversation.patch`、`composer.patch`、`banner.patch` 顺序应用。安装缓存由全部补丁的组合哈希确定；升级建立新的隔离源码目录，不覆写已运行的缓存、全局 OMP 或后台 Worker。保存草稿、退出并重新进入原生 UI 后生效。
-
-验证入口（仅使用隔离用户目录和本地 loopback 模型，不发送付费请求）：
+启动优先级为 `./paveway.sh --omp PATH`（或显式环境变量 `PAVEWAY_OMP_PATH`）→ TOML `agent.executable` → `PATH` 中的 `omp`。无效的显式路径不会回退。独立 Runtime 使用已解析的绝对路径；路径变更或可执行文件被原地替换时先走安全交接，有活动任务时不替换。systemd 不继承终端的临时选择，请设 `agent.executable` 的绝对路径，并在空闲时使用 `--restart-runtime` 重新加载服务。
 
 ```bash
-PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_conversation.py -v
+omp update
+./paveway.sh
+oicoach-runtime doctor --config /absolute/config.toml --json
+oicoach-runtime status --config /absolute/config.toml --json
+oicoach-runtime verify-omp --config /absolute/config.toml --json
 ```
 
-真实终端前端的中文 IME 预编辑／候选窗、鼠标选区和具体 Windows Terminal 字体栅格效果不能由 PTY 或渲染单测证明；原生编辑路径与 IME 光标标记保留，不把模拟按键通过写成这些体验的人工验收。
+升级也可使用 [官方发行页](https://github.com/can1357/oh-my-pi/releases)。不用构建或应用补丁，不会改动 OMP 安装、会话或用户凭据。`doctor` 报告解析路径、版本和 CLI 检查；Runtime `status.omp` 区分已观察到的 Extension attestation、RPC 兼容性以及正在运行的 RPC 数量。无模型时 `verify-omp` 可能不能启动 RPC；具备凭据后，`--with-model` 才发真实请求。
 
-实际 PTY 截图、复现命令与验收边界见 [对话与 Composer 验收记录](verification/conversation-composer/verification.md)。
-
-## Windline 统一状态栏
-
-输入框下方只有一条状态栏。左右组件使用相同的独立 Bubble：每个胶囊都有自己的左右圆帽、实色背景和内边距，胶囊之间留一列状态栏背景，不再连接成 Powerline 色带。左组为 PAVEWAY、Profile／模型／Thinking 身份、Profile/task；右组为有信息的 Wakeup、非零 Inbox、低对比度会话费用及青色上下文胶囊。无事件与零未确认消息不常驻；工作目录、Git 分支和重复的 `OMP native` 也不常驻，原生路径／Git 功能没有删除。
-
-配色沿用紫色品牌、蓝色身份、蓝灰 Workflow 和青色容量胶囊。Context 由连续实心已用区和固定位置的 Chevron 未用区组成；工作时只让箭头前景亮度随既有 OMP 125ms 相位向右流动，16 帧／2 秒一个周期，首尾亮度连续。箭头背景、占用填充、标签与圆帽不随动画改变；True Color 与校准的 ANSI-256 色号使用同一相位模型。只剩 1–2 格、占用未知、空闲或关闭动画时，仍显示完整静态箭头。布局与其他胶囊跨帧缓存，上下文数据、符号或宽度改变立即重算；不新增定时器或后台任务。空闲、取消、切换会话和退出沿用宿主停表／复位机制；在 OMP `/settings` 的外观设置关闭 **Status Line Motion**，或在 OMP 配置中设置：
-
-```yaml
-tui:
-  motion: false
-```
-
-模型显示名（缺失时用 ID）、费用、上下文估算和压缩边界均由 OMP StatusLine 提供，不在 Python 或 Paveway 扩展中另计。占用未知显示 `?%`，容量未知显示 `?`。160 列有余量时仍显示完整 `auto… (spec…)` 边界说明。容量条按预算使用 4／8／16 格；0% 全部为箭头，100% 全部为实心，非零且未满时保留至少一格已用和未用区。更窄时先省装饰，保留百分比与能容纳的窗口信息，模型名为数值预留宽度。
-
-Context 使用 Dual-limit Rail：自动压缩明确开启时，未占用格依次使用 Normal 深青 `#203f49`、Spec 蓝绿 `#30545b`、Auto 琥珀棕 `#574939`；背景不随光流变化，Chevron 不增加、不分隔、不加下划线或粗体。区间起点为 `ceil(格数 × 阈值 / 100)`，8 格、75%／85% 时为 6 格 Normal、1 格 Spec、1 格 Auto；4 格时 Auto 起点在条外，不强行搬入最后一格。相同边界由 Auto 优先；逆序时忽略 Spec，保留 Auto；缺失或非有限阈值不生成对应区间或警告，关闭自动压缩则不显示色带。100% 阈值没有条内区间。已用格始终统一青色填充，不被色带切开；数值标签按真实占用率依次使用青色、柔和提示色、Warning，未知占用不报警。无色模式保留原字符布局，不以额外符号模拟阈值。
-
-预算包含圆帽、内边距和间隔；异常及非零 Inbox 优先于模型、上下文、品牌、Workflow 和费用。80 列省去 Workflow，身份细节按余量恢复；长字段按终端显示列宽缩短，整行不截断完整胶囊。默认 `auto` 沿用原有胶囊契约：Nerd 与 Unicode 均使用 Powerline 圆帽 ``／``，Context 未用区使用空心 Chevron ``（U+E0B1）；仅 ASCII 默认使用括号和 `>`。现有显式 `powerline` 风格复用同一 Chevron 实现（ASCII／`TERM=dumb` 的箭头仍为 `>`），`plain` 使用括号和 `>`；`TERM=dumb` 禁用颜色并使用 ASCII 仪表文字，不改变圆帽风格选择。OMP 本身没有名为 `powerline` 的 `symbolPreset`。圆帽前景与自身胶囊背景一致，外部使用终端默认背景；胶囊内部始终有明确背景，深色与浅色主题下均不依赖默认背景维持箭头对比。圆帽或箭头不是单列时分别退回括号或 `>`；宽度检查只用于布局预算，不检测字体覆盖率。支持 True Color、256 色、`NO_COLOR`／无色模式；256 色保留语义色与前景光流层次。无色已用区用连续 `━`（ASCII 为 `=`），未用区保留箭头，不输出 ANSI 动画或压缩边界样式。
-
-显式覆盖圆帽风格可在 Paveway 配置中设置：
-
-```toml
-[statusline]
-# auto: Nerd/Unicode 用 Powerline 圆帽与 ，ASCII 用括号与 >
-# powerline / plain: 强制对应风格
-cap_style = "auto"
-```
-
-`PAVEWAY_STATUSLINE_CAPS=powerline|plain` 提供一次性的显式环境覆盖，优先于配置文件；两者都只表达用户选择，不做终端品牌或字体探测。
-
-Chevron 验证入口：
-
-```bash
-bun test tests/paveway-statusline.test.mjs
-PAVEWAY_TEST_NATIVE=1 .venv/bin/python -m unittest discover -s tests -p test_native_statusline.py -v
-```
-
-单测宿主默认使用 Unicode，并显式覆盖 Nerd／ASCII、配置与环境覆盖的优先级，以及非 Context 胶囊跨相位的字符、颜色和位置。原生 PTY 的 `test_unicode_auto_restores_powerline_caps_and_chevrons` 使用 Unicode + `auto`，检查 TrueColor、ANSI-256、无色模式和 80／100／120／160 列的圆帽、Chevron 与默认外部背景；光流矩阵也使用 Unicode + `auto`，避免显式 `powerline` 掩盖默认行为回归。
-
-PTY 验证字符单元格、颜色、动画生命周期与 resize；当前 [Dual-limit Rail 验收](verification/dual-limit-rail/verification.md) 包含真实 PTY 的 Nerd Font 重绘、Windows Terminal 独立窗口回放截图及复现命令。截图不证明其他字体、行高或回退字体的像素连续性。旧 [Context 波浪验收](verification/windline-statusline/context-wave/verification.md) 只记录已替换的表现，不是 Chevron 的视觉验收。
-
-
-### 可复现的宿主集成
-
-原生入口在获取前台所有权之前准备隔离的 **18.16.0** 宿主（commit `650f3a108229ee11bf68ba3377f4e8c3391cd424`），不检查或限制系统／配置中 OMP 的版本。该版本原来的 `setFooter()` 是 no-op；随包补丁增加 `ui.setStatusLine(renderer)`，直接挂入现有 StatusLine；对话与输入外观由上面的独立 opt-in 接口提供，不替换 Transcript、Scrollback、编辑逻辑或鼠标滚轮。OMP 自身在 Resize／全屏选择器中短暂借用 Alternate Screen 的行为保留，不强制常驻 Alternate Screen。
-
-安装器、补丁和启动器随 Python 包一起分发：`bundled/omp/{install.py,*.patch,omp}`。Banner 的前台预加载模块和字符渲染器位于 `bundled/paveway-banner{,-host}.mjs`。前台运行补丁后的源码宿主；后台 Worker 仍运行配置中的原始 OMP。不会覆写 `~/.local/bin/omp`，也不会把用户设置、认证、会话或代理值复制进源码缓存。
-
-首次准备需要 Git、网络和 Linux x86-64 glibc；下载固定 Bun／原生插件并校验 SHA-512，JS 依赖使用上游冻结锁文件和独立依赖缓存。缓存默认在 `~/.cache/paveway/omp/18.16.0`，可用 `PAVEWAY_OMP_CACHE` 指定。后续启动离线复用已准备宿主。可以提前准备：
-
-```bash
-.venv/bin/python packaging/omp/install.py
-# 已有精确版本 checkout 时，导出固定 commit，而不是复制工作树修改：
-.venv/bin/python packaging/omp/install.py --source /path/to/oh-my-pi
-packaging/omp/omp --version
-```
-
-版本固定仅适用于隔离 Host，不是系统／后台 Worker 的版本要求；补丁不会应用到配置的 OMP。隔离 Host 准备失败或启动器无效时，在取得会话所有权之前明确拒绝启动。Runtime 协议、Build ID、Session 所有权及启动身份检查保持不变。旧集成记录见 [Windline 验收](verification/windline-statusline.md)，独立胶囊的真实 PTY 图片与复现见 [Bubble 验收](verification/windline-statusline/bubble-verification.md)。
+如果新版不再满足能力契约，保留文件和原会话，改选一份已验证的官方 OMP（`--omp` 或 `agent.executable`），空闲时安全重启 Runtime。能回退可执行文件不代表旧 OMP 能读取新版写过的全部 Session 格式；先保留备份，不编辑或重放 uncertain 对话。
 
 ## 启动与恢复
 
@@ -129,9 +55,9 @@ oicoach-runtime native --config /absolute/config.toml --workflow test01
 
 切换只在前台空闲时接受，活动回合或工具尚未结束时拒绝。Runtime 确认旧 owner 和 Session 文件锁均已释放后才启动新 OMP。新 Conversation 有独立 ID 和 Session 目录，不搬迁 Session、不重发输入，也不更改后台 Run 的绑定或 Workflow 默认 Workspace。目标目录如果在切换期间消失，启动会报错，不回退到其他目录；旧对话可用原 ID 打开。
 
-OMP 用目标 cwd 启动，因此工具、Git、`AGENTS.md`、项目 Agent、Rules、Skills 和其他项目设置照常从目标项目发现，受原有发现开关限制。Paveway 仍使用同一 Workflow、Profile、Persona、追加 Prompt、个人 Skills 和记忆作用域；切换时携带当前模型与 Thinking，不改已保存的偏好。不会把源项目配置复制到目标项目。Workflow 管理的 Tijian MCP 是例外，见 [Tijian MCP 配置继承](tijian.md#在其他项目使用-workflow-的-tijian-mcp)。
+OMP 用实际目标 cwd 发现工具、Git、`AGENTS.md`、Agent、Rules、Skills 和 MCP。Paveway 保留同一 Workflow、Profile、Persona、附加 Prompt、个人 Skills 与 Memory 作用域，并带上当前模型与 Thinking。官方接口无法安全复现受管 Tijian 的跨目录继承和冲突拒绝；源 Workflow 配置该工具时会拒绝跨目录切换，不改动配置或会话。详见 [Tijian MCP](tijian.md#在其他项目使用-workflow-的-tijian-mcp)。
 
-OMP 18.16.0 的 `/move` 会搬移当前 JSONL 与 artifacts、改写 Session header cwd，并重新绑定进程 cwd、项目设置和部分发现缓存。Paveway 不使用这条路径；受管前台不允许 `/move`、`/wt` 或持久化 `!cd` 改变已绑定 cwd。需要 worktree 时可先在外部创建，再用 `/paveway cwd` 打开；普通 `!pwd`、`!cd dir && command` 等局部 shell 操作不迁移对话。
+受管前台拦截 `/move`、`/wt`、持久化 `!cd`、原生 `/resume` 和进程内重启；用 `/paveway cwd`、`/paveway profile` 或 `/paveway restart` 走 Runtime 所有权交接。普通 `!pwd`、`!cd dir && command` 等局部 shell 操作不迁移对话。
 
 cwd 是本机 Session 身份，不是跨设备 Git 文字归档的可移植设置。目录移动或删除后，恢复会报错，需恢复原路径或新建 Conversation。直接使用 `oicoach-runtime native` 时，先用 `./paveway.sh` 安全升级并启动匹配构建的 Runtime。
 
@@ -192,7 +118,7 @@ Tijian MCP 页也可直接通过 `/paveway tijian` 打开：
 - **Permission**：Enter 打开原生 SelectList。None 只读；Managed（首次推荐）允许只读与三种 ensure，禁止直接编辑／删除；Full 完整读写。从 None／Managed 升至 Full 时由原生 `ui.confirm()` 明确确认。
 - **Configuration**：只读状态。保存后显示 `Saved (restart required)`；不是 MCP 已连接或权限已立即改变的证明。
 
-列表的导航、选中样式、搜索、滚动、Esc 由宿主 OMP SettingsList／SelectList 提供，Theme 与 ANSI 安全截断沿用 OMP；已验证 18.16.0 的实际组件 API。长路径在窄终端中截断，路径输入使用 OMP 自身的单行滚动。权限子菜单 Esc 回到 Tijian 页，Tijian 页 Esc 回设置中心，设置中心 Esc 退出并恢复原编辑器、焦点及未提交文本。提交后的文件 I/O 期间保留原生 UI 焦点，避免按键落入聊天。
+列表的导航、选中样式、搜索、滚动、Esc、Theme 和截断由 OMP 公共 UI 组件提供。权限子菜单 Esc 回到 Tijian 页，Tijian 页 Esc 回设置中心，退出后保留原编辑器和未提交文本；文件写入期间保留对话框焦点。
 
 每次打开／返回 Tijian 页都读取真实配置；已有连接不自动调整权限。未知参数或非标准 Server 定义显示错误并拒绝覆盖，修复后可重新操作，不清除其他设置。保存带文件内容 revision；并发变化时拒绝旧编辑并重新读取。所有这些界面操作不发给模型，也不注册模型可调用的设置工具；RPC、后台和子 Agent 不挂载设置页。
 

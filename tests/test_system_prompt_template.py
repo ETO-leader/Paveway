@@ -125,6 +125,8 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
         self.assertIn("OI 训练与教学策略", tmpl_text)
         self.assertIn("CUSTOM_APPEND_PROMPT", tmpl_text)
         self.assertIn("{{#if skills.length}}", tmpl_text)
+        self.assertIn("{{#if mountedCommands.length}}", tmpl_text)
+        self.assertIn("{{toolCommandDocs}}", tmpl_text)
         self.assertIn("{{#if xdevTools.length}}", tmpl_text)
         self.assertIn("{{#if toolInfo.length}}", tmpl_text)
 
@@ -134,7 +136,7 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
         self.assertEqual(manifest_data["template_mode"], "omp-handlebars")
         self.assertIn("template_digest", manifest_data)
         self.assertIn("system_digest", manifest_data)
-        self.assertEqual(manifest_data["composer_version"], 6)
+        self.assertEqual(manifest_data["composer_version"], 7)
         self.assertEqual(manifest_data["memory_policy"], "excluded_from_system")
 
     def test_memory_changes_do_not_affect_composition(self):
@@ -270,11 +272,6 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
                     "PI_CODING_AGENT_DIR": str(self.agent_dir)}
         for kind in ("CONFIG", "STATE", "DATA", "CACHE"):
             self.env[f"XDG_{kind}_HOME"] = str(self.root / kind.lower())
-        for key in ("PAVEWAY_OMP_SOURCE", "PAVEWAY_PINNED_BUN", "PYTHONPATH"):
-            if key in os.environ:
-                self.env[key] = os.environ[key]
-        self.env["PAVEWAY_OMP_CACHE"] = os.environ.get(
-            "PAVEWAY_OMP_CACHE", str(Path.home() / ".cache/paveway/omp/18.16.0"))
         self.config_path = self.root / "config.toml"
         self.config = Config(
             state_dir=self.root / "state",
@@ -388,11 +385,18 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("{{toolInventory}}", full_prompt)
             self.assertNotIn("{{#if toolInfo.length}}", full_prompt)
 
-            # xd:// Tool Devices
-            self.assertIn("# xd:// Tool Devices", full_prompt)
-            self.assertIn("Write JSON args as `content` to `xd://<tool>` via `write`.", full_prompt)
-            self.assertIn("## Additional devices (docs on demand)", full_prompt)
-            self.assertIn("xd://ast_edit", full_prompt)
+            # Assert the rendered command/device catalog, not any one tool's description.
+            if "# Tool Commands\n" in full_prompt:
+                commands = full_prompt.split("# Tool Commands\n", 1)[1]
+                self.assertIn("`bash`", commands)
+                self.assertIn("`<tool> --help`", commands)
+                self.assertRegex(commands, r"(?m)^- `[a-z][a-z0-9_]*` — .+")
+                self.assertNotIn("# xd:// Tool Devices\n", full_prompt)
+            else:
+                self.assertIn("# xd:// Tool Devices\n", full_prompt)
+                self.assertIn("Write JSON args as `content` to `xd://<tool>` via `write`.", full_prompt)
+                self.assertIn("## Additional devices (docs on demand)", full_prompt)
+                self.assertRegex(full_prompt, r"(?m)^- (?:xd://)?[a-z][a-z0-9_]* — .+")
 
             # Internal URLs
             self.assertIn("# Internal URLs", full_prompt)
@@ -475,7 +479,7 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
                 await process_desc.wait()
 
     async def test_real_omp_with_mcp_fixture(self):
-        """4. xd:// MCP device verification: connecting an MCP server registers routes and instructions."""
+        """Connecting an MCP server registers its tool route and native invocation instructions."""
         fake_mcp = self.root / "fake_mcp.py"
         fake_mcp.write_text(FAKE_MCP_SERVER_CODE)
         fake_mcp.chmod(0o755)
@@ -507,26 +511,32 @@ class RealOmpTemplateSmokeTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             await self.wait_ready(process)
-            req = json.dumps({"id": "mcp-state", "type": "get_state"}) + "\n"
-            process.stdin.write(req.encode())
-            await process.stdin.drain()
-
-            system_prompts = []
-            while line := await process.stdout.readline():
-                msg = json.loads(line.decode())
-                if msg.get("id") == "mcp-state":
-                    system_prompts = msg.get("data", {}).get("systemPrompt", [])
-                    break
+            # RPC ready does not guarantee deferred MCP discovery already
+            # published its command inventory. Wait on the actual visible tool.
+            async with asyncio.timeout(12):
+                while True:
+                    process.stdin.write(b'{"id":"mcp-state","type":"get_state"}\n')
+                    await process.stdin.drain()
+                    while line := await process.stdout.readline():
+                        msg = json.loads(line)
+                        if msg.get("id") == "mcp-state":
+                            system_prompts = msg.get("data", {}).get("systemPrompt", [])
+                            break
+                    else:
+                        self.fail("OMP closed before publishing MCP state")
+                    if any("mcp__tijian_problem_get" in section for section in system_prompts):
+                        break
+                    await asyncio.sleep(0.1)
 
             full_prompt = "\n\n".join(system_prompts)
 
-            # Verify MCP tool route is registered dynamically in project context
-            self.assertIn("## MCP Tool Routes", full_prompt)
-            self.assertIn('"tijian_problem_get" → `xd://mcp__tijian_problem_get`', full_prompt)
-
-            # Verify xd:// devices instructions are present in prompt[0]
-            self.assertIn("# xd:// Tool Devices", full_prompt)
-            self.assertIn("Write JSON args as `content` to `xd://<tool>` via `write`.", full_prompt)
+            if "# Tool Commands\n" in full_prompt:
+                self.assertIn("mcp__tijian_problem_get", full_prompt)
+                self.assertIn("Each listed tool is also a command", full_prompt)
+            else:
+                self.assertIn("xd://mcp__tijian_problem_get", full_prompt)
+                self.assertIn("# xd:// Tool Devices", full_prompt)
+                self.assertIn("Write JSON args as `content` to `xd://<tool>` via `write`.", full_prompt)
 
             # Core does NOT hardcode tijian_problem_get
             core_content = load_core()

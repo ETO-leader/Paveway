@@ -443,15 +443,15 @@ PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest \
   tests.test_native_management.NativeManagementTests.test_packaged_skill_read_only_view_lists_and_shows_files -v
 ```
 
-CI 真实 OMP 验收：GitHub Actions native job 新增独立步骤，设置 `PAVEWAY_TEST_NATIVE=1`、`PAVEWAY_REQUIRE_REAL_OMP_PACKAGE=1`，执行 `test_skill_packages_omp`。缺少真实 OMP host 时该测试在导入期抛错（fail-on-skip），不再可能因环境变量缺失而显示成功。该测试复用 CI 已准备的 18.16.0 host 与 loopback fixture provider（无外部模型、无用户凭据），先安装完整 ZIP、删除 ZIP、从持久配置新建 RPC 会话，再用 `omp read skill://plain-oi-editorials:raw` 与 `skill://plain-oi-editorials/references/nested/b.md:raw` 验证字节；本机用 `packaging/omp` launcher + 同一 18.16.0 缓存复跑通过。
+CI 的真实 OMP 作业使用官方发行包、loopback fixture provider 和隔离的 OMP 目录。`PAVEWAY_TEST_NATIVE=1 PAVEWAY_REQUIRE_REAL_OMP_PACKAGE=1` 使缺少可用发行包时直接失败；`test_skill_packages_omp` 安装完整 ZIP、删除原 ZIP、重启 RPC，再用 `omp read skill://…:raw` 核对入口和资源字节，不调用付费模型。
 
 ## 原生工作目录切换
 
-使用已准备好的 OMP 18.16.0 固定宿主，PATH 上需要 `omp`（可使用仓库的 `packaging/omp` 启动器），并安装测试依赖 `.[test]`：
+将官方 `omp` 放在 `PATH` 上，并安装测试依赖 `.[test]`。此验收既不下载源码，也不需要为 Paveway 重新构建 OMP：
 
 ```bash
 PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests .venv/bin/python -m unittest -v \
   -k cwd -k settings_is_reachable test_frontend test_native_management test_native_mcp
 ```
 
-PTY 用真实 Paveway 启动器和 OMP Host，模型响应来自本机 loopback fixture。验收对比 `/proc/<omp_pid>/cwd`、Session JSONL header、owner 状态和退出重开前后的 Conversation／Session ID，以实际工具输出与模型请求验证目标项目上下文、原 Profile 设置和背景任务隔离。Tijian 权限使用本地 stdio fixture 验证，不连接上游业务服务。CI 的 native job 运行同一组 PTY 用例。
+PTY 使用真实 Paveway 启动链和官方 OMP；模型响应来自本地 loopback fixture。用 `/proc/<omp_pid>/cwd`、Session JSONL header、owner 状态和退出重开核对目录及物理 Session；用真实工具输出和模型请求检查目标项目上下文、原 Profile 设置及后台隔离。Tijian 使用本地 stdio fixture：验证原目录权限和跨目录拒绝，不连接真实 Tijian 数据。

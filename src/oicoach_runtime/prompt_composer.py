@@ -5,7 +5,7 @@ from importlib.resources import files
 
 from .store import canonical_json
 
-VERSION = 6
+VERSION = 7
 
 DYNAMIC_TEMPLATE_SECTIONS = """{{#if skills.length}}
 # Skills
@@ -53,12 +53,19 @@ Most FS/bash tools resolve these; path selectors: `read` docs.
 {{/if}}
 {{/if}}
 
+{{#if mountedCommands.length}}
+# Tool Commands
+Each listed tool is also a command in `{{toolRefs.bash}}`: run `<tool> <positional> [--flag value]`; `<tool> --help` prints usage derived from its schema.
+Raw JSON arguments object: `-j '<json>'`, `@file`, or `-` (stdin); bad arguments exit 2 with a usage hint.
+{{toolCommandDocs}}
+{{else}}
 {{#if xdevTools.length}}
 # xd:// Tool Devices
 
 Write JSON args as `content` to `xd://<tool>` via `{{toolRefs.write}}`. Invalid args return schema in error → fix/retry.
 
 {{xdevDocs}}
+{{/if}}
 {{/if}}"""
 
 

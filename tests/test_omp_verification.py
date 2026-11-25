@@ -170,7 +170,8 @@ class VerificationTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 config = self.config(root)
-                config = replace(config, agent=replace(config.agent, startup_timeout_seconds=0.3))
+                if mode == "guard-ready-only":
+                    config = replace(config, agent=replace(config.agent, startup_timeout_seconds=0.3))
                 with patch.dict(os.environ, {"OICOACH_FAKE_OMP_MODE": mode}):
                     report = await verify_omp(config)
                 self.assertFalse(report["ok"])

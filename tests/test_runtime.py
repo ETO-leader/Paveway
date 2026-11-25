@@ -610,14 +610,14 @@ class RuntimeTests(unittest.TestCase):
         while not entered.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(entered.exists())
-        update(self.config, "echo", 1, "inference", model="fake/fast", thinking="off")
+        update(self.config, "echo", 1, "inference", model="fake/fast", thinking="ultra-v2")
         launches = [json.loads(line) for line in (self.root / "fake-starts.jsonl").read_text().splitlines()]
         self.assertEqual((launches[0]["model"], launches[0]["thinking"]), ("fake/coach", "high"))
         (self.root / "fake-release").touch()
         self.wait_status(first["event_id"])
         self.wait_status(self.schedule("model-second", "model-task")["event_id"])
         launches = [json.loads(line) for line in (self.root / "fake-starts.jsonl").read_text().splitlines()]
-        self.assertEqual((launches[1]["model"], launches[1]["thinking"]), ("fake/fast", "off"))
+        self.assertEqual((launches[1]["model"], launches[1]["thinking"]), ("fake/fast", "ultra-v2"))
         self.assertTrue(launches[1]["resumed"])
         self.assertEqual(launches[0]["session_dir"], launches[1]["session_dir"])
 

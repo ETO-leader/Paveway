@@ -329,7 +329,7 @@ class DoctorTests(TemporaryCase):
         self.assertEqual(checks[1]["status"], "WARN")
 
     def test_probe_missing_flags_and_timeout(self):
-        with patch("oicoach_runtime.doctor.shutil.which", return_value="/fake/omp"):
+        with patch("oicoach_runtime.doctor.resolve_omp", return_value="/fake/omp"):
             version = subprocess.CompletedProcess([], 0, "omp/1.2.3", "")
             help_result = subprocess.CompletedProcess([], 0, "--cwd", "")
             with patch("oicoach_runtime.doctor.subprocess.run", side_effect=[version, help_result]):

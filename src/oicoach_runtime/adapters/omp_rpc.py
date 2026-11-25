@@ -11,15 +11,17 @@ from ..errors import AgentError
 from ..diagnostics import prompt_failure
 from ..processes import process_identity
 from ..child import cleanup_group
+from ..omp_installation import OMP_PATH_ENV, resolve_omp
 
 MAX_FRAME = 1048576
 
 
 class OmpRpc:
-    def __init__(self, config, lock_fds=(), config_path=None):
+    def __init__(self, config, lock_fds=(), config_path=None, *, executable=None):
         self.config = config
         self.lock_fds = tuple(lock_fds)
         self.config_path = config_path
+        self.executable = executable
         self.process = None
         self.stderr_task = None
         self.stderr_bytes = 0
@@ -41,7 +43,9 @@ class OmpRpc:
                            OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
         if self.config_path:
             environment["OICOACH_CONFIG"] = str(self.config_path)
-        argv = [agent.executable, "--cwd", binding["workspace"], "--session-dir", binding["session_dir"],
+        executable = self.executable or resolve_omp(agent.executable)
+        environment[OMP_PATH_ENV] = executable
+        argv = [executable, "--cwd", binding["workspace"], "--session-dir", binding["session_dir"],
                 "--mode", "rpc", "--no-ui"]
         if binding["session_file"]:
             argv.extend(["--resume", binding["session_file"]])
@@ -60,7 +64,8 @@ class OmpRpc:
         builtin_skills = binding.get("builtin_skills", ())
         skill_directories = ()
         if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
-            skill_directories = await self._skill_directories(binding["workspace"], environment)
+            from ..omp_config import skill_directories as query_skill_directories
+            skill_directories = await query_skill_directories(self.config, executable, binding["workspace"], environment)
         argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
             base=binding.get("base"), builtin_skills=builtin_skills, skill_directories=skill_directories,
             package_root=self.config.state_dir / "skill-packages"))
@@ -90,10 +95,6 @@ class OmpRpc:
         self.stderr_task = asyncio.create_task(self._drain_stderr())
         self.exit_task = asyncio.create_task(self._watch_exit())
         return self.process.pid, process_identity(self.process.pid)
-
-    async def _skill_directories(self, workspace, environment):
-        from ..omp_config import skill_directories
-        return await skill_directories(self.config, workspace, environment)
 
     async def _watch_exit(self):
         # Process.wait can wait for pipes retained by orphaned tools. returncode
@@ -185,7 +186,7 @@ class OmpRpc:
         return await self.command("get_state")
 
     async def command(self, command):
-        if command not in ("get_state", "get_messages", "get_last_assistant_text", "get_session_stats"):
+        if command not in ("get_state", "get_messages", "get_last_assistant_text", "get_session_stats", "abort"):
             raise AgentError("Unsupported adapter inspection command")
         request_id = str(uuid.uuid4())
         await self.write({"id": request_id, "type": command})
@@ -195,6 +196,8 @@ class OmpRpc:
                 if frame["type"] == "response" and frame.get("id") == request_id:
                     if command == "get_last_assistant_text" and frame.get("command") == command and frame.get("success") is False:
                         raise AgentError("Optional assistant output query is unsupported", code="agent_output_unsupported")
+                    if command == "abort" and frame.get("command") == command and frame.get("success") is True:
+                        return
                     if frame.get("command") != command or frame.get("success") is not True or not isinstance(frame.get("data"), dict):
                         raise AgentError("Agent state request failed")
                     return frame["data"]

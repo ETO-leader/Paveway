@@ -32,10 +32,12 @@
 
 ```bash
 PYTHONPATH=src:tests .venv/bin/python -m unittest test_frontend test_child_lifecycle test_git_sync test_native_entry -v
-PATH="$PWD/packaging/omp:$PATH" PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests \
+PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests \
   .venv/bin/python -m unittest test_native_recovery -v
 PYTHONPATH=src:tests .venv/bin/python -m unittest discover -s tests
 ```
+
+本节结果是旧宿主的历史验收；当前命令复测时使用 `PATH` 上的官方 OMP，不再运行宿主安装器。
 
 原生回归使用仓库锁定 OMP/Bun、隔离 Runtime、真实 PTY 和本地 HTTP Provider，不使用真实用户数据。覆盖 Ctrl+D → 立即再次运行 launcher → 同一 Conversation/Session 连续三轮；锁冲突后原记录不变；17 MiB 合法会话两次恢复与 Ctrl+D；异常终止无重放；setsid 工具在正常和 guardian SIGKILL 后均消失，无关对照进程仍存活。CI 原生作业纳入整个 recovery 套件。
 

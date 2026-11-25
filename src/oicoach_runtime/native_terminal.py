@@ -43,6 +43,27 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
         if process is not None and process.poll() is None:
             os.killpg(process.pid, signal.SIGWINCH)
 
+    def emit_terminal(data):
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1, view):]
+
+    def check_exit(code):
+        if not admitted:
+            # The control FD can close before select delivers the last PTY bytes.
+            try:
+                while chunk := os.read(master, 65536):
+                    emit_terminal(chunk)
+            except BlockingIOError:
+                pass
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+            raise RuntimeContractError(
+                f"OMP exited before Paveway Extension admission (exit {code}); "
+                "check the OMP startup output and required Extension capabilities")
+        return code
+
     try:
         resize()
         process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *argv],
@@ -76,7 +97,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                             code = process.wait(timeout=2)
                         except subprocess.TimeoutExpired:
                             raise RuntimeContractError("Native integration closed unexpectedly; inspect history before retrying") from None
-                        return code
+                        return check_exit(code)
                     frames.extend(chunk)
                     if len(frames) > 4096:
                         raise RuntimeContractError("Native attestation exceeds its size limit")
@@ -115,11 +136,9 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                             data = b""
                         if data == b"":
                             process.wait(timeout=5)
-                            return process.returncode
+                            return check_exit(process.returncode)
                         if data:
-                            view = memoryview(data)
-                            while view:
-                                view = view[os.write(1, view):]
+                            emit_terminal(data)
                     if events & selectors.EVENT_WRITE and pending:
                         try:
                             written = os.write(master, pending[:4096])
@@ -128,7 +147,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                             pass
             selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0), "terminal")
             if process.poll() is not None:
-                return process.returncode
+                return check_exit(process.returncode)
     except KeyboardInterrupt:
         return 130
     finally:

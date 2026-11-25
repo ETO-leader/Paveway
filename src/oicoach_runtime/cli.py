@@ -238,9 +238,8 @@ def parser() -> argparse.ArgumentParser:
                 if action == "prompt":
                     operation.add_argument("--mode", default="append")
                 if action == "inference":
-                    from .customization import THINKING_LEVELS
                     operation.add_argument("--model", default=None)
-                    operation.add_argument("--thinking", choices=("", *THINKING_LEVELS), default=None)
+                    operation.add_argument("--thinking", default=None)
                 if action.startswith("skill-"):
                     operation.add_argument("--name", required=True)
                 if action == "skill-put":
@@ -686,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
             from .smoke import verify_omp
             from .proxy import child_environment
             os.environ.update(child_environment(path))
+            # Official OMP's diagnostics tool can be enabled even with --no-tools.
+            os.environ["PI_AUTO_QA"] = "0"
             report = asyncio.run(verify_omp(load_config(path), with_model=args.with_model))
         elif args.command == "notifications":
             from . import notifications, service

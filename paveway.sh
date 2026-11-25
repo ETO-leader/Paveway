@@ -11,12 +11,13 @@ requested_new=0
 requested_conversation=""
 requested_shutdown=0
 requested_restart=0
+requested_omp=""
 ui_entry="${PAVEWAY_UI:-native}"
 ui_args=()
 
 usage() {
     cat <<'EOF'
-用法：./paveway.sh [--native|--legacy-ui] [--config PATH] [--workflow ID|--coach ID] [--task ID] [--new|--conversation ID] [--shutdown-on-exit] [--restart-runtime]
+用法：./paveway.sh [--native|--legacy-ui] [--config PATH] [--omp PATH] [--workflow ID|--coach ID] [--task ID] [--new|--conversation ID] [--shutdown-on-exit] [--restart-runtime]
 
 检查/安装本地 .venv，初始化缺少的配置，启动 Runtime 并进入终端 UI。
 默认使用项目 .runtime/config.toml；已有设置、会话和活动请求继续沿用。
@@ -25,6 +26,7 @@ usage() {
 --shutdown-on-exit 仅当 Runtime 由本次启动创建、非 systemd 托管、没有其他活动会话/后台工作且前台会话已释放时，才在退出时关闭它。
 --restart-runtime 主动请求安全重启现有 Runtime；通常不需要，因为不兼容时会自动处理。
 OMP 需要事先安装并完成模型认证。默认打开 OMP 原生界面；--legacy-ui 保留原管理界面。
+--omp PATH 为本次启动显式选择官方 OMP；否则使用 agent.executable 或 PATH。systemd 请在配置中使用绝对路径。
 --new 新建 Conversation；--conversation ID 选择已有 Conversation，二者不可同时使用。
 以上两个会话选项仅适用于原生界面，不可与 --legacy-ui（含 PAVEWAY_UI=legacy）一起使用。
 未指定会话选项时沿用原生界面的默认选择，不自动新建 Conversation。
@@ -54,6 +56,12 @@ while (($#)); do
                 printf '缺少 %s 的值。\n' "$1" >&2; exit 2
             fi
             requested_coach="$2"
+            shift 2 ;;
+        --omp)
+            if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
+                printf '缺少 %s 的值。\n' "$1" >&2; exit 2
+            fi
+            requested_omp="$2"
             shift 2 ;;
         --config)
             if (($# < 2)) || [[ -z "$2" || "$2" == --* ]]; then
@@ -100,6 +108,10 @@ fi
 
 # Resolve user-relative paths before changing to the project directory.
 if [[ "$config_path" != /* ]]; then config_path="$PWD/$config_path"; fi
+if [[ -n "$requested_omp" ]]; then
+    if [[ "$requested_omp" != /* ]]; then requested_omp="$PWD/$requested_omp"; fi
+    export PAVEWAY_OMP_PATH="$requested_omp"
+fi
 cd -- "$project_dir"
 if [[ -z "${PAVEWAY_PYTHON:-}" ]]; then
     python="$project_dir/.venv/bin/python"
@@ -122,7 +134,6 @@ trap 'rm -f "$workflow_file" "$launch_file"' EXIT
 
 python_code="$(cat <<'PY'
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -131,6 +142,7 @@ from oicoach_runtime.config import ensure_private_directory, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.launcher import ensure_runtime
 from oicoach_runtime.models import validate_id
+from oicoach_runtime.omp_installation import resolve_omp
 from oicoach_runtime.workflow_setup import create
 
 path = Path(sys.argv[1]).absolute()
@@ -150,8 +162,7 @@ try:
         requested_workflow = resolve(config, requested_coach)["runtime_workflow_id"]
         if workflow_file:
             workflow_file.write_text(requested_workflow, encoding="utf-8")
-    if not shutil.which(config.agent.executable):
-        raise RuntimeContractError("找不到配置的 OMP；请安装 OMP 或修改配置中的 agent.executable。")
+    omp_path = resolve_omp(config.agent.executable)
 
     existing_workflows = sorted(p.parent.name for p in config.workflow_root.glob("*/workflow.toml"))
     if not existing_workflows:
@@ -190,7 +201,7 @@ try:
                 f"指定的 Workflow 不存在：{requested_workflow}。已有 Workflow：{', '.join(existing_workflows)}。"
             )
 
-    handle = ensure_runtime(config, path, restart=os.environ.get("PAVEWAY_RESTART_RUNTIME") == "1")
+    handle = ensure_runtime(config, path, omp_path=omp_path, restart=os.environ.get("PAVEWAY_RESTART_RUNTIME") == "1")
     if launch_file:
         launch_file.write_text(handle.launch_token or "", encoding="utf-8")
 except RuntimeContractError as error:

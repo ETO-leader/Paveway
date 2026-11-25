@@ -80,28 +80,13 @@ class RealSkillPackageTests(unittest.IsolatedAsyncioTestCase):
             self.server.server_close()
             thread.join()
         self.addCleanup(close)
-        probe = Probe(self.root, shutil.which("omp"), self.server)
-        environment = dict(probe.env)
-        cache = self.omp_cache()
-        if cache is not None:
-            environment["PAVEWAY_OMP_CACHE"] = cache
-        patcher = patch.dict(os.environ, environment)
+        probe = Probe(self.root, NATIVE, self.server)
+        patcher = patch.dict(os.environ, probe.env)
         patcher.start()
         self.addCleanup(patcher.stop)
         base = load_config(self.config_path())
-        return replace(base, agent=replace(base.agent, executable=shutil.which("omp"),
+        return replace(base, agent=replace(base.agent, executable=NATIVE,
                                           model="paveway-m0/probe", thinking="off"))
-
-    def omp_cache(self):
-        """The prepared host the CI launcher resolves; never download in a test."""
-        explicit = os.environ.get("PAVEWAY_OMP_CACHE")
-        if explicit:
-            return explicit
-        root = Path.home() / ".cache/paveway/omp"
-        if not root.is_dir():
-            return None
-        prepared = [entry for entry in sorted(root.iterdir()) if (entry / "runtime.json").is_file()]
-        return str(prepared[-1]) if prepared else None
 
     def config_path(self):
         path = self.root / "config.toml"

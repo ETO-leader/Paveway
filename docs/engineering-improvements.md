@@ -44,12 +44,11 @@ Recall 新增 `availability: available|empty|expired` 和过期计数。界面�
 
 ## 验证与升级
 
-CI 保留 Python 3.11/3.12/3.13 基础矩阵，新增 Linux native 作业。固定宿主安装、前置条件、Bun 与原生 HTTP/PTY 验收分步骤执行；安装失败直接失败，缺少必需前置条件不记为通过。实际 GitHub 作业以远端结果为准。
+CI 保留 Python 3.11/3.12/3.13 基础矩阵。原生作业使用官方 OMP 发行包，不构建宿主；缺少必需前置条件不记为通过。
 
 ```bash
 PYTHONPATH=src:tests .venv/bin/python -m unittest test_wakeup test_memory test_prompt_cache_contract test_diagnostics -v
-python3 packaging/omp/install.py
-PATH="$PWD/packaging/omp:$PATH" PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests \
+PAVEWAY_TEST_NATIVE=1 PYTHONPATH=src:tests \
   .venv/bin/python -m unittest test_native_omp test_native_management test_native_recovery -v
 ```
 

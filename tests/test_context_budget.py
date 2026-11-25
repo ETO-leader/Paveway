@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import unittest
 from importlib.resources import files
@@ -14,19 +15,25 @@ from oicoach_runtime.config import load_config
 
 
 class ContextBudgetTests(unittest.TestCase):
-    def native_runtime(self):
-        manifest = Path(os.environ.get("PAVEWAY_OMP_CACHE",
-            str(Path.home() / ".cache/paveway/omp/18.16.0"))) / "runtime.json"
-        if not manifest.is_file():
-            self.skipTest("archival native algorithm checks require the prepared Paveway host")
-        runtime = json.loads(manifest.read_text())
-        return runtime["bun"], str(Path(runtime["source"]) / "packages/coding-agent/src/main.ts")
-
     def test_token_count_is_not_bytes_and_accepts_special_token_text(self):
         self.assertLess(count_tokens("a " * 15000), len(("a " * 15000).encode()))
         self.assertGreater(count_tokens("漢字🙂" * 5000), LIMIT_TOKENS)
         self.assertGreater(count_tokens("<|endoftext|>"), 0)
         self.assertIn("no fixed conversation token limit", CONTEXT_PROMPT)
+
+
+class HistoricalContextWindowSourceAudits(unittest.TestCase):
+    """The retired guard imports the tokenizer from a prepared OMP checkout."""
+
+    def native_runtime(self):
+        source = os.environ.get("PAVEWAY_OMP_SOURCE")
+        if not source:
+            self.skipTest("set PAVEWAY_OMP_SOURCE to an OMP checkout with dependencies for the historical context guard audit")
+        host = Path(source).expanduser().resolve() / "packages/coding-agent/src/main.ts"
+        self.assertTrue(host.is_file(), f"OMP checkout is missing its coding-agent entrypoint: {host}")
+        bun = shutil.which("bun")
+        self.assertIsNotNone(bun, "the historical context guard audit requires bun on PATH")
+        return bun, str(host)
 
     def test_native_window_budget_tool_pairs_multibyte_and_archive_immutability(self):
         module = str(files("oicoach_runtime").joinpath("bundled/context-window.mjs"))
@@ -127,7 +134,7 @@ process.stdout.write("INFERENCE_REACHED\n");
                 self.assertEqual("paveway_context_ready" in process.stdout, stage == "context")
 
 
-@unittest.skip("Legacy fixed conversation guard retired by user request; retained algorithm tests above are archival")
+@unittest.skip("Legacy fixed conversation guard retired; see HistoricalContextWindowSourceAudits for algorithm checks")
 class LegacyContextBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_input_is_filtered_for_model_but_preserved_in_session(self):
         base = load_config(Path(os.environ["OICOACH_TEST_REAL_OMP_CONFIG"]))

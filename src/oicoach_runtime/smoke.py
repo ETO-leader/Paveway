@@ -39,6 +39,11 @@ async def inspect_session(config, binding):
             raise AgentError("OMP returned an invalid session identity or unsettled state")
         if binding["session_file"] and (str(path) != binding["session_file"] or state["sessionId"] != binding["session_id"]):
             raise AgentError("OMP did not resume the bound session")
+        await adapter.command("abort")
+        after_abort = await adapter.state()
+        if (after_abort.get("isSettled") is not True or after_abort.get("sessionFile") != state["sessionFile"]
+                or after_abort.get("sessionId") != state["sessionId"]):
+            raise AgentError("OMP abort did not preserve a settled session identity")
         if state.get("dumpTools"):
             raise AgentError("Verification requires disabled agent tools")
         messages = (await adapter.command("get_messages")).get("messages", [])
@@ -70,8 +75,10 @@ async def verify_omp(config, *, with_model=False):
         binding = {"workspace": str(root), "session_dir": str(probe_dir), "session_file": None}
         try:
             state, _ = await inspect_session(isolated, binding)
-            checks.append({"check": "rpc_transport", "status": "PASS", "detail": "Ready v1, correlated get_state/get_messages, settled and isolated session identity"})
-            checks.append({"check": "model_selected", "status": "PASS" if state.get("model") else "WARN", "detail": "Model selection present" if state.get("model") else "No default model selected"})
+            checks.append({"check": "rpc_transport", "status": "PASS", "detail": "Ready v1, correlated get_state/get_messages/abort, settled and isolated session identity"})
+            model = state.get("model") or {}
+            checks.append({"check": "model_selected", "status": "PASS" if model else "WARN",
+                           "detail": f"{model.get('provider')}/{model.get('id')}" if model else "No default model selected"})
         except AgentError as error:
             code = getattr(error, "code", "agent_protocol_error")
             detail_messages = {

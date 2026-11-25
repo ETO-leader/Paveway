@@ -8,6 +8,13 @@ from pathlib import Path
 from .errors import ConfigError
 
 
+def valid_inference_token(value: object) -> bool:
+    """Allow an empty override or a bounded CLI token; OMP decides what it means."""
+    return (isinstance(value, str) and len(value) <= 256 and not value.startswith("-")
+            and all(c.isprintable() and not c.isspace() for c in value)
+            and len(value.encode("utf-8")) <= 256)
+
+
 @dataclass(frozen=True)
 class ServerConfig:
     socket_path: str = ""
@@ -52,7 +59,7 @@ class QueueConfig:
 
 @dataclass(frozen=True)
 class StatusLineConfig:
-    # auto: Powerline for nerd/unicode, ASCII parentheses for ascii. powerline/plain are explicit.
+    # Preserve old TOML settings when rewriting; official OMP owns its status chrome.
     cap_style: str = "auto"
 
 
@@ -165,10 +172,12 @@ def load_config(path: Path) -> Config:
         raise ConfigError("agent must use omp-rpc and an executable name or absolute path, not a shell command")
     if "/" in agent.executable and not Path(agent.executable).is_absolute():
         raise ConfigError("agent.executable cannot be a relative path")
-    if any(value.startswith("-") or len(value) > 256 for value in (agent.model, agent.profile)):
-        raise ConfigError("agent.model/profile must be bounded selectors, not CLI flags")
-    if agent.thinking not in ("", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"):
-        raise ConfigError("agent.thinking must be a supported OMP thinking level or empty")
+    if not valid_inference_token(agent.model):
+        raise ConfigError("agent.model must be a bounded selector or empty, not a CLI flag")
+    if agent.profile.startswith("-") or len(agent.profile) > 256:
+        raise ConfigError("agent.profile must be a bounded selector, not a CLI flag")
+    if not valid_inference_token(agent.thinking):
+        raise ConfigError("agent.thinking must be a bounded OMP thinking token or empty, not a CLI flag")
     restart = _section(RestartConfig, raw.get("restart", {}))
     if restart.backoff_initial_seconds > restart.backoff_max_seconds:
         raise ConfigError("Initial backoff exceeds maximum backoff")

@@ -294,6 +294,9 @@ class NativeRecoveryTests(NativeFixture):
     def test_slash_exit_persists_release_across_immediate_resume_and_daemon_restart(self):
         self.normal_exit_resume_cycle("/exit\r")
 
+    def test_ctrl_c_double_tap_releases_and_reopens_without_replay(self):
+        self.normal_exit_resume_cycle(b"\x03\x03")
+
     def test_launcher_new_preserves_history_and_conversation_resumes_selected_session(self):
         process, raw, send, until, pump, _exit_ui = self.open_ui(launcher=True)
         original = request(self.config.server.socket_path, "frontend.list")[0]

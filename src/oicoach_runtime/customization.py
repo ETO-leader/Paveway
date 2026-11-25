@@ -7,11 +7,11 @@ import re
 import tempfile
 from pathlib import Path
 
+from .config import valid_inference_token
 from .errors import ConflictError, NotFoundError, RuntimeContractError, WorkflowError
 
 MAX_SETTINGS = 262144
 MAX_SKILLS = 32
-THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto")
 SKILL_CATEGORIES = {
     "oi-introduce": "OI Introduce",
     "user-information": "user information",
@@ -42,11 +42,10 @@ def validate(raw):
         inference = raw["inference"]
         if not isinstance(inference, dict) or set(inference) != {"model", "thinking"}:
             raise WorkflowError("Invalid workflow inference settings")
-        model = text(inference["model"], 256, "Model selector", empty=True)
-        if model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model):
-            raise WorkflowError("Model must be a selector, not CLI flags or whitespace")
-        if not isinstance(inference["thinking"], str) or inference["thinking"] not in ("", *THINKING_LEVELS):
-            raise WorkflowError("Unsupported thinking level")
+        if not valid_inference_token(inference["model"]):
+            raise WorkflowError("Model must be a bounded selector or empty, not a CLI flag")
+        if not valid_inference_token(inference["thinking"]):
+            raise WorkflowError("Thinking must be a bounded OMP token or empty, not a CLI flag")
     if "persona" in raw:
         text(raw["persona"], 65536, "Persona", empty=True)
     if "coach" in raw:

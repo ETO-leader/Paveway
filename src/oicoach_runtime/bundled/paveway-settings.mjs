@@ -1,7 +1,6 @@
 // User-command-only settings. Business I/O runs in the controller, never in render().
-export async function loadNativeTui() {
-    try { return await import(Bun.resolveSync("@oh-my-pi/pi-tui", process.argv[1])); }
-    catch { return import("@oh-my-pi/pi-tui"); } // Compiled OMP resolves this to its bundled host module.
+export function loadNativeTui() {
+    return import("@oh-my-pi/pi-tui");
 }
 
 const permissions = [
@@ -19,8 +18,7 @@ export async function openSettings(ctx, {cli, workflowId, preferences, model, th
         return;
     }
     const ui = await loadNativeTui();
-    // Older source installs export the adapters from the agent, newer OMP from pi-tui.
-    const themes = ui.getSettingsListTheme ? ui : await import(Bun.resolveSync("@oh-my-pi/pi-coding-agent", process.argv[1]));
+    const themes = ui;
     const notifyError = error => ctx.ui.notify(error.message || "Cannot update settings. Review the configuration and retry.", "error");
     const busy = async (message, action) => {
         const result = await ctx.ui.custom((_tui, theme, _keys, done) => {

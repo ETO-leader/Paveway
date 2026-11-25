@@ -424,6 +424,8 @@ export function registerManagement(pi, config, requestSwitch) {
         if (value === undefined) return;
         const target = workingDirectory(value, cwd);
         if (target === realpathSync(cwd)) return show(ctx, "Already in this working directory");
+        if (target !== config.workspace && (await cli(["workflow", "tijian", "show", config.workflow_id])).configured)
+            throw new Error("Official OMP cannot safely inherit managed Tijian MCP outside the Workflow Workspace");
         if (dialog && !(await ctx.ui.confirm("Start a new conversation here?", target))) return;
         requestSwitch(ctx, {kind: "cwd", cwd: target});
     };
@@ -465,13 +467,20 @@ export function registerManagement(pi, config, requestSwitch) {
         }
     };
     actions.thinking = async ctx => {
-        const raw = await settings();
-        const selected = await ctx.ui.select("Portable thinking preference (next launch)", ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
-        if (selected !== undefined) {
-            await cli(["workflow", "customize", "inference", config.workflow_id,
-                "--thinking", selected === "inherit" ? "" : selected, "--expected-revision", String(raw.revision)]);
-            show(ctx, "Thinking preference saved. Applies on the next native launch.");
-        }
+        const report = await cli(["workflow", "models", config.workflow_id]);
+        const model = report.inference.model || (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+        const levels = report.models.find(row => row.selector === model)?.thinking ?? [];
+        const inherit = "inherit (Runtime / OMP default)";
+        const manual = "Enter a level manually…";
+        const selected = await ctx.ui.select("Portable thinking preference (next launch)", [inherit, ...levels, manual]);
+        if (selected === undefined) return;
+        const level = selected === inherit ? "" : selected === manual
+            ? await ctx.ui.input("OMP thinking level (empty inherits)", report.settings.inference?.thinking ?? "")
+            : selected;
+        if (level === undefined) return;
+        await cli(["workflow", "customize", "inference", config.workflow_id,
+            "--thinking", level, "--expected-revision", String(report.settings.revision)]);
+        show(ctx, "Thinking preference saved. Applies on the next native launch.");
     };
     const run = async (args, ctx) => {
         try {

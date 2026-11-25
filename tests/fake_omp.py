@@ -33,9 +33,10 @@ def main():
         print(json.dumps({"key": "skills.customDirectories", "value": []}))
         return
     if "models" in sys.argv:
-        print(json.dumps({"models": [{"selector": "fake/coach", "name": "Fake Coach", "reasoning": True,
-                                      "thinking": ["low", "medium", "high"]},
-                                     {"selector": "fake/fast", "name": "Fake Fast", "reasoning": False, "thinking": None}]}))
+        print(json.dumps({"models": [{"selector": "fake/coach", "name": "Fake Coach", "kind": "chat",
+                                      "thinking": ["ultra-v2", "low", "medium", "high"]},
+                                     {"selector": "fake/fast", "name": "Fake Fast", "kind": "chat", "thinking": None},
+                                     {"selector": "fake/embed", "name": "Fake Embed", "kind": "embedding", "thinking": None}]}))
         return
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", type=Path, required=True)

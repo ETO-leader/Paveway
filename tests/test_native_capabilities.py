@@ -201,12 +201,15 @@ await browser.close({{all:true,kill:true}});'''
                 name = next((name for name in names if name.endswith("tijian_problem_get")), None)
                 arguments = "{}"
                 if name is None:
-                    # Current OMP mounts MCP tools as xd:// devices dispatched
-                    # through native write, rather than provider functions.
                     import re
-                    devices = re.findall(r'xd://([\w_-]*tijian_problem_get)', json.dumps(body["messages"]))
-                    self.assertTrue(devices, json.dumps(body["messages"])[-3000:])
-                    name, arguments = "write", json.dumps({"path": "xd://" + devices[0], "content": "{}"})
+                    prompt = json.dumps(body["messages"])
+                    device = re.search(r'xd://([\w_-]*tijian_problem_get)', prompt)
+                    if device:
+                        name, arguments = "write", json.dumps({"path": "xd://" + device[1], "content": "{}"})
+                    else:
+                        command = re.search(r'\b(mcp__[\w-]*tijian_problem_get)\b', prompt)
+                        self.assertIsNotNone(command, "OMP did not expose an MCP command or device")
+                        name, arguments = "bash", json.dumps({"command": command[1] + " -j '{}'"})
                 return [({"role": "assistant", "tool_calls": [{"index": 0, "id": "native-mcp-call", "type": "function",
                     "function": {"name": name, "arguments": arguments}}]}, "tool_calls")]
             return [({"role": "assistant", "content": "M0_REPLY"}, "stop")]

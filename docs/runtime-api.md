@@ -34,7 +34,9 @@ oicoach-runtime agent show RESTART_ID
 
 `[agent]` 新增可選 `model = ""` 和 `tools_enabled/extensions_enabled/skills_enabled/rules_enabled`（預設皆 true）；轉換成已知 argv，禁止原始 shell flags。verify-omp 始終將四種能力設為 false，模型 selector 可在 TOML 指定。舊配置可省略新欄位，schema_version 仍為 1。
 
-0.16.0 新增本地 CLI `workflow models ID`，查詢所選 OMP executable/profile 的模型目錄與當前 workflow 的 inference 設定，不呼叫模型。`workflow customize inference ID --expected-revision N [--model SELECTOR] [--thinking LEVEL]` 至少提供一項，以原子寫入/CAS 保存；空串恢復繼承。show 的頂層 inference 回傳套用本機預設後的 selector/level，settings.inference 為可選的原始 workflow 覆蓋；缺欄位的舊設定仍按原文讀取。`[agent].thinking` 可選，預設空串，支援 off/minimal/low/medium/high/xhigh/max/auto；非空 workflow 覆蓋優先，下一次 spawn 轉為 --model/--thinking，執行中的回合不變。這些入口不新增 daemon mutation API 或資料庫遷移，UI 入口為 /select-model 和 /select-thinking-hardness，詳見 [自訂設定](customization.md)。
+`workflow models ID` 查询实际 OMP executable/profile 的模型目录及 Workflow 的 inference，不调用模型。`workflow customize inference ID --expected-revision N [--model SELECTOR] [--thinking LEVEL]` 以 CAS 保存；空串继承。Paveway 不限定模型、Provider 或 Thinking 枚举；由 OMP 提供目录与等级语义。非空 Workflow 覆盖优先，下一次启动传 `--model/--thinking`，不更改运行中的回合。
+
+`status.omp` 的 `path`／`version` 是 Runtime 选定的官方 OMP，`extension` 是本次 daemon 观察到的前台准入状态，`rpc_compatibility` 记录最近启动检查，`rpc_active` 是正在执行的后台 RPC 数。无连接不表示无可用能力；用 `verify-omp` 验证 RPC ready、真实 state、abort 及隔离会话身份。
 
 0.17.0 新增本地 `proxy sync/status`（支援 --config/--json），sync 合併目前終端的代理變數到私密服務環境檔，status 只讀取與檢查。報告只含 mode、變數名、代理 TCP 可達性、NO_PROXY=* 標記及生效範圍，不含網址或憑證；不新增 daemon API 或 Git 同步欄位。UI 啟動及 /proxy 執行 sync，serve 與服務啟動亦同步檢查，每次新建 OMP/查模型目錄讀取最新保存值。缺少的變數保留保存值，顯式空串清除此項，已運行 OMP 不變。詳見 [部署代理說明](deployment.md)。
 

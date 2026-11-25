@@ -3,22 +3,8 @@ import {createBanner} from "../src/oicoach_runtime/bundled/paveway-banner.mjs";
 
 const plain = value => Bun.stripANSI(value);
 const visibleWidth = value => Bun.stringWidth(plain(value));
-const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
-// The production host provides these helpers. This adapter measures with Bun,
-// and clips whole graphemes instead of duplicating the banner's layout logic.
-function truncateToWidth(value, width) {
-    let result = "", occupied = 0;
-    for (const {segment} of segmenter.segment(plain(value))) {
-        const next = visibleWidth(segment);
-        if (occupied + next > width) break;
-        result += segment;
-        occupied += next;
-    }
-    return result;
-}
-function host(mode = "truecolor", preset = "unicode") {
-    return {visibleWidth, truncateToWidth, theme: {getColorMode: () => mode, getSymbolPreset: () => preset}};
-}
+const host = (mode = "truecolor", preset = "unicode") =>
+    ({getColorMode: () => mode, getSymbolPreset: () => preset});
 const config = {version: "1.4.2", workflow: "竞赛🙂e\u0301 / 动态规划与图论 / long workflow"};
 const banner = (ui = host(), options = config) => createBanner(options, ui);
 const text = lines => lines.map(plain).join("\n");
@@ -36,14 +22,12 @@ afterEach(() => {
 });
 
 describe("Paveway Aurora × Pathline banner", () => {
-    test("resizes and animation frames stay within the Unicode display budget", () => {
+    test("resized artwork stays within the Unicode display budget", () => {
         const render = banner();
         for (const width of [120, 80, 67, 66, 50, 40, 24, 18, 7, 3, 2, 1, 0, 80]) {
-            for (const progress of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
-                const lines = render(width, "13.9.0", progress);
-                expect(lines.every(row => visibleWidth(row) <= width)).toBe(true);
-                expect(lines.every(row => !/[\r\n\uFFFD]/.test(row))).toBe(true);
-            }
+            const lines = render(width, "13.9.0");
+            expect(lines.every(row => visibleWidth(row) <= width)).toBe(true);
+            expect(lines.every(row => !/[\r\n\uFFFD]/.test(row))).toBe(true);
         }
         expect(render(0, "13.9.0")).toEqual([]);
         expect(text(render(1, "13.9.0"))).toContain("P");
@@ -56,7 +40,7 @@ describe("Paveway Aurora × Pathline banner", () => {
             const rail = lines.find(row => row.includes("─"));
             const logo = lines.filter(row => /[█▀▄]/.test(row));
             expect(visibleWidth(rail.trim())).toBeGreaterThan(Math.max(...logo.map(row => visibleWidth(row.trim()))));
-            for (const row of [...logo.slice(0, 1), ...lines.filter(row => /OI COACHING|Paveway|Tip:|─/.test(row))]) {
+            for (const row of [...logo.slice(0, 1), ...lines.filter(row => /OI TRAINING|Paveway|Tip:|─/.test(row))]) {
                 const start = row.length - row.trimStart().length;
                 const occupied = visibleWidth(row.trimEnd());
                 expect(Math.abs(start - (width - occupied))).toBeLessThanOrEqual(1);
@@ -66,22 +50,13 @@ describe("Paveway Aurora × Pathline banner", () => {
         }
     });
 
-    test("fade, sweep and moving pathline keep every row in place and settle deterministically", () => {
+    test("the original large wordmark renders as six static rows", () => {
         const render = banner();
-        const final = render(80, "13.9.0");
-        const logo = final.filter(row => /[█▀▄]/.test(plain(row)));
-        let previousDot = -1;
-        for (const progress of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
-            const frame = render(80, "13.9.0", progress);
-            expect(frame.map(visibleWidth)).toEqual(final.map(visibleWidth));
-            expect(frame.filter(row => /[█▀▄]/.test(plain(row))).map(plain)).toEqual(logo.map(plain));
-            const dot = plain(frame.find(row => plain(row).includes("●"))).indexOf("●");
-            expect(dot).toBeGreaterThanOrEqual(previousDot);
-            previousDot = dot;
-        }
-        expect(render(80, "13.9.0", 0)).not.toEqual(final);
-        expect(render(80, "13.9.0", 0.6)).not.toEqual(final);
-        expect(render(80, "13.9.0", 2)).toEqual(final);
+        const first = render(80, "13.9.0");
+        expect(first.filter(row => /[█▀▄]/.test(plain(row)))).toHaveLength(6);
+        expect(text(first)).toContain("OI TRAINING RUNTIME");
+        render(30, "13.9.0");
+        expect(render(80, "13.9.0")).toEqual(first);
     });
 
     test("Unicode workflow truncation preserves both versions and their requested ordering", () => {
@@ -109,8 +84,7 @@ describe("Paveway Aurora × Pathline banner", () => {
 
     test("live color and symbol capabilities replace cached ANSI and block artwork", () => {
         let mode = "truecolor", preset = "unicode";
-        const ui = {...host(), theme: {getColorMode: () => mode, getSymbolPreset: () => preset}};
-        const render = banner(ui);
+        const render = banner({getColorMode: () => mode, getSymbolPreset: () => preset});
         expect(render(80, "13.9.0").join("")).toContain("\x1b[38;2;");
         mode = "ansi256";
         const indexed = render(80, "13.9.0").join("");

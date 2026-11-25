@@ -67,13 +67,13 @@ plain-oi-editorials/
 
 单个选中文件最多 1 MiB；参与分析的文本最多 256 KiB。ZIP 最多 64 个条目、解压总量最多 256 KiB，仅在内存读取，不解压到磁盘。拒绝重复条目、路径穿越、符号链接和加密包；未读取的二进制资源会告知模型并列入依赖／注意事项。**这个入口只生成单篇 Markdown 正文，不安装包内资源**，因此不能当作完整包的无损安装：需要完整目录树时使用上面的原样安装。最终描述与正文仍分别受 64 KiB 限制，不会静默截断超限内容。
 
-原文件保持不变。保存后的 Skill 沿用现有独立用户数据 Git 同步设置；不会把原文件或 ZIP 放进 Paveway 源码仓库。未保存的草稿不参与同步。此入口使用锁定 OMP 的公开模型 SDK，不替换模型认证或修改全局 OMP 配置。
+原文件保持不变。保存后的 Skill 沿用现有独立用户数据 Git 同步设置；不会把原文件或 ZIP 放进 Paveway 源码仓库。未保存的草稿不参与同步。此入口使用当前官方 OMP 的公开模型 SDK，不替换模型认证或修改全局配置。
 
 ## 模型与思考等级
 
 `/select-model` 打开本机 OMP 模型目录，输入文字筛选、方向键和 Enter 选择；`/select-thinking-hardness` 按当前明确模型的元数据展示支持的等级。两者均标记当前 workflow 的选择。直接输入也支持 `/select-model provider/model` 和 `/select-thinking-hardness high`；参数 `default` 清除覆盖，继承本机 Runtime/OMP 默认。选择明确模型时同时把思考等级设为 auto，恢复默认模型时同时清除等级覆盖。
 
-显式等级为 off/minimal/low/medium/high/xhigh/max/auto。未明确模型或目录中找不到它时，等级选择器展示通用等级；直接设置不要求模型目录可访问，最终由 OMP 校验或调整模型兼容性。目录来自所选 executable/profile 的 `omp models --json --no-extensions`，以当前 workflow workspace 为工作目录，只查询目录，不调用模型或启动训练回合；查询失败不写配置，不输出原始进程诊断。
+模型目录和可选 Thinking 等级由实际 OMP 提供。目录缺少当前模型或等级时，可以显式输入对应 token；Paveway 只校验输入长度与 CLI 安全格式，由 OMP 判定支持度。查询在 Workflow Workspace 运行 `omp [--profile PROFILE] models --json --no-extensions`，不调用模型，不启动训练回合；失败不写配置或输出原始进程诊断。
 
 模型与等级保存在可选 inference 字段，沿用 revision/CAS 和原子写入。设置优先级为 workflow 非空覆盖 → config.toml 的 agent.model/agent.thinking → OMP 默认；空串表示继承。本机配置文件允许省略 thinking，默认空串。所有 task 下次派发读取设置，已开始回合不变，恢复原 session 时也传入新参数。不会修改 OMP 全局配置、profile 或凭证。
 
