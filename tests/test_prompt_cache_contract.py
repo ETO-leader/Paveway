@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +26,9 @@ class PromptCacheContractTests(unittest.TestCase):
         self.root = Path(temporary.name)
         path = self.root / "config.toml"
         initialize(path, str(self.root / "state"), str(self.root / "workflows"))
-        self.config = load_config(path)
+        config = load_config(path)
+        executable = Path(__file__).with_name("fake_omp.py").resolve()
+        self.config = replace(config, agent=replace(config.agent, executable=str(executable)))
         self.now = datetime(2026, 11, 9, tzinfo=timezone.utc)
         self.store = Store(self.config, clock=lambda: self.now)
         self.addCleanup(self.store.close)
@@ -126,15 +129,12 @@ class PromptCacheContractTests(unittest.TestCase):
         self.assertEqual(self.store.event(event["event_id"])["status"], "blocked")
 
     def test_missing_memory_extension_admission_blocks_dispatch_even_when_rpc_is_ready(self):
-        from dataclasses import replace
-        from oicoach_runtime.config import AgentConfig
         workspace = self.root / "workspace"
         workspace.mkdir()
         (workspace / "fake-mode").write_text("missing-memory-ready")
         create(self.config, "example", workspace, "example")
-        self.runtime.config = replace(self.config, agent=AgentConfig(
-            executable=str(Path(__file__).with_name("fake_omp.py").resolve()),
-            startup_timeout_seconds=0.25, graceful_stop_seconds=0.1))
+        self.runtime.config = replace(self.config, agent=replace(
+            self.config.agent, startup_timeout_seconds=0.25, graceful_stop_seconds=0.1))
         self.store.enqueue("example", "training", "admission", "admission", {}, at="now")
         event = self.store.claim_due("test-owner")
         asyncio.run(self.runtime.dispatch_event(event))

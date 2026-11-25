@@ -30,8 +30,9 @@ class LifecycleStateTests(unittest.IsolatedAsyncioTestCase):
         path = self.root / "config.toml"
         initialize(path, str(self.root / "state"), str(self.root / "workflows"))
         config = load_config(path)
-        self.config = replace(config, server=replace(config.server, poll_interval_seconds=0.01,
-                                                     max_concurrent_runs=2))
+        self.config = replace(config,
+                              server=replace(config.server, poll_interval_seconds=0.01, max_concurrent_runs=2),
+                              agent=replace(config.agent, executable=str(Path(__file__).with_name("fake_omp.py").resolve())))
         self.store = Store(self.config)
         self.runtime = Runtime(self.config, path)
         self.runtime.store = self.store

@@ -3,22 +3,58 @@ on: [push, pull_request]
 jobs:
   foundation:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TMPDIR: /var/tmp
     strategy:
+      fail-fast: false
       matrix:
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Require disk-backed temporary storage
+        run: findmnt -n -o FSTYPE -T "$TMPDIR" | grep -Ex 'ext[234]|xfs|btrfs|zfs'
       - run: python -m pip install '.[test]'
       - name: Install private D-Bus notification test dependencies
         run: sudo apt-get update && sudo apt-get install -y dbus-daemon libnotify-bin libglib2.0-bin python3-gi
-      - run: python -m unittest discover -s tests -v
+      - name: Discover all Python tests with default opt-ins off
+        shell: bash
+        run: |
+          unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+          unset OICOACH_TEST_REAL_OMP_CONFIG PAVEWAY_TEST_RELAY_ROOT PAVEWAY_OMP_SOURCE
+          unset PAVEWAY_TEST_NATIVE PAVEWAY_TEST_CACHE_OMP PAVEWAY_REQUIRE_REAL_OMP_PACKAGE
+          unset PAVEWAY_TEST_SYSTEMD OICOACH_TEST_SYSTEMD PAVEWAY_TEST_WHEEL
+          raw_log="$(mktemp "$TMPDIR/paveway-foundation.XXXXXX")"
+          trap 'rm -f -- "$raw_log"' EXIT
+          status=0
+          timeout --kill-after=20s 20m python -m unittest discover -s tests -v >"$raw_log" 2>&1 || status=$?
+          {
+            test_id='[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\)'
+            totals='(failures|errors|skipped|expected failures|unexpected successes)=[0-9]+'
+            grep -aEo "^((FAIL: |ERROR: )?$test_id|Ran [0-9]+ tests? in [0-9.]+s$|(OK|FAILED)( \\($totals(, $totals)*\\))?$)" "$raw_log" || true
+            printf 'Discovery exit status: %s (124 indicates timeout).\n' "$status"
+          } | tee "$RUNNER_TEMP/foundation-summary.log"
+          exit "$status"
       - run: oicoach-runtime --help
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: foundation-summary-python-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/foundation-summary.log
+          if-no-files-found: ignore
   native:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -31,22 +67,38 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require private disk-backed temporary storage
+        run: |
+          findmnt -n -o FSTYPE -T /var/tmp | grep -Ex 'ext[234]|xfs|btrfs|zfs'
+          # Keep the path short for nested Unix-domain sockets.
+          printf 'TMPDIR=%s\n' "$(mktemp -d /var/tmp/pw.XXXXXX)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install '.[test]'
+      - name: Build and install the non-editable wheel
+        run: |
+          python -m pip wheel --no-deps --wheel-dir "$TMPDIR/wheel" .
+          wheel=("$TMPDIR"/wheel/*.whl)
+          test "${#wheel[@]}" -eq 1
+          python -m pip install "${wheel[0]}[test]"
+          printf 'PAVEWAY_TEST_WHEEL=%s\n' "${wheel[0]}" >> "$GITHUB_ENV"
+      - name: Install private D-Bus notification test dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus-daemon libnotify-bin libglib2.0-bin python3-gi
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.4'
+          bun-version: '1.4.5'
       - name: Install and verify official OMP release
         env:
           OMP_VERSION: ${{ matrix.omp-version }}
           OMP_REPLACEMENT_VERSION: ${{ matrix.replacement-version }}
         run: |
           set -euo pipefail
-          install_dir="$(mktemp -d "$RUNNER_TEMP/omp.XXXXXXXX")"
+          install_dir="$TMPDIR/bin"
+          mkdir "$install_dir"
           install_omp() (
-            cd "$(mktemp -d "$RUNNER_TEMP/omp-download.XXXXXXXX")"
+            cd "$(mktemp -d "$TMPDIR/dl.XXXXXX")"
             release="https://github.com/can1357/oh-my-pi/releases/download/v$1"
             curl -fsSL --retry 3 -O "$release/SHA256SUMS.txt"
             curl -fsSL --retry 3 -O "$release/omp-linux-x64"
@@ -58,52 +110,125 @@ jobs:
           install_omp "$OMP_REPLACEMENT_VERSION" "$install_dir/omp-replacement"
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
           printf 'PAVEWAY_TEST_REPLACEMENT_OMP=%s\n' "$install_dir/omp-replacement" >> "$GITHUB_ENV"
-      - name: Check official OMP and JS test prerequisites (no silent skip)
+      - name: Require both executable versions and all hosted fixture prerequisites
         env:
           OMP_VERSION: ${{ matrix.omp-version }}
+          OMP_REPLACEMENT_VERSION: ${{ matrix.replacement-version }}
         run: |
-          python -c 'import pyte; from shutil import which; assert which("omp")'
-          python -c 'import os; from oicoach_runtime.omp_installation import omp_version, resolve_omp; assert omp_version(resolve_omp()) == os.environ["OMP_VERSION"]'
+          unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          if ! systemctl --user show-environment >/dev/null 2>&1; then
+            sudo systemctl start "user@$(id -u).service"
+          fi
+          systemctl --user show-environment >/dev/null
+          printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          command -v dbus-daemon gdbus notify-send
+          /usr/bin/python3 -c 'from gi.repository import Gio, GLib'
+          test -x /opt/google/chrome/chrome
+          test -f "$PAVEWAY_TEST_WHEEL"
+          file -Lb "$(command -v bun)" | grep '^ELF '
           bun --version
-      - name: Bun UI regressions and synthetic memory pressure
-        env:
-          PYTHONPATH: src:tests
-        run: |
-          bun test tests/*.test.mjs
-          python -m unittest -v test_omp_memory_boundaries.MemoryPressureTests
-      - name: Real OMP complete Skill package (ZIP install, restart, skill:// reads; no model)
+          python - <<'PY'
+          import os
+          import pyte
+          from oicoach_runtime.omp_installation import omp_version, resolve_omp
+
+          primary = omp_version(resolve_omp())
+          replacement = omp_version(os.environ["PAVEWAY_TEST_REPLACEMENT_OMP"])
+          assert primary == os.environ["OMP_VERSION"], primary
+          assert replacement == os.environ["OMP_REPLACEMENT_VERSION"], replacement
+          print(f"Official OMP {primary}; replacement {replacement}")
+          PY
+      - name: Run Bun regressions
+        run: timeout --kill-after=15s 2m bun test tests/*.test.mjs
+      - name: Discover all Python tests with official OMP and loopback fixtures
         env:
           PAVEWAY_TEST_NATIVE: '1'
+          PAVEWAY_TEST_CACHE_OMP: '1'
           PAVEWAY_REQUIRE_REAL_OMP_PACKAGE: '1'
-          PYTHONPATH: src:tests
-        run: python -m unittest -v test_skill_packages_omp
-      - name: Official OMP with local provider and PTY (no external model)
-        env:
-          PAVEWAY_TEST_NATIVE: '1'
+          PAVEWAY_TEST_SYSTEMD: '1'
+          OICOACH_TEST_SYSTEMD: '1'
           PYTHONPATH: src:tests
         run: |
-          python -m unittest -v \
-            test_native_omp \
-            test_native_banner \
-            test_native_conversation \
-            test_native_statusline \
-            test_native_management.NativeManagementTests.test_cwd_dialog_cancels_or_opens_a_new_conversation_with_resumable_history \
-            test_native_management.NativeManagementTests.test_direct_cwd_loads_target_project_context_without_losing_profile_and_inference \
-            test_native_management.NativeManagementTests.test_cwd_waits_for_foreground_activity_without_interrupting_running_background \
-            test_native_mcp.NativeWorkflowMcpPtyTests \
-            test_native_management.NativeManagementTests.test_settings_is_reachable_from_native_paveway_menu_without_chat \
-            test_native_management.NativeManagementTests.test_skill_dialog_preserves_category_and_body_without_chat_submission \
-            test_native_management.NativeManagementTests.test_skill_file_import_analyzes_reviews_and_saves_without_chat_history \
-            test_native_management.NativeManagementTests.test_local_multi_skill_zip_selects_two_with_conflict_and_no_model_request \
-            test_native_management.NativeManagementTests.test_packaged_skill_read_only_view_lists_and_shows_files \
-            test_native_management.NativeManagementTests.test_local_multi_skill_zip_select_all_then_cancel_writes_nothing \
-            test_native_management.NativeManagementTests.test_sync_status_shows_incomplete_history_without_model_request \
-            test_native_management.NativeManagementTests.test_skill_import_invalid_analysis_does_not_save \
-            test_native_management.NativeManagementTests.test_skill_import_conflict_keeps_draft_and_preserves_concurrent_settings \
-            test_native_management.NativeManagementTests.test_memory_context_explicit_off_and_on_changes_next_model_request \
-            test_system_prompt_template.RealOmpTemplateSmokeTests \
-            test_native_recovery \
-            test_native_capabilities.NativeCapabilityTests.test_native_memory_tool_persists_scoped_fact_and_reports_version \
-            test_native_capabilities.NativeCapabilityTests.test_native_mcp_discovers_and_invokes_stdio_server \
-            test_native_capabilities.NativeCapabilityTests.test_native_subagent_uses_its_own_session_and_returns_result \
-            test_native_capabilities.NativeCapabilityTests.test_training_checkpoint_reads_latest_task_note_after_native_exit
+          unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+          unset OICOACH_TEST_REAL_OMP_CONFIG PAVEWAY_TEST_RELAY_ROOT PAVEWAY_OMP_SOURCE
+          umask 077
+          ulimit -c 0
+          raw_log="$TMPDIR/unittest.private.log"
+          trap 'rm -f -- "$raw_log"' EXIT
+          status=0
+          timeout --kill-after=20s 35m python -m unittest discover -s tests -v >"$raw_log" 2>&1 || status=$?
+
+          # PTY output, assertion bodies and skip messages are not safe to publish.
+          # Keep test identifiers and outcomes, repository frame locations and counts.
+          python - "$raw_log" "$status" <<'PY' | tee "$RUNNER_TEMP/native-summary.log"
+          import re
+          import sys
+          from pathlib import Path
+
+          test_id = r"(?:test_[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\))"
+          test_start = re.compile(rf"^(?:FAIL: |ERROR: )?{test_id}")
+          frame = re.compile(r'^  File "' + re.escape(str(Path.cwd())) +
+                             r'/(?:tests|examples|src)/[A-Za-z0-9_/.-]+\.py", line \d+')
+          counts = r"(?:failures|errors|skipped|expected failures|unexpected successes)=\d+"
+          summary = re.compile(rf"^(?:OK|FAILED)(?: \({counts}(?:, {counts})*\))?$")
+          test_count = re.compile(r"^Ran ([1-9]\d*) tests? in [\d.]+s$")
+          expected_skips = {
+              "oicoach_test_real_omp_config": "external model configuration is not supplied",
+              "paveway_test_relay_root": "private Chrome Relay fixture is not configured in this job",
+              "paveway_omp_source": "upstream source audits are not binary compatibility tests",
+          }
+          retired = "'Legacy fixed conversation guard retired; see HistoricalContextWindowSourceAudits for algorithm checks'"
+          current = "[unidentified test]"
+          unexpected = False
+          seen, total, skipped = 0, 0, None
+          with open(sys.argv[1], encoding="utf-8", errors="replace") as log:
+              for line in log:
+                  line = line.rstrip("\n")
+                  if match := test_start.match(line):
+                      current = match[0]
+                      rest = line[match.end():]
+                      outcome = rest if rest in {" ... ok", " ... FAIL", " ... ERROR"} else ""
+                      if " ... skipped " not in rest:
+                          print(current + outcome)
+                  if match := re.search(r"(?:^| )\.\.\. skipped (.+)$", line):
+                      seen += 1
+                      reason = match[1]
+                      allowed = next((label for var, label in expected_skips.items()
+                                      if reason.lower().startswith(f"'set {var} ")), None)
+                      if reason == retired:
+                          allowed = "retired context guard"
+                      unexpected |= allowed is None
+                      print(f"{current} ... skipped ({allowed or 'unexpected; configured coverage is missing'})")
+                  if match := frame.match(line):
+                      # Omit the absolute checkout path and all source text.
+                      print(match[0].replace(str(Path.cwd()) + "/", ""))
+                  if match := test_count.fullmatch(line):
+                      total = int(match[1])
+                      print(line)
+                  if summary.fullmatch(line):
+                      match = re.search(r"\bskipped=(\d+)", line)
+                      skipped = int(match[1]) if match else 0
+                      print(line)
+          status = int(sys.argv[2])
+          if status in (124, 137):
+              print(f"Discovery exceeded its deadline or was killed (status {status}).")
+          elif status:
+              print(f"Discovery exited with status {status}.")
+          elif not total or seen != skipped:
+              print("Discovery log has no verifiable test count or its skip count does not match.")
+              unexpected = True
+          sys.exit(status or int(unexpected))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: native-summary-omp-${{ matrix.omp-version }}
+          path: ${{ runner.temp }}/native-summary.log
+          if-no-files-found: ignore
+      - name: Remove private fixture data
+        if: always()
+        run: |
+          if [[ "$TMPDIR" == /var/tmp/pw.* ]]; then
+            rm -rf -- "$TMPDIR"
+          fi
