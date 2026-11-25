@@ -22,7 +22,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        omp-version: ['19.0.0', '19.1.1']
+        include:
+          - omp-version: '19.0.0'
+            replacement-version: '19.1.1'
+          - omp-version: '19.1.1'
+            replacement-version: '19.0.0'
     permissions:
       contents: read
     steps:
@@ -37,17 +41,23 @@ jobs:
       - name: Install and verify official OMP release
         env:
           OMP_VERSION: ${{ matrix.omp-version }}
+          OMP_REPLACEMENT_VERSION: ${{ matrix.replacement-version }}
         run: |
           set -euo pipefail
           install_dir="$(mktemp -d "$RUNNER_TEMP/omp.XXXXXXXX")"
-          cd "$install_dir"
-          release="https://github.com/can1357/oh-my-pi/releases/download/v$OMP_VERSION"
-          curl -fsSL --retry 3 -O "$release/SHA256SUMS.txt"
-          curl -fsSL --retry 3 -O "$release/omp-linux-x64"
-          awk '$2 == "omp-linux-x64" { print }' SHA256SUMS.txt | sha256sum --check --strict
-          install -m 0755 omp-linux-x64 omp
-          rm omp-linux-x64 SHA256SUMS.txt
+          install_omp() (
+            cd "$(mktemp -d "$RUNNER_TEMP/omp-download.XXXXXXXX")"
+            release="https://github.com/can1357/oh-my-pi/releases/download/v$1"
+            curl -fsSL --retry 3 -O "$release/SHA256SUMS.txt"
+            curl -fsSL --retry 3 -O "$release/omp-linux-x64"
+            awk '$2 == "omp-linux-x64" { print }' SHA256SUMS.txt | sha256sum --check --strict
+            install -m 0755 omp-linux-x64 "$2"
+            rm omp-linux-x64 SHA256SUMS.txt
+          )
+          install_omp "$OMP_VERSION" "$install_dir/omp"
+          install_omp "$OMP_REPLACEMENT_VERSION" "$install_dir/omp-replacement"
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+          printf 'PAVEWAY_TEST_REPLACEMENT_OMP=%s\n' "$install_dir/omp-replacement" >> "$GITHUB_ENV"
       - name: Check official OMP and JS test prerequisites (no silent skip)
         env:
           OMP_VERSION: ${{ matrix.omp-version }}

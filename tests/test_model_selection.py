@@ -1,7 +1,6 @@
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from dataclasses import replace
@@ -78,13 +77,16 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_catalog_uses_override_and_profile_before_models_command(self):
         config = replace(self.config, agent=replace(self.config.agent, profile="future-profile"))
-        process = subprocess.CompletedProcess([], 0, b'{"models":[]}', b"")
-        with (patch.dict(os.environ, {"PAVEWAY_OMP_PATH": sys.executable}),
-              patch("oicoach_runtime.model_selection.subprocess.run", return_value=process) as run):
-            self.assertEqual(catalog(config, "coach")["models"], [])
-        self.assertEqual(run.call_args.args[0], [
-            str(Path(sys.executable).resolve()), "--profile", "future-profile", "models", "--json", "--no-extensions",
-        ])
+        override = self.root / "catalog-omp"
+        override.write_text(
+            "#!/bin/sh\n"
+            '[ "$*" = "--profile future-profile models --json --no-extensions" ] || exit 1\n'
+            'printf \'{"models":[{"selector":"override/new-model","thinking":["future"]}]}\\n\'\n')
+        override.chmod(0o700)
+        with patch.dict(os.environ, {"PAVEWAY_OMP_PATH": str(override)}):
+            self.assertEqual(catalog(config, "coach")["models"], [
+                {"selector": "override/new-model", "name": "override/new-model", "thinking": ["future"]},
+            ])
 
     def test_catalog_ignores_unsafe_thinking_tokens_and_preserves_omp_order(self):
         rows = [{"selector": "any-provider/any-model",

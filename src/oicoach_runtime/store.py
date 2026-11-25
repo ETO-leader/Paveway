@@ -631,7 +631,7 @@ class Store:
                        (code, message, run_id))
             self.audit(db, run["event_id"], run_id, "run_error_noted", code)
 
-    def abort_claim(self, run_id, error, *, keep_event=False):
+    def abort_claim(self, run_id, error, *, keep_event=False, refund_attempt=False):
         """Release a leased run before dispatch intent, optionally keeping the event queued."""
         bounded_text(error, 256, "error code")
         with self.transaction() as db:
@@ -645,8 +645,9 @@ class Store:
             self._set_metadata(db, "inbox-projected:v1:" + run_id, True)
             if event["status"] == "leased":
                 if keep_event:
-                    db.execute("UPDATE events SET status='queued',completed_at=NULL,last_error_code=?,version=version+1,updated_at=? WHERE event_id=?",
-                               (error, stamp, event["event_id"]))
+                    db.execute("""UPDATE events SET status='queued',completed_at=NULL,last_error_code=?,
+                        attempt=attempt-?,lease_owner=NULL,lease_expires_utc=NULL,version=version+1,updated_at=?
+                        WHERE event_id=? AND run_id=?""", (error, int(refund_attempt), stamp, event["event_id"], run_id))
                 else:
                     db.execute("UPDATE events SET status='cancelled',completed_at=?,last_error_code=?,version=version+1,updated_at=? WHERE event_id=?",
                                (stamp, error, stamp, event["event_id"]))

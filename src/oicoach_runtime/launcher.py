@@ -295,7 +295,10 @@ def ensure_runtime(config, config_path, *, restart=False, omp_path=None):
     def check(status, *, managed=False):
         problem = compatibility_problem(status)
         runtime_omp = status.get("omp", {})
-        if not problem and selected_omp is not None and (runtime_omp.get("path"), runtime_omp.get("file_identity")) != selected_omp:
+        if not problem and selected_omp is not None and (
+            (runtime_omp.get("path"), runtime_omp.get("file_identity")) != selected_omp
+            or runtime_omp.get("installation_status") in ("unavailable", "handoff_required")
+        ):
             if managed:
                 raise RuntimeContractError(
                     "systemd Runtime 的 OMP 安装与所选安装不一致；请将 agent.executable 配置为绝对路径，"

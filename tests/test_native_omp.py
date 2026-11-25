@@ -105,6 +105,11 @@ class NativeFixture(unittest.TestCase):
         os.close(slave)
         os.set_blocking(master, False)
         output = bytearray()
+        def received(chunk):
+            start = max(0, len(output) - 3)
+            output.extend(chunk)
+            return output.find(b"\x1b[6n", start) != -1
+
 
         def send(data):
             pending = bytearray(data)
@@ -113,8 +118,7 @@ class NativeFixture(unittest.TestCase):
                 readable, writable, _ = select.select([master], [master], [], 0.1)
                 if readable:
                     chunk = os.read(master, 65536)
-                    output.extend(chunk)
-                    if b"\x1b[6n" in chunk:
+                    if received(chunk):
                         pending[:0] = b"\x1b[1;1R"
                 if writable:
                     count = os.write(master, pending[:4096])
@@ -131,8 +135,7 @@ class NativeFixture(unittest.TestCase):
                         chunk = os.read(master, 65536)
                     except OSError:
                         break
-                    output.extend(chunk)
-                    if b"\x1b[6n" in chunk:
+                    if received(chunk):
                         os.write(master, b"\x1b[1;1R")
             tools = [message.get("content") for body in self.server.requests for message in body["messages"] if message.get("role") == "tool"]
             self.fail("native UI did not reach expected fixture state: " + output.decode(errors="replace")[-1800:] +
@@ -243,6 +246,137 @@ class NativeOmpTests(NativeFixture):
         self.assertEqual(status["extension"], "attested")
         self.assertEqual(status["rpc_compatibility"], "verified")
         self.assertEqual(self.path.read_text(), saved_config)
+
+    def test_running_runtime_fences_atomically_replaced_official_omp(self):
+        self.check_replaced_official_omp()
+
+    @unittest.skipUnless(os.environ.get("PAVEWAY_TEST_SYSTEMD") == "1", "requires a real systemd user manager")
+    def test_systemd_runtime_fences_atomically_replaced_official_omp(self):
+        self.check_replaced_official_omp(systemd=True)
+
+    def check_replaced_official_omp(self, *, systemd=False):
+        replacement = os.environ.get("PAVEWAY_TEST_REPLACEMENT_OMP")
+        if not replacement:
+            self.skipTest("set PAVEWAY_TEST_REPLACEMENT_OMP to a second official installation")
+        from unittest.mock import patch
+        from oicoach_runtime.launcher import _request_handoff, _wait_ready, ensure_runtime, probe_daemon, reap_detached_runtimes
+        from oicoach_runtime.omp_installation import omp_version
+        from oicoach_runtime.notifications import configure as configure_notifications
+        from test_native_statusline import Terminal
+
+        original = self.config.agent.executable
+        self.assertNotEqual(omp_version(original), omp_version(replacement))
+        self.stop_daemon()
+        selected, staged = self.root / "omp", self.root / "omp-new"
+        shutil.copy2(original, selected)
+        shutil.copy2(replacement, staged)
+        self.config = replace(self.config, agent=replace(self.config.agent, executable=str(selected)))
+        self.path.write_text(config_text(self.config))
+        socket = self.config.server.socket_path
+        configure_notifications(self.config, False)
+        unit = f"paveway-verify-{self.root.name}.service"
+        manager_environment = os.environ.copy()
+
+        def service(*args):
+            subprocess.run(["systemctl", "--user", *args, unit], env=manager_environment, check=True, timeout=20)
+        entered, release = threading.Event(), threading.Event()
+
+        def response(body):
+            yield {"role": "assistant", "content": "NATIVE_INSTALLATION_TEST"}, None
+            if "active-v1" in json.dumps(body):
+                entered.set()
+                release.wait(30)
+            yield {}, "stop"
+
+        def schedule(key, payload=None):
+            return request(socket, "schedule", {"workflow_id": "native-test", "task_id": key,
+                "reason": key, "dedupe_key": key, "at": "now", "payload": payload or {}})["event_id"]
+
+        def event(key):
+            return request(socket, "events.show", {"event_id": key})
+
+        def completed(key):
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                row = event(key)
+                if row["status"] == "succeeded":
+                    return row
+                time.sleep(0.05)
+            self.fail(f"{key} did not complete; last status: {row['status']}")
+
+        def stop_selected_runtime():
+            if systemd:
+                service("stop")
+                return
+            status = probe_daemon(socket)
+            if status is not None:
+                _request_handoff(status, socket, stop=True, reason="installation fixture cleanup")
+            reap_detached_runtimes(5)
+
+        self.server.response_factory = response
+        with patch.dict(os.environ, self.env, clear=True):
+            if systemd:
+                subprocess.run(["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",
+                    "--property=TimeoutStopSec=15s", "--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent",
+                    *(f"--setenv={key}={value}" for key, value in self.env.items()),
+                    sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
+                    env=manager_environment, check=True, timeout=20)
+            else:
+                ensure_runtime(self.config, self.path, omp_path=str(selected))
+            self.addCleanup(stop_selected_runtime)
+            old = _wait_ready(self.config)
+            terminal = Terminal(self)
+            active = schedule("active-v1")
+            try:
+                self.assertTrue(entered.wait(20), "old official Worker never reached the loopback provider")
+                staged.replace(selected)
+                terminal.send("/wakeup in 1s pending-v2\r")
+                def pending_wakeups():
+                    return [row["event_id"] for row in request(socket, "events.upcoming", {"workflow_id": "native-test"})
+                            if row["reason"] == "pending-v2" and row["intent"] == "agent_wake"]
+                terminal.until(pending_wakeups)
+                due, = pending_wakeups()
+                from oicoach_runtime.models import parse_timestamp
+                from datetime import datetime, timezone
+                terminal.until(lambda: parse_timestamp(event(due)["not_before_utc"]) <= datetime.now(timezone.utc))
+                reminder = schedule("no-model-reminder", {"native_wakeup": True,
+                    "intent": "reminder", "message": "REMINDER_WITH_REPLACED_OMP"})
+                self.assertIsNone(completed(reminder)["run_id"])
+                messages = request(socket, "inbox.list", {"workflow_id": "native-test", "task_id": "no-model-reminder"})
+                self.assertEqual([row["text"] for row in messages["messages"]], ["REMINDER_WITH_REPLACED_OMP"])
+                self.assertEqual(request(socket, "status")["omp"]["installation_status"], "handoff_required")
+                self.assertEqual((event(due)["status"], event(due)["attempt"]), ("queued", 0))
+                with self.assertRaisesRegex(RuntimeContractError, "installation"):
+                    request(socket, "agent.restart", {"workflow_id": "native-test", "task_id": "active-v1"})
+                self.assertEqual(event(active)["status"], "running")
+                terminal.send("/exit\r")
+                deadline = time.monotonic() + 10
+                while terminal.process.poll() is None and time.monotonic() < deadline:
+                    terminal.pump(.1)
+                self.assertEqual(terminal.process.returncode, 0)
+            finally:
+                release.set()
+            completed(active)
+            self.assertEqual(len(self.server.requests), 1)
+            self.assertEqual(len(request(socket, "runs.list")), 1)
+            if systemd:
+                self.assertTrue(_request_handoff(old, socket, stop=False, reason="installation fixture handoff")["accepted"])
+                service("restart")
+                new = _wait_ready(self.config, old_instance=old["runtime_instance"])
+            else:
+                new = ensure_runtime(self.config, self.path, omp_path=str(selected)).status
+            self.assertNotEqual(new["runtime_instance"], old["runtime_instance"])
+            self.assertEqual(new["omp"]["version"], omp_version(replacement))
+            self.assertEqual(completed(due)["attempt"], 1)
+            self.assertEqual(len(self.server.requests), 2)
+            self.assertEqual(len(request(socket, "runs.list")), 2)
+            selected.unlink()
+            missing = schedule("missing-v2")
+            self.assertIsNone(completed(schedule("reminder-with-missing-omp", {"native_wakeup": True,
+                "intent": "reminder", "message": "REMINDER_WITH_MISSING_OMP"}))["run_id"])
+            self.assertEqual(request(socket, "status")["omp"]["installation_status"], "handoff_required")
+            self.assertEqual((event(missing)["status"], event(missing)["attempt"]), ("queued", 0))
+            self.assertEqual(len(self.server.requests), 2)
 
     def test_active_rpc_restart_disposes_worker_without_replaying(self):
         entered, release = threading.Event(), threading.Event()

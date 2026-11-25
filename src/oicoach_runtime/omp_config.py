@@ -4,11 +4,12 @@ import asyncio
 import json
 
 from .errors import AgentError
+from .omp_installation import OmpInstallationUnavailable
 
 MAX_CONFIG = 1048576
 
 
-async def skill_directories(config, executable, workspace, environment):
+async def skill_directories(config, installation, workspace, environment):
     """Preserve native directories: OMP overlays replace list settings."""
     process = None
     try:
@@ -17,7 +18,7 @@ async def skill_directories(config, executable, workspace, environment):
             query_environment["OMP_PROFILE"] = config.agent.profile
         async with asyncio.timeout(config.agent.startup_timeout_seconds):
             process = await asyncio.create_subprocess_exec(
-                executable, "config", "get", "skills.customDirectories", "--json",
+                *installation.command(["config", "get", "skills.customDirectories", "--json"]),
                 cwd=workspace, env=query_environment, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_CONFIG)
             try:
@@ -27,12 +28,15 @@ async def skill_directories(config, executable, workspace, environment):
             else:
                 raise ValueError("Oversized skill configuration")
             if await process.wait() != 0:
+                installation.check()
                 raise ValueError("Native configuration query failed")
             result = json.loads(data)
             directories = result.get("value") if isinstance(result, dict) else None
             if not isinstance(directories, list) or any(not isinstance(path, str) for path in directories):
                 raise ValueError("Invalid native skill directories")
             return tuple(directories)
+    except OmpInstallationUnavailable:
+        raise
     except (OSError, TimeoutError, ValueError, RecursionError):
         raise AgentError("Cannot load native OMP skill directories", code="agent_skill_config_error") from None
     finally:

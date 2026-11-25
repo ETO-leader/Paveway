@@ -11,17 +11,17 @@ from ..errors import AgentError
 from ..diagnostics import prompt_failure
 from ..processes import process_identity
 from ..child import cleanup_group
-from ..omp_installation import OMP_PATH_ENV, resolve_omp
+from ..omp_installation import OmpInstallation, OmpInstallationUnavailable, REFUSED_FRAME
 
 MAX_FRAME = 1048576
 
 
 class OmpRpc:
-    def __init__(self, config, lock_fds=(), config_path=None, *, executable=None):
+    def __init__(self, config, lock_fds=(), config_path=None, *, installation=None):
         self.config = config
         self.lock_fds = tuple(lock_fds)
         self.config_path = config_path
-        self.executable = executable
+        self.installation = installation
         self.process = None
         self.stderr_task = None
         self.stderr_bytes = 0
@@ -43,9 +43,9 @@ class OmpRpc:
                            OICOACH_LOCK_FDS=",".join(str(fd) for fd in self.lock_fds))
         if self.config_path:
             environment["OICOACH_CONFIG"] = str(self.config_path)
-        executable = self.executable or resolve_omp(agent.executable)
-        environment[OMP_PATH_ENV] = executable
-        argv = [executable, "--cwd", binding["workspace"], "--session-dir", binding["session_dir"],
+        installation = self.installation or OmpInstallation.for_command(agent.executable)
+        installation.export(environment)
+        argv = ["--cwd", binding["workspace"], "--session-dir", binding["session_dir"],
                 "--mode", "rpc", "--no-ui"]
         if binding["session_file"]:
             argv.extend(["--resume", binding["session_file"]])
@@ -65,7 +65,7 @@ class OmpRpc:
         skill_directories = ()
         if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
             from ..omp_config import skill_directories as query_skill_directories
-            skill_directories = await query_skill_directories(self.config, executable, binding["workspace"], environment)
+            skill_directories = await query_skill_directories(self.config, installation, binding["workspace"], environment)
         argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
             base=binding.get("base"), builtin_skills=builtin_skills, skill_directories=skill_directories,
             package_root=self.config.state_dir / "skill-packages"))
@@ -85,7 +85,7 @@ class OmpRpc:
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *argv,
+            sys.executable, "-m", "oicoach_runtime.child", str(os.getpid()), *installation.command(argv, rpc=True),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True, pass_fds=self.lock_fds, env=environment, limit=MAX_FRAME)
         try:
@@ -169,6 +169,9 @@ class OmpRpc:
                 if error.code == "agent_rpc_timeout":
                     raise AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing") from None
                 raise
+            # This private launcher frame is recognized only before RPC admission.
+            if frame.get("type") == REFUSED_FRAME:
+                raise OmpInstallationUnavailable()
             if frame.get("type") == "ready":
                 if type(frame.get("protocolVersion")) is not int or frame["protocolVersion"] != 1:
                     raise AgentError("Unsupported OMP RPC protocol version", code="agent_protocol_version_unsupported")

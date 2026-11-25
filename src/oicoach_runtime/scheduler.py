@@ -21,7 +21,7 @@ from .errors import AgentError, ConflictError, NotFoundError, SessionConflictErr
 from .ipc import MAX_REQUEST, handle_connection
 from .models import execution_scope, parse_timestamp, utc_text
 from .memory import Memory, History
-from .omp_installation import omp_file_identity, omp_version, resolve_omp
+from .omp_installation import OmpInstallation, OmpInstallationUnavailable, omp_version
 from .processes import InstanceLock, enable_subreaper, process_identity
 from .store import Store, bounded_text
 from .compatibility import EXPECTED_LIFECYCLE_PROTOCOL_VERSION, EXPECTED_NATIVE_PROTOCOL_VERSION
@@ -49,6 +49,13 @@ class Runtime:
         self.provider = WorkflowProvider(config.workflow_root)
         self.agent_health = "idle"
         self.omp = {"path": None, "version": None, "extension": "not_attested", "rpc_compatibility": "not_tested"}
+        self.omp_installation = None
+        try:
+            self.omp_installation = OmpInstallation.select(config.agent.executable)
+            self.omp.update(path=self.omp_installation.path, file_identity=list(self.omp_installation.identity),
+                            installation_status="selected")
+        except RuntimeContractError as error:
+            self.omp.update(installation_status="unavailable", diagnostic=str(error))
         self.lock_fds = ()
         self.clients = set()
         # One entry per active background Run: task, scope, state, progress.
@@ -74,6 +81,37 @@ class Runtime:
         self.bound_task = None
         from .build_id import runtime_build_id
         self.runtime_build_id = runtime_build_id()
+
+    def _require_omp(self):
+        if self.omp["installation_status"] != "selected":
+            raise OmpInstallationUnavailable()
+        try:
+            self.omp_installation.check()
+        except OmpInstallationUnavailable as error:
+            self._omp_changed(error)
+            raise
+        return self.omp_installation
+
+    def _omp_changed(self, error):
+        self.omp.update(installation_status="handoff_required", diagnostic=str(error))
+
+    def _omp_available(self):
+        if self.omp["installation_status"] != "selected":
+            return False
+        try:
+            self._require_omp()
+            return True
+        except OmpInstallationUnavailable:
+            return False
+
+    def _requeue_unstarted(self, run_id, reason):
+        self._omp_available()
+        handoff = self.omp["installation_status"] == "handoff_required"
+        try:
+            self.store.abort_claim(run_id, OmpInstallationUnavailable.code if handoff else reason,
+                                   keep_event=True, refund_attempt=handoff)
+        except ConflictError:
+            pass  # Another owner settled or dispatched this Run.
 
     # -- execution state ---------------------------------------------------
     def _refresh_health(self):
@@ -239,9 +277,12 @@ class Runtime:
             frontend = Frontend(self.store)
             operation = command.removeprefix("frontend.")
             if operation == "begin":
-                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new", "cwd", "omp_executable"), ("workflow_id", "task_id"))
-                if "omp_executable" in raw and raw.pop("omp_executable") != self.omp["path"]:
-                    raise ConflictError("Runtime OMP selection changed before foreground admission")
+                arguments(raw, ("workflow_id", "task_id", "conversation_id", "new", "cwd", "omp_executable",
+                                "omp_file_identity"), ("workflow_id", "task_id"))
+                if "omp_executable" in raw:
+                    installation = self._require_omp()
+                    if raw.pop("omp_executable") != installation.path or raw.pop("omp_file_identity", None) != list(installation.identity):
+                        raise ConflictError("Runtime OMP selection changed before foreground admission")
                 workflow = self.provider.describe(raw["workflow_id"])
                 instructions = ""
                 return frontend.begin(**raw, workspace=workflow.workspace, settings=workflow.customization,
@@ -283,6 +324,7 @@ class Runtime:
             return {"requested": True, "previous_completion": before.get("completed_at")}
         if command == "status":
             arguments(raw, ())
+            self._omp_available()
             supervisor = self.store.status()
             health = "degraded" if supervisor["supervisor"]["phase"] in ("backoff", "open") else self.agent_health
             return {"daemon": "running", "runtime_version": __version__, "runtime_build_id": self.runtime_build_id,
@@ -362,14 +404,9 @@ class Runtime:
             result = self.store.retry(**raw)
         elif command == "agent.restart":
             arguments(raw, ("task_id", "workflow_id", "reason", "reset_circuit"), ("task_id",))
+            self._require_omp()
             result = self.store.request_restart(**raw)
             self.pending_restart = result
-            # Cancel only Runs that own the restart target's physical session;
-            # unrelated concurrent Agents keep running.
-            target = execution_scope(result["workflow_id"], result["task_id"])
-            for entry in self.active_runs.values():
-                if entry["scope"] == target and not entry["task"].done():
-                    entry["task"].cancel()
         elif command == "agent.show":
             arguments(raw, ("restart_id",), ("restart_id",))
             return self.store.restart_job(raw["restart_id"])
@@ -551,10 +588,7 @@ class Runtime:
             # completing, failing or replaying them.
             for run in self._active_runs():
                 if run["safe_to_abort"]:
-                    try:
-                        self.store.abort_claim(run["run_id"], "runtime_drain", keep_event=True)
-                    except ConflictError:
-                        pass
+                    self._requeue_unstarted(run["run_id"], "runtime_drain")
             blockers = self._lifecycle_blockers()
             if blockers:
                 self._set_lifecycle("running")
@@ -800,7 +834,7 @@ class Runtime:
                                   "event_id": event["event_id"], "run_id": run_id,
                                   "transition": "blocked", "error_code": result["reason"]}), flush=True)
                 return
-        agent = OmpRpc(self.config, self.lock_fds, self.config_path, executable=self.omp["path"])
+        agent = OmpRpc(self.config, self.lock_fds, self.config_path, installation=self.omp_installation)
         terminal = False
         failure_code = "dispatch_interrupted"
         failure_message = None
@@ -821,6 +855,7 @@ class Runtime:
                 state["tool_calls"] += 1
                 state["tool"] = tool if tool in ("read", "write", "bash", "todo", "glob", "grep") else "external-tool"
         try:
+            self._require_omp()
             trusted = self.store.metadata("native-wakeup-config:v1:" + event["event_id"]) if event["payload"].get("native_wakeup") else None
             if event["payload"].get("native_wakeup") and not trusted:
                 from .errors import WakeupSnapshotError
@@ -940,11 +975,15 @@ class Runtime:
             interrupted = True
             failure_code = "agent_restart_requested" if self._restart_scope_matches(entry) else "daemon_shutdown"
             raise
+        except OmpInstallationUnavailable as error:
+            self._omp_changed(error)
+            failure_code = error.code
         except RuntimeContractError as error:
             failure_code = error.code
-            if stage in ("startup", "session"):
-                self.omp["rpc_compatibility"] = "failed"
-                self.omp["rpc_error_code"] = failure_code
+            if stage == "startup" and not self._omp_available():
+                failure_code = OmpInstallationUnavailable.code
+            elif stage in ("startup", "session"):
+                self.omp.update(rpc_compatibility="failed", rpc_error_code=error.code)
             if isinstance(error, SessionConflictError):
                 failure_message = str(error)
             retryable = isinstance(error, AgentError) and stage in ("startup", "session")
@@ -952,6 +991,8 @@ class Runtime:
             # Errors contain no prompt/provider text. Unknown post-intent outcome is never retried.
             retryable = stage in ("startup", "session")
             failure_code = "agent_start_failed" if retryable else "dispatch_interrupted"
+            if stage == "startup" and not self._omp_available():
+                failure_code = OmpInstallationUnavailable.code
         finally:
             cleanup_error = await self._stop_agent(agent, abort=not terminal)
             try:
@@ -1072,14 +1113,12 @@ class Runtime:
                               "error_code": "agent_cleanup_failed"}), flush=True)
         restart_scope = self._restart_scope_matches(entry)
         graceful = self.stop_event.is_set() or self.draining or restart_scope
-        if graceful and run["status"] == "leased" and run["dispatch_intent_at"] is None:
+        installation_changed = failure_code == OmpInstallationUnavailable.code
+        if (graceful or installation_changed) and run["status"] == "leased" and run["dispatch_intent_at"] is None:
             # No prompt was sent: return the durable event to the queue
             # instead of reporting a failure or losing the schedule.
-            code = "runtime_drain" if self.draining and not self.stop_event.is_set() else "daemon_shutdown"
-            try:
-                self.store.abort_claim(run_id, code, keep_event=True)
-            except ConflictError:
-                pass
+            self._requeue_unstarted(run_id, "runtime_drain" if self.draining and not self.stop_event.is_set()
+                                    else "daemon_shutdown")
             return
         if self.stop_event.is_set() or restart_scope:
             interrupted, retryable = True, False
@@ -1123,6 +1162,10 @@ class Runtime:
     async def _run_pending_restart(self):
         """Serial maintenance: only the target physical session is touched."""
         job = self.pending_restart
+        if not self._omp_available():
+            self.store.update_restart(job["restart_id"], "failed", OmpInstallationUnavailable.code)
+            self.pending_restart = None
+            return
         target = execution_scope(job["workflow_id"], job["task_id"])
         if target in self.unreleased_scopes:
             self._refuse_quarantined_restart(job)
@@ -1179,7 +1222,7 @@ class Runtime:
                 # gate is repeated in dispatch_event immediately before dispatch.
                 self.wake_guard_task = asyncio.create_task(service.reconcile_due())
             capacity = self.config.server.max_concurrent_runs
-            while not self.draining and len(self.active_runs) < capacity:
+            while not self.draining and len(self.active_runs) < capacity and self._omp_available():
                 event = self.store.claim_due(self.owner)
                 if not event:
                     break
@@ -1219,12 +1262,13 @@ class Runtime:
                 pass
 
     async def restart_agent(self, job):
-        adapter = OmpRpc(self.config, self.lock_fds, self.config_path, executable=self.omp["path"])
+        adapter = OmpRpc(self.config, self.lock_fds, self.config_path, installation=self.omp_installation)
         status, error = "failed", "agent_restart_failed"
         self.store.update_restart(job["restart_id"], "running")
         self._health_override = "restarting"
         self._refresh_health()
         try:
+            self._require_omp()
             binding = self.store.binding_for_task(job["task_id"], job["workflow_id"])
             workflow = self.provider.describe(job["workflow_id"])
             if binding["workspace"] != str(workflow.workspace) or binding["workflow_revision"] != workflow.revision:
@@ -1257,8 +1301,14 @@ class Runtime:
         except asyncio.CancelledError:
             status, error = "interrupted", "daemon_shutdown"
             raise
+        except OmpInstallationUnavailable as changed:
+            self._omp_changed(changed)
+            error = changed.code
         except (RuntimeContractError, OSError, TimeoutError, ValueError):
-            self.store.supervisor_failure(error)
+            if self._omp_available():
+                self.store.supervisor_failure(error)
+            else:
+                error = OmpInstallationUnavailable.code
         finally:
             cleanup_error = await self._stop_agent(adapter, abort=status != "succeeded")
             try:
@@ -1333,13 +1383,13 @@ class Runtime:
 
     async def serve(self):
         enable_subreaper()
-        try:
-            executable = resolve_omp(self.config.agent.executable)
-            self.omp["path"] = executable
-            self.omp["file_identity"] = omp_file_identity(executable)
-            self.omp["version"] = await asyncio.to_thread(omp_version, executable)
-        except RuntimeContractError as error:
-            self.omp["diagnostic"] = str(error)
+        if self.omp_installation is not None:
+            try:
+                installation = self._require_omp()
+                self.omp["version"] = await asyncio.to_thread(omp_version, installation.path, installation=installation)
+            except RuntimeContractError as error:
+                if self._omp_available():
+                    self.omp.update(installation_status="unavailable", diagnostic=str(error))
         ensure_private_directory(self.config.state_dir)
         ensure_private_directory(self.config.state_dir / "sessions")
         socket_path = Path(self.config.server.socket_path)

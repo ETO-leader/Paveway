@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from oicoach_runtime import __version__
 from oicoach_runtime.cli import initialize
@@ -19,6 +20,7 @@ from oicoach_runtime.errors import ConflictError
 from oicoach_runtime.models import execution_scope
 from oicoach_runtime.scheduler import Runtime
 from oicoach_runtime.store import Store
+from oicoach_runtime.workflow_setup import create
 
 
 class LifecycleStateTests(unittest.IsolatedAsyncioTestCase):
@@ -111,6 +113,37 @@ class LifecycleStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requeued["attempt"], 1)
         self.assertEqual(self.store.connection.execute(
             "SELECT count(*) FROM runs").fetchone()[0], 1)
+
+    async def test_installation_handoff_does_not_charge_undispatched_leases(self):
+        configured = self.root / "omp"
+        configured.write_text("#!/bin/sh\nexit 0\n")
+        configured.chmod(0o700)
+        config = replace(self.config, agent=replace(self.config.agent, executable=str(configured)))
+        self.runtime = Runtime(config)
+        self.runtime.store = self.store
+        create(config, "echo", self.root, "example")
+        claimed = self.claim()
+        entered = asyncio.Event()
+
+        async def worker_start(*_):
+            entered.set()
+            await asyncio.Event().wait()
+
+        with patch("oicoach_runtime.adapters.omp_rpc.OmpRpc.start", new=worker_start):
+            self.tasks.append(self.runtime._spawn(claimed)["task"])
+            await asyncio.wait_for(entered.wait(), 2)
+            not_started = self.claim(task="beta", key="two")
+            replacement = self.root / "replacement"
+            replacement.write_text("#!/bin/sh\nexit 42\n")
+            replacement.chmod(0o700)
+            replacement.replace(configured)
+            self.assertTrue((await self.runtime.quiesce(self.target()))["accepted"])
+        for event in (claimed, not_started):
+            run = self.store.run(event["run_id"])
+            self.assertIsNone(run["dispatch_intent_at"])
+            self.assertEqual(run["error_code"], "omp_installation_unavailable")
+            retained = self.store.event(event["event_id"])
+            self.assertEqual((retained["status"], retained["attempt"]), ("queued", 0))
 
     async def test_accepted_shutdown_refuses_resume_and_keeps_one_timer(self):
         first = await self.runtime.lifecycle_api("lifecycle.shutdown", self.target())

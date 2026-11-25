@@ -18,7 +18,7 @@ from .customization import snapshot
 from .errors import ConflictError, RuntimeContractError
 from .ipc import request
 from .models import validate_id
-from .omp_installation import OMP_PATH_ENV, omp_file_identity, resolve_omp
+from .omp_installation import OmpInstallation, OmpInstallationUnavailable, resolve_omp
 from .native_terminal import run_terminal
 from .processes import InstanceLock
 from .proxy import child_environment
@@ -76,12 +76,16 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
         if cancelled:
             return 0
         omp = request(config.server.socket_path, "status").get("omp", {})
-        if omp.get("path") != executable or omp.get("file_identity") != omp_file_identity(executable):
+        if omp.get("path") != executable:
             raise RuntimeContractError(
                 f"Foreground OMP ({executable}) does not match the Runtime installation ({omp.get('path') or 'unavailable'}). "
                 "Set agent.executable consistently and safely restart Runtime.")
+        if omp.get("installation_status") != "selected":
+            raise OmpInstallationUnavailable()
+        installation = OmpInstallation(executable, tuple(omp["file_identity"]))
+        installation.check()
         code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd, inference,
-                                 omp_version=omp.get("version"))
+                                 installation=installation, omp_version=omp.get("version"))
         if code or not action:
             return code
         cwd, inference = None, None
@@ -102,7 +106,8 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
             conversation_id, new = action["conversation_id"], False
 
 
-def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd=None, inference=None, *, omp_version=None):
+def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd=None, inference=None, *,
+              installation, omp_version=None):
     validate_id(task_id)
     workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
     request(config.server.socket_path, "status")
@@ -137,7 +142,8 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
                     "Use a conversation in the Workflow Workspace; no MCP configuration was changed.")
         target = {"cwd": cwd} if cwd is not None else {}
         lease = request(config.server.socket_path, "frontend.begin", {"workflow_id": workflow_id, "task_id": task_id,
-                        "conversation_id": conversation_id, "omp_executable": config.agent.executable, **target})
+                        "conversation_id": conversation_id, "omp_executable": installation.path,
+                        "omp_file_identity": list(installation.identity), **target})
     except BaseException:
         lock.close()
         raise
@@ -149,7 +155,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
             workflow = WorkflowProvider(config.workflow_root).describe(workflow_id)
             if settings_digest(workflow.customization) != lease["configuration_digest"] or workflow.revision != lease["workflow_revision"]:
                 raise RuntimeContractError("Profile changed during launch; no prompt was sent")
-        code, switch_path, nonce = _run_owned(config, config_path, workflow, lease, lock, inference, omp_version)
+        code, switch_path, nonce = _run_owned(config, config_path, workflow, lease, lock, installation, inference, omp_version)
         action = _read_switch(switch_path, nonce, workflow) if code == 0 and switch_path.exists() else None
         if action and action["kind"] in ("resume", "legacy"):
             action["conversation_id"] = lease["conversation_id"]
@@ -187,7 +193,7 @@ def _run_once(config, config_path, workflow_id, task_id, conversation_id, new, c
             print(f"{failure.code}: {failure}", file=sys.stderr)
 
 
-def _run_owned(config, config_path, workflow, lease, lock, inference=None, omp_version=None):
+def _run_owned(config, config_path, workflow, lease, lock, installation, inference, omp_version):
     workflow_id, task_id = lease["workflow_id"], lease["task_id"]
     root = Path(lease["session_dir"])
     cwd = lease["cwd"]
@@ -213,8 +219,8 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None, omp_v
     extension = Path(str(files("oicoach_runtime").joinpath("bundled/paveway-native.mjs")))
     digest = hashlib.sha256(extension.read_bytes()).hexdigest()
     environment = dict(child_environment(config_path), PAVEWAY_NATIVE_DATA=str(private), PAVEWAY_NATIVE_NONCE=nonce)
-    environment[OMP_PATH_ENV] = config.agent.executable
-    argv = [config.agent.executable, "--cwd", cwd, "--session-dir", str(root),
+    installation.export(environment)
+    argv = ["--cwd", cwd, "--session-dir", str(root),
             "--no-extensions", "--trusted-extension", str(extension)]
     if lease["session_file"]:
         from .git_sync import validate_session_header
@@ -234,7 +240,7 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None, omp_v
     directories = ()
     if config.agent.skills_enabled and (workflow.builtin_skills or any(skill["enabled"] for skill in workflow.customization["skills"])):
         from .omp_config import skill_directories
-        directories = asyncio.run(skill_directories(config, config.agent.executable, cwd, environment))
+        directories = asyncio.run(skill_directories(config, installation, cwd, environment))
     argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
                      base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories,
                      package_root=config.state_dir / "skill-packages")
@@ -289,7 +295,7 @@ def _run_owned(config, config_path, workflow, lease, lock, inference=None, omp_v
     def started(process):
         request(config.server.socket_path, "frontend.started", {**owner(), "guardian_pid": process.pid})
 
-    code = run_terminal(argv, environment, ready=ready, started=started,
+    code = run_terminal(installation.command(argv), environment, ready=ready, started=started,
                         timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))
     return code, switch_path, nonce
 
