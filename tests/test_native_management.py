@@ -96,7 +96,7 @@ class NativeManagementTests(NativeFixture):
         record = settings["skills"][0]
         skill_packages.verify(self.config, record["package"]["digest"])
 
-        process, raw, send, until, pump, exit_ui = self.open_ui()
+        screen, raw, send, until, pump, exit_ui = self.open_settings_ui()
         send("/paveway skills\r")
         until("完整包 3 文件")
         raw.clear()
@@ -120,9 +120,11 @@ class NativeManagementTests(NativeFixture):
         until("包内相对路径")
         send("../SKILL.md\r")
         until("unsafe")
+        # The warning can render before the selection regains focus. Wait for
+        # the menu to return before dismissing; /exit must reach the composer.
+        until("查看入口 SKILL.md")
         send(b"\x1b")
-        for _ in range(3):
-            pump(.05)
+        until("PAVEWAY ", lambda: "查看入口 SKILL.md" not in "\n".join(screen.display))
         self.assertEqual(customization.show(self.config, "native-test")["settings"], settings)
         skill_packages.verify(self.config, record["package"]["digest"])
         self.assertEqual(self.server.requests, [])
