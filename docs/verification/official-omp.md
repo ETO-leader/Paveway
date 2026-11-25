@@ -105,3 +105,86 @@ Relay 是 Chrome 原生消息扩展与 loopback CDP 服务，并非 Paveway 扩�
 - **NOT TESTED**：独立 Runtime 之间、Subagent 单独取消、已借用 Target、掉线后的自动恢复；**BLOCKED**：未经授权的 Windows 用户 Chrome、QOJ 登录页和官方 PDF。因此不把历史 `target_closed` 归因于 Paveway 或声称已修复。
 
 Windows／WSL 实机复验：在 Chrome 所在的一侧通过官方 `omp browser-relay install` 注册 native host，确认扩展为 `on`；若 WSL 侧不能通过本地 registry 发现 relay，把仅限本机的端口安全转发并设置 `omp config set browser.relayUrl http://127.0.0.1:<port>`。先用公开测试页面和不同的 Tab 名，分别做 1／2／4 路和单路退出，再在获授权的会话只读检查 QOJ/PDF。不要记录 Cookie、题面或私人页面。
+
+## 最终收尾：连接前 MCP 与 Relay 生命周期
+
+起点：本地与 `origin/main` 同为 `8c7ea3ffb43ee09d9188907eadb524c175e04ae4`。GitHub Releases API 返回的最新正式版仍是 [OMP 19.1.1](https://github.com/can1357/oh-my-pi/releases/tag/v19.1.1)；以下兼容矩阵继续用 19.0.0 和 19.1.1，不把测试版本变成运行限制。没有恢复专用 Host、修改官方发行件、改变运行时安装身份或重写 UI。
+
+**Tijian 跨 cwd：BLOCKED。** 复查了三个新候选：ACP 明确关闭原生 MCP 发现，另置连接管理器；SDK 自定义 `mcpManager` 替换而非扩充原生管理器，亦不统一 `/mcp test`、`reauth`；OMP 扩展包可提供未加命名空间的名字，但优先级 90 低于项目原生的 100，同名时静默取优先项。没有重复上一轮已经证明不安全的 `--config` 实验，也没有允许启动后再查冲突。[独立上游方案](./omp-managed-mcp-proposal.md) 把显式输入放进同一发现流程，在去重、凭据解析及 spawn 前检查连接语义，保留其他来源和原生禁用策略，并绑定 reload/test/reauth 的同一代解析结果。当前正式版未包含该接口；没有实现原型，也没有向 OMP 提交 Issue 或 PR。生产仍安全拒绝该跨 cwd 请求。
+
+### Relay 观察与最小反例
+
+`tests/relay_lifecycle_trace.py` 只在测试 Runtime 记录单调时间、实例、Run、guardian/OMP 子进程、工具阶段、RPC 结果、stdin、清理、持久化、回收；不记录请求内容。实际 `targetId` 取自官方 `browser.tabs()`；`browser.targets()` 的 `target` 是 URL，不能当作 Target 身份证明。
+
+- **VERIFIED：受控反例。** 完成四个 Relay Target 的重叠验证。A 关闭 Target 后，故意扣住 A 的最后一段模型 SSE，先确认 A 仍 `running`、没有 `prompt_result`、没有关闭 stdin，第五个任务保持 `queued`。只释放 A 的 SSE，观察 `prompt_result`（+14,164 ms）→ `session_settled`（+14,169 ms）→ stdin 关闭（+14,185 ms）→ guardian 退出码 0（+14,490 ms）→ Run 持久化（+14,499 ms）→ 槽位回收（+14,500 ms）→ 第五个 guardian 启动（+14,556 ms）。三个兄弟在此期间仍持有原 Target，所有正常 Run 只执行一次。时间以 A 的 guardian 启动为零，来自一次实际运行。
+- **FAILED（历史，根因未定）。** 上一轮只有“关闭工具已返回、Run 尚未终结”的证据，没有最后 SSE、RPC settlement 或关管道事件；不能将受控扣流反例归因为历史真实故障。当时沿用同一个 Runtime 继续下一组，记录显示第四个任务排队时旧 Run 仍占一个槽。现在拓扑用例分别隔离；连续十轮在首错立即停止，不把同一故障传播伪装成新问题。Fixture 只接续当前 assistant turn 的工具结果；barrier 未到显式报错，不回正常终止文本。不改生产清理、quarantine 或调度语义。
+- **FAILED（保留负样本）。** 并行运行多个全量套件及冷启动 Relay 时，发现新失败发生在 **prompt 前**：前台 `Native OMP admission timed out`，后台 `agent_rpc_ready_missing`；原始日志中这些 Run 未发送 Provider 请求，不能解读为 `target_closed` 或已 settled 后未退出。WSL 当时为 2 CPU，CPU PSI `avg10=98.56`，约 1.9 GiB swap 已用。将原生用例改为顺序运行，并使用官方 `PI_NATIVES_DIR` 共享本次测试的版本化 addon，不共享 HOME、Profile、Session 或认证。
+- **VERIFIED：隔离 Chrome 的 Target 所有权。** 用 `browser.open({app:"relay", target: fixtureUrl})` 借用已有的 loopback 页面；`close()` 后 Relay 仍报告原 ID。关闭该私有 Chrome，官方工具明确报 `Nothing serves the omp browser relay`，未回退其他浏览器。以同一私有 profile 重启后，同一页面得到新 ID，旧 ID 工具拒绝，借用新页面后不关闭它。首次用 5 秒预算按 ID 借用在 attach 阶段超时，保留这条负样本；后续 URL 借用通过，不将短预算下的按 ID 借用标为通过。此实验只操作一次性的 Chrome profile。
+- **BLOCKED：Windows／WSL 用户浏览器。** Windows Chrome、`omp` 和 `sh.omp.browser` 注册存在，但发现文件中的 PID 已消失，端口在 Windows 本机也不能访问，WSL 无本地 Relay。未重载正在使用的 Chrome 扩展，未导航用户 tab，也未读取 QOJ 或 PDF。先由用户检查扩展面板 Connection 诊断并恢复 `on`，从 WSL 验证 `curl --noproxy '*' http://127.0.0.1:<port>/json/version`，再按上面的公开页面步骤验收；QOJ 登录页需单独授权。历史 `target_closed` 无归因结论。
+
+### 可复验的测试环境
+
+WSL2 `6.6.114.1-microsoft-standard-WSL2`、Python 3.14.4、Linux Bun 1.4.5；磁盘支持的 ext4 `/var/tmp`（开始约 934 GiB 可用）。官方 Linux x64 发行件与各自的 `SHA256SUMS.txt` 一致：
+
+| OMP | SHA-256 |
+| --- | --- |
+| 19.0.0 | `c7cc5c8d505053c8ffaf180417e5d5c781235b9d936f286810560151120109bf` |
+| 19.1.1（最新） | `04e9490f9394da6d6804474cc2e41eb3d18f8e26215df4b34bdd4ad4c0d8a401` |
+
+```bash
+# Foundation：PATH 不放 OMP，关闭真实账号和 Native opt-in。
+TMPDIR=/var/tmp PYTHONPATH=src:tests python -m unittest discover -s tests -v
+bun test tests/*.test.mjs
+
+# 每次一个正式版；交换 PATH 中的 omp 和 REPLACEMENT 即可反向验证。
+# TMPDIR 为本次测试新建、模式 0700 的磁盘目录。HOME、wheel、依赖亦隔离。
+PAVEWAY_TEST_NATIVE=1 PAVEWAY_TEST_CACHE_OMP=1 PAVEWAY_REQUIRE_REAL_OMP_PACKAGE=1 \
+  PAVEWAY_TEST_SYSTEMD=1 OICOACH_TEST_SYSTEMD=1 \
+  PAVEWAY_TEST_REPLACEMENT_OMP="$REPLACEMENT" PAVEWAY_TEST_WHEEL="$WHEEL" \
+  PAVEWAY_TEST_NATIVE_CACHE="$TMPDIR/omp-natives" PYTHONPATH=src:tests \
+  python -m unittest discover -s tests -v
+
+# 官方 OMP 19.1.1、已启动的私有 Chrome for Testing 158.0.8127.88、
+# 官方 Relay 扩展 0.2.0；不需要付费请求。
+PAVEWAY_TEST_NATIVE=1 PAVEWAY_TEST_RELAY_ROOT="$PRIVATE_RELAY_ROOT" \
+  PAVEWAY_TEST_NATIVE_CACHE="$TMPDIR/omp-natives" PAVEWAY_TEST_RELAY_TRACE="$PRIVATE_LOG_DIR" \
+  PYTHONPATH=src:tests python -m unittest discover -s tests -p 'test_browser_relay_*.py' -v
+```
+
+Relay 用例外层单独监督一次性 Chrome；`omp browser-relay install --no-chrome` 仅在新 HOME 执行，照原样复制生成的 native host manifest 到临时 profile，删除 `DISPLAY`、`WAYLAND_DISPLAY` 和现有 `DBUS_SESSION_BUS_ADDRESS` 后，用 `dbus-run-session` 与 `--headless=new --password-store=basic --user-data-dir=... --load-extension=...` 启动。待这个 profile 的 host 就绪后开始；无论断言通过还是失败，停止这个测试 Chrome（包括可能残留的测试 Target），不要让多个验收共用用户浏览器。`PAVEWAY_TEST_RELAY_TRACE` 指向专用日志目录，原始 PTY 和 Provider 数据不进入仓库。
+
+旧 [Actions 45545690604](https://github.com/ETO-leader/Paveway/actions/runs/45545690604) 的 6 项失败来自 OMP-free runner：`test_lifecycle_state` 2 项无法 claim，`test_prompt_cache_contract` 4 项提前得到 `omp_installation_unavailable`，根本没走到它们要断言的合同。改为构造 `Runtime` **之前**指定已有 fake，真实 Native 测试仍强制官方发行件；不调整断言。修正后的三组 Python foundation 在 [45566492760](https://github.com/ETO-leader/Paveway/actions/runs/45566492760) 实际通过。中间的 Native 工作流曾为保护日志全局改 `umask 077`，使 deliberately-mode-0755 的安全测试构造不正确；现在用 `mktemp` 单独保护原始日志，不改变测试文件权限。最终完整发现结果以最终 hosted / 本地套件为准。
+
+中间的 19.1.1 Hosted Native 还记录了 Skill 包只读查看之后的 `exit_ui()` `process.wait` 超时（不是文件读取或权限断言错误）。原测试在收到路径拒绝提示后立刻发 Escape，再等三次 50 ms，未确认焦点返回。`5094eaf` 等待真实终端选择菜单重现、Escape 后菜单消失，再提交 `/exit`；原有只读／不可变包／零 Provider 调用／退出码断言均保留。双版本定向验证均通过（19.0.0：4.013 s，19.1.1：3.512 s）。
+
+### 最终 Relay 运行
+
+`911b8d1` 的 Relay 测试和 `2ea7721` 的私有 addon 缓存在同一次 `discover -p 'test_browser_relay_*.py'` 中：**13 通过，0 失败，285.833 秒**。一份原生 addon 缓存实测 137 MiB。外层随后停止一次性 Chrome。
+
+| 场景 | 状态 | 证据 |
+| --- | --- | --- |
+| 同一官方 OMP 内的原生 Subagent | VERIFIED | 单路、双路及十个连续四路批次；每批 4 个不同 `targetId`，父 turn 结束后 managed 与 Relay 页面列表均为空；全部不同别名场景累计 43 个不同 ID。 |
+| 一个 Runtime 的 Worker | VERIFIED | 文本／Eval／只列 Target／只开页并依靠退出清理／显式关闭后退出；双路和连续十个四路批次。十批为 40 个不同 Target、40 个 guardian 启动、40 次槽回收；无增加 attempt。 |
+| 前台 + 三 Worker | VERIFIED | 真实 PTY 完成前台 admission 后开始运行；四条实际 Target 重叠，指定后台任务 restart 后其余继续。 |
+| 两个独立 Runtime | VERIFIED | 各持有一个实际 Target；指定 Runtime 的 `agent.restart` 不改变另一 Runtime 的 Runner/Target。 |
+| 独立取消、同名对照 | VERIFIED | 原生 Agent Hub `Ctrl+S`、选中 `x`：只终止指定 Subagent，其 owned Tab 消失，兄弟同一 Target 继续完成；两兄弟故意同名时显示 `Reused` 且只有一个 Target。 |
+| Chrome 中断／重启／借用 | VERIFIED | 一次性的额外官方 CLI 对照；关闭已借用 Tab 的 handle 后原 Target 仍在，停服务诊断明确，重启后旧 ID 拒绝。 |
+| 执行中网络抖动与旧连接自动恢复 | NOT TESTED | 断线实验验证服务已停止后的下一次打开，以及重启后的旧 ID；不外推到任意在途操作。 |
+| Windows／WSL 和登录后的 QOJ／PDF | BLOCKED | 无在线用户 Relay，也未获私人页面访问授权。 |
+| 历史退出超时和 `target_closed` 归因 | NOT TESTED | 未重现当时的故障链；保留历史失败，未改生产代码掩盖。 |
+
+负样本也保留：最初的 Subagent 组合运行出现一次 prompt 前 admission 超时；后来追踪运行在第 11 个子场景前达到外层命令时限。随后的 13 项是在分离其他高负载测试、使用私有 addon 缓存后的一次完整运行，不是将两次局部结果拼在一起。标准和生命周期 Reviewer 阅读实际差异和原始失败证据：修正了 MCP 延迟 UI 与 SDK awaited 路径描述；将混合、连续和控制场景拆成独立 fixture；确认 trace helper 与测试同一提交。没有待处理的严重差异缺陷。
+
+本地保留 `/var/tmp/paveway-final-logs/{workers-final-reviewed.log,relay-suites.log,faults-url.log}` 和对应的 `pw-native-test-*.jsonl`。四 Worker 最终 trace 中 `round_passed` 的 attempt 为 `1…10`，`target_verified`、`guardian_started`、`slot_released` 各 40 条。Hosted 不上传完整原始 PTY/Provider 输出，只发布测试标识、状态、项目栈位置和计数。
+
+### 完整回归与保留的跳过项
+
+- [Hosted 45567708625](https://github.com/ETO-leader/Paveway/actions/runs/45567708625) 的代码为 `2ea7721`：Python 3.11／3.12／3.13 默认全量各 680 项、560 通过、120 条件跳过、0 失败。默认矩阵不要求安装 OMP；Bun 全量 41 通过、0 失败。
+- 同一 hosted run 的两条 Native 全量均一次性零失败：19.0.0 为 680 项、652 通过、28 条件跳过（515.067 秒）；19.1.1 为 680 项、652 通过、28 条件跳过（508.431 秒）。两份分别验证 Session、Compaction、Memory、原生 PTY、Skill 包、Git Sync 三项原失败、双设备、MCP stdio 和交接。外部模型配置 11 项、隔离 Relay 13 项、三个上游源码审计及一个退役的旧 context guard 是明确跳过。真实 Relay 已独立全部执行。MCP stdio 覆盖同 cwd 的受管权限、独立 MCP、冲突时目标配置保持不变，以及跨 cwd 拒绝时保留原 Conversation；不等于官方已支持跨 cwd 继承。
+- 系统服务定向实测：官方 19.0.0 → 19.1.1 与 19.1.1 → 19.0.0 的临时 systemd user unit 均通过；另测 systemd 服务恢复队列且不重放活动 prompt。未改实际用户服务。版本切换只证明新旧进程交接，不承诺旧 OMP 能读新版写出的 Session。
+- 本轮使用 loopback Provider，**NOT TESTED**：真实 GPT-6.2 Sol 及付费 OAuth 回话；不把 fixture 文本当作真实模型证据。先前真实调用证据见上文。用户升级 OMP 后等待正在运行的任务完成，再 `./paveway.sh --omp /absolute/path/to/omp` 选定新的官方路径并触发安全交接；systemd 用 `agent.executable` 的绝对路径。回退用已经验证的旧官方发行件；要跨版本回读则另验 Session 格式，保留原始档案，不能仅凭二进制能启动就强行复用旧数据。
+- 本地同一 `2ea7721` 冻结快照另跑完整 19.0.0 Native：680 项、647 通过、33 条件跳过、0 失败（668.542 秒）。比 hosted 多跳过本地无默认路径的 Chrome 1 项和 4 个 systemd opt-in；两版的 Chrome 与真实原子替换 systemd 用例另有本地通过证据。
+- [45568670793](https://github.com/ETO-leader/Paveway/actions/runs/45568670793) 对 `5094eaf` 复验为 **FAILED**：两个版本都在 Skill 导入冲突后重开草稿超时；19.1.1 另遇已回收子进程的 `/proc` 读取异常。前者同样从通知直接 Escape 后固定等 150 ms，未等到当前选择菜单交还焦点；现在按渲染状态同步后保留冲突、并发设置、草稿正文与单次模型调用断言，两个版本定向实测通过。后者用真实 Linux 子进程复现了 open 后、read 前 reap 返回 `ESRCH`；测试现在只把 `ENOENT`/`ESRCH` 视为进程已消失，不改 SIGKILL、退出证据、重启和不重放断言。修正后一项定向验收通过（1.375 秒）。两项修复均在 `b6d60ac`。
+- 同一 `2ea7721` 的本地 19.1.1 全量为 **FAILED**：680 项、646 通过、33 跳过、1 失败。旧 restart 用例依赖瞬时 `requested`，而 `2a1e4c2` 起 B 的定向 restart 可以在无关任务 A 仍运行时变成 `running`。`4b762bc` 在 B 的真实子进程就绪前设置确定性 barrier，验证 B 已运行时拒绝重复请求、B 恢复自己的 Session 且先于 A 完成、A 不重派且 attempt 保持 1。所涉四项 Runtime 定向用例均通过；不改变生产调度合同。
+- [45570304891](https://github.com/ETO-leader/Paveway/actions/runs/45570304891) 在 `b6d60ac` 再次完成全部五条 Lane；两份官方 Native 各 680 项、652 通过、28 跳过、0 失败（19.0.0：646.423 秒；19.1.1：499.708 秒）。Skill 导入冲突、SIGKILL 不重放、三项 Git Sync 回归在两个日志都明确为 `ok`。本地 OMP-free 默认发现也一次完成 680 项、561 通过、119 跳过、0 失败。
+- **VERIFIED，最终测试代码 `4b762bc39f3e2472806e2f0fa00623b11f50a61c`：** [Actions 45571704214](https://github.com/ETO-leader/Paveway/actions/runs/45571704214) 五条 Lane 全部通过。官方 19.0.0／19.1.1 两条分别在 508.856／538.180 秒完成 680 项全量，各 652 通过、28 条件跳过、0 失败；scope restart、SIGKILL、Skill 导入冲突、MCP 原生拒绝和 systemd 双向替换均明确为 `ok`。验证分支为 `verification/extension-first-final-8c7ea3f`，没有向 `origin/main` 推送。单独的本地 Relay 日志证实 13 项通过，不参与 hosted 的通过计数。
