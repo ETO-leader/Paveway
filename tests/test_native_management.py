@@ -807,7 +807,7 @@ class NativeManagementTests(NativeFixture):
                 release.wait(15)
             return response(body)
         self.server.response_factory = delayed
-        process, raw, send, until, pump, exit_ui = self.open_ui()
+        screen, raw, send, until, pump, exit_ui = self.open_settings_ui()
         send("/paveway skills\r")
         until("Import from file")
         send(b"\x1b[B\x1b[B\r")
@@ -824,8 +824,11 @@ class NativeManagementTests(NativeFixture):
         saved = customization.show(self.config, "native-test")["settings"]
         self.assertEqual(saved["skills"], [])
         self.assertEqual(saved["system_prompt"]["text"], "CONCURRENT_IMPORT_PROMPT")
+        # A conflict redraws the draft menu asynchronously. Cancel only after
+        # it owns the editor again, and reopen only once it has relinquished it.
+        until("返回（保留草稿）")
         send(b"\x1b")
-        for _ in range(3): pump(.05)
+        until("PAVEWAY ", lambda: "返回（保留草稿）" not in "\n".join(screen.display))
         raw.clear()
         send("/paveway skills\r")
         until("Review import draft")

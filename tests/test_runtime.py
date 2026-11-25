@@ -788,11 +788,12 @@ class RuntimeTests(unittest.TestCase):
         self.process.wait(timeout=5)
         deadline = time.monotonic() + 3
         # Linux may leave a reparented zombie briefly; it cannot run or retain a lock.
-        while Path(f"/proc/{agent_pid}/stat").exists():
+        stat_path = Path(f"/proc/{agent_pid}/stat")
+        while True:
             try:
-                status = Path(f"/proc/{agent_pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-            except FileNotFoundError:
-                # Reaped between exists() and read_text(): also proves it is gone.
+                status = stat_path.read_text().rsplit(")", 1)[1].split()[0]
+            except (FileNotFoundError, ProcessLookupError):
+                # Reaping yields ENOENT before open or ESRCH after open.
                 break
             if status == "Z":
                 break
