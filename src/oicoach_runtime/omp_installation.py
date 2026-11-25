@@ -98,7 +98,9 @@ class OmpInstallation:
     def command(self, args, *, rpc=False):
         """Check admission and arrange the final, exec-side identity check."""
         self.check()
-        return [sys.executable, "-m", "oicoach_runtime.omp_installation",
+        # Config/catalog probes run with the project's cwd. Don't import a
+        # project module in place of this installed execution boundary.
+        return [sys.executable, "-P", "-m", "oicoach_runtime.omp_installation",
                 "rpc" if rpc else "cli", json.dumps(self.identity), self.path, *args]
 
 

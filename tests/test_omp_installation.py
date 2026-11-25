@@ -77,3 +77,17 @@ class OmpInstallationTests(unittest.TestCase):
             result = subprocess.run(OmpInstallation.select(str(selected)).command(
                 ["-c", "print('EXECUTED_SELECTED_ELF')"]), capture_output=True, text=True, timeout=5)
             self.assertEqual((result.returncode, result.stdout.strip()), (0, "EXECUTED_SELECTED_ELF"), result.stderr)
+
+    def test_project_cwd_cannot_shadow_the_checked_exec_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shadow = root / "oicoach_runtime"
+            shadow.mkdir()
+            (shadow / "__init__.py").touch()
+            (shadow / "omp_installation.py").write_text("raise SystemExit(17)\n")
+            selected = root / "omp"
+            selected.write_text("#!/bin/sh\nexit 42\n")
+            selected.chmod(0o700)
+            installed = OmpInstallation.select(str(selected))
+            result = subprocess.run(installed.command([]), cwd=root, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 42, result.stderr)
