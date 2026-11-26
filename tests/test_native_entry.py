@@ -72,9 +72,9 @@ class NativeEntryTests(unittest.TestCase):
                     selected = replace(config, agent=replace(config.agent, executable=str(path)))
                     with patch("oicoach_runtime.native.os.isatty", return_value=True), \
                             patch("oicoach_runtime.proxy.synchronize"), \
-                            patch("oicoach_runtime.native.request") as remote, \
+                            patch("oicoach_runtime.native.request", return_value={}) as remote, \
                             patch("oicoach_runtime.native.run_terminal") as terminal:
                         with self.assertRaisesRegex(RuntimeContractError, "agent.executable"):
                             run(selected, root / "config.toml", "example", new=True)
-                        remote.assert_not_called()
+                        remote.assert_called_once_with(config.server.socket_path, "status")
                         terminal.assert_not_called()

@@ -11,9 +11,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from fake_admission import FAKE_OMP, admit_fake
+
 from oicoach_runtime import customization, git_sync
 from oicoach_runtime.cli import initialize
-from oicoach_runtime.config import load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import ConflictError, RuntimeContractError
 from oicoach_runtime.store import Store
 from oicoach_runtime.workflow_setup import create
@@ -98,6 +100,9 @@ class GitSyncTests(unittest.TestCase):
                 subprocess.run(["git", "-C", str(editor), *args], capture_output=True, check=True)
         publish(999)
         config_path = self.root / "a/config.toml"
+        config = replace(self.a, agent=replace(self.a.agent, executable=str(FAKE_OMP)))
+        config_path.write_text(config_text(config))
+        admit_fake(config)
         home = self.root / "isolated-home"
         home.mkdir()
         log = (self.root / "sync-daemon.log").open("w")

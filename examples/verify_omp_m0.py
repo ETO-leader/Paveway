@@ -27,6 +27,8 @@ from importlib.resources import files
 
 import pyte
 
+from oicoach_runtime.omp_config import disabled_tool_args
+
 # This checkout-only acceptance harness already runs the repository's tests.
 # Use their strict wide-cell decoder for the same PTY byte-boundary semantics.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
@@ -85,6 +87,26 @@ class Probe:
         (self.agent / "config.yml").write_text(json.dumps({
             "startup": {"setupWizard": False, "showSplash": False, "checkUpdate": False},
             "update": {"auto": False}}))
+        self.tool_policy = root / "probe-tool-policy.yml"
+        overlay = {}
+        self.tool_args = disabled_tool_args(overlay, self.env)
+        self.tool_policy.write_text(json.dumps(overlay))
+        self.tool_guard = root / "probe-tool-policy.mjs"
+        policy = str(files("oicoach_runtime").joinpath("bundled/paveway-tool-policy.mjs"))
+        self.tool_guard.write_text(f'import {{registerDisabledTools}} from {json.dumps(policy)};\n' + '''
+export default async function toolPolicy(pi) {
+    const fail = () => process.kill(process.pid, "SIGKILL");
+    try {
+        const apply = await registerDisabledTools(pi, fail);
+        const enforce = async (_event, ctx) => {
+            if (ctx.agent?.kind !== "main") return;
+            try { await apply(); } catch { fail(); }
+        };
+        pi.on("session_start", enforce);
+        pi.on("session_switch", enforce);
+    } catch { fail(); }
+}
+''')
         (self.agent / "models.yml").write_text(json.dumps({"providers": {"paveway-m0": {
             "baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "auth": "none",
             "api": "openai-completions", "models": [{"id": "probe", "name": "probe",
@@ -103,11 +125,14 @@ class Probe:
                 f"export default async function(pi) {{ await guard({{on(event, handler) {{ {callback} }}}}); }}")
             self.guard_faults.append((stage, extension))
 
-    def argv(self, name, extensions):
+    def argv(self, name, extensions, *, trusted=False, manages_tools=False):
+        paths = extensions if manages_tools else [self.tool_guard, *extensions]
+        flag = "--trusted-extension" if trusted else "--extension"
         return [self.executable, "--cwd", str(self.workspace), "--session-dir", str(self.root / name),
-                "--no-tools", "--no-skills", "--no-rules", "--no-extensions", "--no-title",
+                *self.tool_args, "--config", str(self.tool_policy),
+                "--no-skills", "--no-rules", "--no-extensions", "--no-title",
                 "--model", "paveway-m0/probe",
-                *[arg for extension in extensions for arg in ("--extension", str(extension))]]
+                *[arg for extension in paths for arg in (flag, str(extension))]]
 
     async def rpc(self, name, extensions, message):
         before = len(self.server.requests)
@@ -275,6 +300,7 @@ class Probe:
         env = dict(self.env, OICOACH_TEST_REAL_OMP_CONFIG=str(config),
                    PYTHONPATH=os.pathsep.join(str(project / name) for name in ("src", "tests")))
         checks = ["test_omp_verification.RealTransportTests.test_real_omp_transport",
+                  "test_omp_verification.RealTransportTests.test_real_rpc_disabled_tools_preserve_extensions_without_mcp",
                   "test_customization_omp.RealCustomizationTests.test_native_template_expands_dynamic_capabilities_without_model",
                   "test_customization_omp.RealCustomizationTests.test_native_system_prompt_append_replace_and_skill_discovery_without_model",
                   "test_customization_omp.RealCustomizationTests.test_native_builtin_and_user_skills_read_without_model",

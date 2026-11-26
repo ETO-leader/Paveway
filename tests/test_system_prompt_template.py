@@ -225,15 +225,18 @@ class SystemPromptTemplateUnitTests(unittest.TestCase):
     def test_doctor_probe_requires_system_prompt_template_flag(self):
         """Doctor check fails if --system-prompt-template flag is missing."""
         executable = self.root / "fake-omp"
-        # Omits --system-prompt-template
-        executable.write_text('#!/bin/sh\ncase "$1" in\n--version) echo "omp/18.15.0";;\n--help) echo "--cwd --session-dir --resume --mode --no-ui";;\nesac\n')
+        # Advertise all other launch flags so the template flag is the only failure.
+        help_flags = ("--cwd --session-dir --resume --mode --no-ui --config --tools --no-lsp --no-prewalk "
+                      "--extension --no-extensions")
+        script = '#!/bin/sh\ncase "$1" in\n--version) echo "omp/18.15.0";;\n--help) echo "%s";;\nesac\n'
+        executable.write_text(script % help_flags)
         executable.chmod(0o700)
         checks = probe_omp(str(executable))
         self.assertEqual(checks[0]["status"], "FAIL")
         self.assertIn("--system-prompt-template", checks[0]["detail"])
 
         # Includes --system-prompt-template
-        executable.write_text('#!/bin/sh\ncase "$1" in\n--version) echo "omp/18.15.0";;\n--help) echo "--cwd --session-dir --resume --mode --no-ui --system-prompt-template";;\nesac\n')
+        executable.write_text(script % (help_flags + " --system-prompt-template"))
         checks = probe_omp(str(executable))
         self.assertEqual(checks[0]["status"], "PASS")
 

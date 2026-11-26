@@ -226,6 +226,9 @@ class NativeOmpTests(NativeFixture):
         self.assertTrue(any("NATIVE_MIDDLE" in json.dumps(row) for row in self.server.requests))
 
     def test_frontend_and_worker_keep_same_selected_installation_after_alias_changes(self):
+        from unittest.mock import patch
+        from oicoach_runtime.launcher import ensure_runtime
+
         worker = self.root / "worker-omp"
         invocations = self.root / "worker-invocations"
         worker.write_text(
@@ -237,28 +240,18 @@ class NativeOmpTests(NativeFixture):
             f'printf "%s\\n" "$@" >> {shlex.quote(str(invocations))}\n'
             f'exec {shlex.quote(self.config.agent.executable)} "$@"\n')
         worker.chmod(0o700)
-        self.stop_daemon()
         selected = self.root / "omp-selected"
         selected.symlink_to(worker)
-        self.env["PAVEWAY_OMP_PATH"] = str(selected)
         saved_config = self.path.read_text()
-        self.daemon = subprocess.Popen(
-            [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
-            env=self.env, stdout=self.log, stderr=self.log)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                request(self.config.server.socket_path, "status")
-                break
-            except RuntimeContractError:
-                time.sleep(0.03)
-        else:
-            self.fail("isolated daemon did not restart")
+        with patch.dict(os.environ, self.env, clear=True):
+            ensure_runtime(self.config, self.path, omp_path=str(selected))
+        self.addCleanup(self.shutdown_detached_runtime)
+        invocations.write_text("")  # Only count production-path invocations, not admission.
         # Runtime has selected the wrapper. Changing the original symlink must
         # not silently move its next RPC Worker to the other installation.
         selected.unlink()
         selected.symlink_to(self.config.agent.executable)
-        self.env["PAVEWAY_OMP_PATH"] = str(worker)
+        self.env["PAVEWAY_OMP_PATH"] = str(selected)
         self.chat("NATIVE_SHARED_EXECUTABLE", background=True)
         self.assertIn("--mode\nrpc\n", invocations.read_text())
         self.assertIn("--trusted-extension", invocations.read_text())
@@ -269,19 +262,27 @@ class NativeOmpTests(NativeFixture):
         self.assertEqual(status["rpc_compatibility"], "verified")
         self.assertEqual(self.path.read_text(), saved_config)
 
-    def test_running_runtime_fences_atomically_replaced_official_omp(self):
+    def shutdown_detached_runtime(self):
+        from oicoach_runtime.launcher import _request_handoff, probe_daemon, reap_detached_runtimes
+        socket = self.config.server.socket_path
+        if (status := probe_daemon(socket)) is not None:
+            _request_handoff(status, socket, stop=True, reason="installation fixture cleanup")
+        reap_detached_runtimes(5)
+
+    def test_running_runtime_keeps_lkg_until_compatible_replacement_is_admitted(self):
         self.check_replaced_official_omp()
 
     @unittest.skipUnless(os.environ.get("PAVEWAY_TEST_SYSTEMD") == "1", "requires a real systemd user manager")
-    def test_systemd_runtime_fences_atomically_replaced_official_omp(self):
+    def test_systemd_runtime_keeps_lkg_until_compatible_replacement_is_admitted(self):
         self.check_replaced_official_omp(systemd=True)
 
     def check_replaced_official_omp(self, *, systemd=False):
         replacement = os.environ.get("PAVEWAY_TEST_REPLACEMENT_OMP")
         if not replacement:
             self.skipTest("set PAVEWAY_TEST_REPLACEMENT_OMP to a second official installation")
+        from contextlib import ExitStack
         from unittest.mock import patch
-        from oicoach_runtime.launcher import _request_handoff, _wait_ready, ensure_runtime, probe_daemon, reap_detached_runtimes
+        from oicoach_runtime.launcher import _wait_ready, ensure_runtime
         from oicoach_runtime.omp_installation import omp_version
         from oicoach_runtime.notifications import configure as configure_notifications
         from test_native_statusline import Terminal
@@ -289,22 +290,43 @@ class NativeOmpTests(NativeFixture):
         original = self.config.agent.executable
         self.assertNotEqual(omp_version(original), omp_version(replacement))
         self.stop_daemon()
+        # Count actual dispatches exactly. OMP can otherwise issue a separate
+        # next-message prediction after each foreground turn in either version.
+        omp_settings = self.root / "agent" / "config.yml"
+        profile = json.loads(omp_settings.read_text())
+        profile.setdefault("composer", {})["predictions"] = False
+        omp_settings.write_text(json.dumps(profile))
         selected, staged = self.root / "omp", self.root / "omp-new"
         shutil.copy2(original, selected)
         shutil.copy2(replacement, staged)
-        self.config = replace(self.config, agent=replace(self.config.agent, executable=str(selected)))
+        agent = replace(self.config.agent, executable=str(selected))
+        old_workflows = self.config.workflow_root
+        self.path = self.root / "upgrade.toml"
+        initialize(self.path, str(self.root / "upgrade-state"), str(old_workflows))
+        self.config = replace(load_config(self.path), agent=agent)
         self.path.write_text(config_text(self.config))
         socket = self.config.server.socket_path
         configure_notifications(self.config, False)
         unit = f"paveway-verify-{self.root.name}.service"
         manager_environment = os.environ.copy()
-
-        def service(*args):
-            subprocess.run(["systemctl", "--user", *args, unit], env=manager_environment, check=True, timeout=20)
         entered, release = threading.Event(), threading.Event()
 
+        def service(*args, capture_output=False):
+            return subprocess.run(["systemctl", "--user", *args, unit], env=manager_environment,
+                                  check=True, timeout=20, capture_output=capture_output, text=True)
+
+        def service_status(_path, *, name):
+            self.assertEqual(name, unit)
+            result = service("show", "--property=MainPID", "--value", capture_output=True)
+            return {"managed": True, "MainPID": result.stdout.strip()}
+
+        def service_control(_path, action, *, name):
+            self.assertEqual(name, unit)
+            service(action)
+            return {"proxy": None}
+
         def response(body):
-            yield {"role": "assistant", "content": "NATIVE_INSTALLATION_TEST"}, None
+            yield {"role": "assistant", "content": "M0_REPLY"}, None
             if "active-v1" in json.dumps(body):
                 entered.set()
                 release.wait(30)
@@ -326,79 +348,188 @@ class NativeOmpTests(NativeFixture):
                 time.sleep(0.05)
             self.fail(f"{key} did not complete; last status: {row['status']}")
 
-        def stop_selected_runtime():
-            if systemd:
-                service("stop")
-                return
-            status = probe_daemon(socket)
-            if status is not None:
-                _request_handoff(status, socket, stop=True, reason="installation fixture cleanup")
-            reap_detached_runtimes(5)
-
         self.server.response_factory = response
-        with patch.dict(os.environ, self.env, clear=True):
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, self.env, clear=True))
             if systemd:
                 subprocess.run(["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",
                     "--property=TimeoutStopSec=15s", "--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent",
                     *(f"--setenv={key}={value}" for key, value in self.env.items()),
                     sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(self.path)],
                     env=manager_environment, check=True, timeout=20)
+                self.addCleanup(service, "stop")
+                stack.enter_context(patch("oicoach_runtime.launcher.service.status", side_effect=service_status))
+                stack.enter_context(patch("oicoach_runtime.launcher.service.control", side_effect=service_control))
             else:
                 ensure_runtime(self.config, self.path, omp_path=str(selected))
-            self.addCleanup(stop_selected_runtime)
+                self.addCleanup(self.shutdown_detached_runtime)
             old = _wait_ready(self.config)
+            self.assertNotEqual(old["omp"]["path"], str(selected))
+            self.assertEqual(old["omp"]["version"], omp_version(original))
+            if systemd:
+                self.assertEqual(str(old["runtime_pid"]), service_status(self.path, name=unit)["MainPID"])
+            saved = self.chat("NATIVE_SESSION_BEFORE_OMP_UPDATE")
             terminal = Terminal(self)
             active = schedule("active-v1")
             try:
                 self.assertTrue(entered.wait(20), "old official Worker never reached the loopback provider")
                 staged.replace(selected)
-                terminal.send("/wakeup in 1s pending-v2\r")
-                def pending_wakeups():
-                    return [row["event_id"] for row in request(socket, "events.upcoming", {"workflow_id": "native-test"})
-                            if row["reason"] == "pending-v2" and row["intent"] == "agent_wake"]
-                terminal.until(pending_wakeups)
-                due, = pending_wakeups()
-                from oicoach_runtime.models import parse_timestamp
-                from datetime import datetime, timezone
-                terminal.until(lambda: parse_timestamp(event(due)["not_before_utc"]) <= datetime.now(timezone.utc))
+                # An upgraded source cannot invalidate the old, running verified copy.
+                self.assertEqual(request(socket, "status")["omp"]["installation_status"], "selected")
                 reminder = schedule("no-model-reminder", {"native_wakeup": True,
                     "intent": "reminder", "message": "REMINDER_WITH_REPLACED_OMP"})
                 self.assertIsNone(completed(reminder)["run_id"])
                 messages = request(socket, "inbox.list", {"workflow_id": "native-test", "task_id": "no-model-reminder"})
                 self.assertEqual([row["text"] for row in messages["messages"]], ["REMINDER_WITH_REPLACED_OMP"])
-                self.assertEqual(request(socket, "status")["omp"]["installation_status"], "handoff_required")
-                self.assertEqual((event(due)["status"], event(due)["attempt"]), ("queued", 0))
-                with self.assertRaisesRegex(RuntimeContractError, "installation"):
-                    request(socket, "agent.restart", {"workflow_id": "native-test", "task_id": "active-v1"})
+                with self.assertRaises(RuntimeContractError):
+                    ensure_runtime(self.config, self.path, restart=systemd, omp_path=str(selected), service_name=unit)
+                self.assertEqual(request(socket, "status")["runtime_instance"], old["runtime_instance"])
                 self.assertEqual(event(active)["status"], "running")
                 terminal.send("/exit\r")
-                deadline = time.monotonic() + 10
-                while terminal.process.poll() is None and time.monotonic() < deadline:
-                    terminal.pump(.1)
-                self.assertEqual(terminal.process.returncode, 0)
+                terminal.until(lambda: request(socket, "frontend.list")[0]["status"] == "released")
             finally:
                 release.set()
-            completed(active)
-            self.assertEqual(len(self.server.requests), 1)
-            self.assertEqual(len(request(socket, "runs.list")), 1)
-            if systemd:
-                self.assertTrue(_request_handoff(old, socket, stop=False, reason="installation fixture handoff")["accepted"])
-                service("restart")
-                new = _wait_ready(self.config, old_instance=old["runtime_instance"])
-            else:
-                new = ensure_runtime(self.config, self.path, omp_path=str(selected)).status
+            self.assertEqual(completed(active)["attempt"], 1)
+            self.assertEqual(completed(schedule("next-v1"))["attempt"], 1)
+            self.assertEqual(request(socket, "status")["omp"]["version"], omp_version(original))
+            new = ensure_runtime(self.config, self.path, restart=systemd, omp_path=str(selected), service_name=unit).status
             self.assertNotEqual(new["runtime_instance"], old["runtime_instance"])
             self.assertEqual(new["omp"]["version"], omp_version(replacement))
-            self.assertEqual(completed(due)["attempt"], 1)
-            self.assertEqual(len(self.server.requests), 2)
-            self.assertEqual(len(request(socket, "runs.list")), 2)
+            self.assertNotEqual(new["omp"]["path"], old["omp"]["path"])
+            if systemd:
+                self.assertEqual(str(new["runtime_pid"]), service_status(self.path, name=unit)["MainPID"])
+            resumed = self.chat("NATIVE_SESSION_AFTER_OMP_UPDATE")
+            self.assertEqual((resumed["conversation_id"], resumed["session_id"]), (saved["conversation_id"], saved["session_id"]))
+            self.assertIn("NATIVE_SESSION_BEFORE_OMP_UPDATE", json.dumps(self.prompt_requests("NATIVE_SESSION_AFTER_OMP_UPDATE")[-1]))
             selected.unlink()
-            missing = schedule("missing-v2")
-            self.assertIsNone(completed(schedule("reminder-with-missing-omp", {"native_wakeup": True,
-                "intent": "reminder", "message": "REMINDER_WITH_MISSING_OMP"}))["run_id"])
-            self.assertEqual(request(socket, "status")["omp"]["installation_status"], "handoff_required")
-            self.assertEqual((event(missing)["status"], event(missing)["attempt"]), ("queued", 0))
-            self.assertEqual(len(self.server.requests), 2)
+            self.assertEqual(completed(schedule("source-missing-v2"))["attempt"], 1)
+            self.assertEqual(request(socket, "status")["omp"]["path"], new["omp"]["path"])
+            for text in ("NATIVE_SESSION_BEFORE_OMP_UPDATE", "NATIVE_SESSION_AFTER_OMP_UPDATE"):
+                self.assertEqual(len(self.prompt_requests(text)), 1)
+            self.assertEqual(len(self.server.requests), 5)
+            self.assertEqual(len(request(socket, "runs.list")), 3)
+
+    def test_rejected_real_omp_candidate_never_drains_the_active_runtime(self):
+        from unittest.mock import patch
+        from oicoach_runtime.launcher import ensure_runtime
+        from oicoach_runtime.diagnostics import NATIVE_FAILURE_FILE
+        from oicoach_runtime.omp_installation import OmpCandidateRejected, omp_version
+
+        real_omp = shlex.quote(self.config.agent.executable)
+        candidate = self.root / "incompatible-omp"
+        attempted = self.root / "attempted-native"
+        candidate.write_text("#!/bin/sh\n"
+            'for arg; do if [ "$arg" = "--trusted-extension" ]; then\n'
+            f'    : > {shlex.quote(str(attempted))}\n'
+            f'    exec {real_omp} --trusted-extension /nonexistent/paveway-probe.mjs "$@"\n'
+            'fi; done\n'
+            f'exec {real_omp} "$@"\n')
+        candidate.chmod(0o700)
+        self.assertEqual(omp_version(str(candidate)), omp_version(self.config.agent.executable))
+        socket = self.config.server.socket_path
+        original = request(socket, "status")
+        with patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(OmpCandidateRejected):
+                ensure_runtime(self.config, self.path, omp_path=str(candidate))
+        self.assertTrue(attempted.is_file(), "candidate never reached the real native launch")
+        diagnostic = self.config.state_dir / NATIVE_FAILURE_FILE
+        self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
+        record = json.loads(diagnostic.read_text())
+        self.assertEqual(record["omp_version"], original["omp"]["version"])
+        self.assertIn(record["stage"], {"host_exit", "channel", "probe_native"})
+        after = request(socket, "status")
+        self.assertEqual(after["runtime_instance"], original["runtime_instance"])
+        self.assertFalse(after["draining"])
+        self.assertEqual(after["omp"]["path"], original["omp"]["path"])
+        self.chat("STILL_USABLE_AFTER_REJECTED_UPGRADE")
+
+    def test_remapped_resume_shortcut_cannot_open_native_session_picker(self):
+        from test_native_statusline import Terminal
+        (self.root / "agent" / "keybindings.yml").write_text("app.session.resume: alt+r\n")
+        terminal = Terminal(self)
+        terminal.send(b"\x1br")
+        terminal.until(lambda: "Resume conversation for another Paveway conversation" in terminal.text)
+        terminal.send("/paveway help\r")
+        terminal.until(lambda: "Use /paveway to select an action" in terminal.text)
+        self.assertEqual(self.server.requests, [])
+
+    def test_real_native_refusals_persist_safe_diagnostics_and_never_send_a_turn(self):
+        from oicoach_runtime.diagnostics import NATIVE_FAILURE_FILE
+        import re
+        expected_version = request(self.config.server.socket_path, "status")["omp"]["version"]
+        runner = """
+from pathlib import Path
+from runpy import run_module
+import os
+import sys
+from oicoach_runtime import native
+real_terminal = native.run_terminal
+mode = sys.argv.pop(1)
+def inject(command, environment, **kwargs):
+    if mode == 'syntax':
+        Path(environment['PAVEWAY_NATIVE_DATA']).write_text('SECRET_MUST_NOT_BE_PERSISTED')
+    elif mode == 'nonce':
+        environment['PAVEWAY_NATIVE_NONCE'] = '0' * 64
+    elif mode == 'cwd':
+        command[command.index('--cwd') + 1] = str(Path(environment['HOME']))
+    elif mode == 'parent':
+        consumer = kwargs['ready']
+        def wrong_owner(frame, guardian):
+            if frame.get('sessionFile'):
+                frame = dict(frame, pid=os.getpid())
+            return consumer(frame, guardian)
+        kwargs['ready'] = wrong_owner
+    return real_terminal(command, environment, **kwargs)
+native.run_terminal = inject
+run_module('oicoach_runtime', run_name='__main__')
+"""
+        cases = (
+            ("syntax", "launch_data", "SyntaxError", "Exception message redacted"),
+            ("nonce", "attestation", "RuntimeContractError", "Native OMP integration identity mismatch"),
+            ("cwd", "context", "TypeError", "Session context is missing required UI, branch, prompt or cwd"),
+            ("parent", "attestation", "RuntimeContractError", "Native OMP is not the owned guardian child"),
+        )
+        for mode, stage, exception, message in cases:
+            with self.subTest(mode=mode):
+                master, slave = pty.openpty()
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+                process = subprocess.Popen([sys.executable, "-c", runner, mode, "native", "--config", str(self.path),
+                    "--workflow", "native-test", "--new"], env=self.env, stdin=slave, stdout=slave, stderr=slave)
+                os.close(slave)
+                output = bytearray()
+                os.write(master, b"INPUT_MUST_NOT_REACH_THE_PROVIDER\r")
+                try:
+                    deadline = time.monotonic() + 25
+                    while process.poll() is None and time.monotonic() < deadline:
+                        if not select.select([master], [], [], .1)[0]:
+                            continue
+                        try:
+                            output.extend(os.read(master, 65536))
+                        except OSError:
+                            break
+                    self.assertNotEqual(process.wait(timeout=5), 0, output.decode(errors="replace"))
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    os.close(master)
+                path = self.config.state_dir / NATIVE_FAILURE_FILE
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                text = path.read_text()
+                self.assertNotIn("SECRET_MUST_NOT_BE_PERSISTED", text)
+                self.assertNotIn(str(self.root), text)
+                record = json.loads(text)
+                self.assertEqual((record["stage"], record["exception_type"], record["omp_version"]),
+                                 (stage, exception, expected_version))
+                self.assertEqual(record["message"], message)
+                for entry in record["stack"]:
+                    self.assertIsNotNone(re.fullmatch(r"(?:omp-host|paveway-[a-z-]+\.mjs):\d+:\d+", entry))
+                if mode == "syntax":
+                    self.assertTrue(any(frame.startswith("paveway-native.mjs:") for frame in record["stack"]))
+        self.assertEqual(self.server.requests, [])
+        rows = request(self.config.server.socket_path, "frontend.list")
+        self.assertTrue(rows)
+        self.assertTrue(all(row["session_id"] is None for row in rows))
 
     def test_active_rpc_restart_disposes_worker_without_replaying(self):
         entered, release = threading.Event(), threading.Event()

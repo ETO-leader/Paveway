@@ -9,6 +9,18 @@ from .omp_installation import OmpInstallationUnavailable
 MAX_CONFIG = 1048576
 
 
+def disabled_tool_args(overlay, environment):
+    """Launch an empty built-in list with the managed extension still loaded."""
+    # Both hosts accept a comma-only --tools value as an explicit empty list.
+    # --no-tools on 19.2 also excludes the required Paveway extension.
+    overlay.update(dev={"autoqa": False}, autolearn={"enabled": False},
+                   goal={"enabled": False}, plan={"enabled": False, "defaultOnStartup": False},
+                   memory={"backend": "off"}, externalThinking=False,
+                   mcp={"enableProjectConfig": False, "shared": False})
+    environment["PI_AUTO_QA"] = "0"
+    return ["--tools", ",", "--no-lsp", "--no-prewalk"]
+
+
 async def skill_directories(config, installation, workspace, environment):
     """Preserve native directories: OMP overlays replace list settings."""
     process = None

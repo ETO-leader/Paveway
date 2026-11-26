@@ -21,7 +21,7 @@ from .errors import AgentError, ConflictError, NotFoundError, SessionConflictErr
 from .ipc import MAX_REQUEST, handle_connection
 from .models import execution_scope, parse_timestamp, utc_text
 from .memory import Memory, History
-from .omp_installation import OmpInstallation, OmpInstallationUnavailable, omp_version
+from .omp_installation import OmpInstallation, OmpInstallationUnavailable, startup_omp
 from .processes import InstanceLock, enable_subreaper, process_identity
 from .store import Store, bounded_text
 from .compatibility import EXPECTED_LIFECYCLE_PROTOCOL_VERSION, EXPECTED_NATIVE_PROTOCOL_VERSION
@@ -39,7 +39,7 @@ def arguments(raw, allowed, required=()):
 
 
 class Runtime:
-    def __init__(self, config, config_path=None):
+    def __init__(self, config, config_path=None, *, omp_installation=None, probe_version=None):
         self.config = config
         self.config_path = config_path
         self.owner = str(uuid.uuid4())
@@ -49,11 +49,15 @@ class Runtime:
         self.provider = WorkflowProvider(config.workflow_root)
         self.agent_health = "idle"
         self.omp = {"path": None, "version": None, "extension": "not_attested", "rpc_compatibility": "not_tested"}
-        self.omp_installation = None
+        self._probe_installation = omp_installation
+        self.omp_installation = omp_installation
+        # Private probes inject the exact candidate; direct non-serving Runtime
+        # users also exercise scheduler logic without starting an admission.
         try:
-            self.omp_installation = OmpInstallation.select(config.agent.executable)
+            if self.omp_installation is None:
+                self.omp_installation = OmpInstallation.select(config.agent.executable)
             self.omp.update(path=self.omp_installation.path, file_identity=list(self.omp_installation.identity),
-                            installation_status="selected")
+                            installation_status="selected", version=probe_version)
         except RuntimeContractError as error:
             self.omp.update(installation_status="unavailable", diagnostic=str(error))
         self.lock_fds = ()
@@ -1383,13 +1387,6 @@ class Runtime:
 
     async def serve(self):
         enable_subreaper()
-        if self.omp_installation is not None:
-            try:
-                installation = self._require_omp()
-                self.omp["version"] = await asyncio.to_thread(omp_version, installation.path, installation=installation)
-            except RuntimeContractError as error:
-                if self._omp_available():
-                    self.omp.update(installation_status="unavailable", diagnostic=str(error))
         ensure_private_directory(self.config.state_dir)
         ensure_private_directory(self.config.state_dir / "sessions")
         socket_path = Path(self.config.server.socket_path)
@@ -1400,6 +1397,25 @@ class Runtime:
             socket_lock = InstanceLock(socket_path.with_name(socket_path.name + ".lock"))
             stack.callback(socket_lock.close)
             self.lock_fds = (state_lock.fd, socket_lock.fd)
+            if self._probe_installation is None:
+                try:
+                    active = await asyncio.to_thread(startup_omp, self.config.state_dir, self.config.agent.executable)
+                except (OSError, RuntimeContractError) as error:
+                    # Control, Inbox and pure reminders do not require OMP.
+                    # No Agent Work or foreground owner can use a failed installation.
+                    self.omp_installation = None
+                    diagnostic = str(error) if isinstance(error, RuntimeContractError) else "Cannot access private OMP admission files"
+                    self.omp.update(path=None, file_identity=None, installation_status="unavailable", diagnostic=diagnostic)
+                    print(json.dumps({"component": "omp", "transition": "startup_unavailable",
+                                      "diagnostic": diagnostic}), flush=True)
+                else:
+                    self.omp_installation = active.installed
+                    self.omp.update(active.status())
+                    self.omp.pop("diagnostic", None)
+                    if self.config_path is not None:
+                        from .proxy import synchronize
+                        proxy = await asyncio.to_thread(synchronize, self.config_path)
+                        print(json.dumps({"component": "proxy", "transition": "startup_check", **proxy}), flush=True)
             initialize_database(self.config.database_path)
             self.store = Store(self.config)
             stack.callback(self.store.close)

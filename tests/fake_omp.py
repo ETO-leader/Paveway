@@ -27,7 +27,8 @@ def main():
         print("omp/0.0.1-test")
         return
     if "--help" in sys.argv:
-        print("--cwd --session-dir --resume --mode --no-ui --profile --system-prompt-template")
+        print("--cwd --session-dir --resume --mode --no-ui --profile --system-prompt-template "
+              "--config --tools --no-lsp --no-prewalk --extension --no-extensions")
         return
     if sys.argv[1:] == ["config", "get", "skills.customDirectories", "--json"]:
         print(json.dumps({"key": "skills.customDirectories", "value": []}))
@@ -50,15 +51,20 @@ def main():
     parser.add_argument("--system-prompt", type=Path)
     parser.add_argument("--append-system-prompt", type=Path)
     parser.add_argument("--system-prompt-template", type=Path)
-    parser.add_argument("--config", type=Path)
+    parser.add_argument("--config", type=Path, action="append")
     parser.add_argument("--extension", type=Path)
     parser.add_argument("--trusted-extension", type=Path)
+    parser.add_argument("--tools")
+    parser.add_argument("--no-lsp", action="store_true")
+    parser.add_argument("--no-prewalk", action="store_true")
     for option in ("tools", "extensions", "skills", "rules"):
         parser.add_argument("--no-" + option, action="store_true")
     args = parser.parse_args()
     with (args.cwd / "fake-starts.jsonl").open("a") as launches:
         launches.write(json.dumps({"pid": os.getpid(), "session_dir": str(args.session_dir), "resumed": bool(args.resume),
                                   "model": args.model, "thinking": args.thinking,
+                                  "tool_selection": args.tools, "legacy_no_tools": args.no_tools,
+                                  "trusted_extension": bool(args.trusted_extension),
                                   "https_proxy_hash": hashlib.sha256(os.environ.get("HTTPS_PROXY", "").encode()).hexdigest()}) + "\n")
     mode_file = args.cwd / "fake-mode"
     startup_mode = os.environ.get("OICOACH_FAKE_OMP_MODE") or (mode_file.read_text().strip() if mode_file.exists() else "normal")
@@ -78,9 +84,13 @@ def main():
         session_file.write_text(json.dumps(session))
     settled = True
     exit_code = 0
-    if os.environ.get("PAVEWAY_MEMORY_DATA") and startup_mode != "missing-memory-ready":
+    if os.environ.get("PAVEWAY_MEMORY_DATA"):
         memory_launch = json.loads(Path(os.environ["PAVEWAY_MEMORY_DATA"]).read_text())
-        emit({"type": "paveway_memory_ready", "contractVersion": 1, "runId": memory_launch["run_id"]})
+        if memory_launch["scope"] and startup_mode != "missing-memory-ready":
+            emit({"type": "paveway_memory_ready", "contractVersion": 1, "runId": memory_launch["run_id"]})
+        if memory_launch["tools_enabled"] is False and startup_mode != "missing-tools-ready":
+            run_id = "wrong-tools-run" if startup_mode == "wrong-tools-ready" else memory_launch["run_id"]
+            emit({"type": "paveway_tools_ready", "contractVersion": 1, "runId": run_id})
     if startup_mode in ("normal", "guard-first"):
         emit({"type": "paveway_context_ready", "tokenLimit": 10000})
         emit({"type": "ready", "protocolVersion": 1}, split=True)
@@ -112,8 +122,10 @@ def main():
         request = json.loads(line)
         request_id = request["id"]
         if request["type"] == "get_state":
+            tools = [{"name": "unsafe"}] if startup_mode == "exposed-disabled-tool" else []
             emit({"type": "response", "command": "get_state", "id": request_id, "success": True,
-                  "data": {"sessionFile": str(session_file), "sessionId": session["session_id"], "isSettled": settled}})
+                  "data": {"sessionFile": str(session_file), "sessionId": session["session_id"], "isSettled": settled,
+                           "dumpTools": tools}})
         elif request["type"] == "get_last_assistant_text":
             last = session["prompts"][-1]["payload"] if session["prompts"] else {}
             if last.get("fake_mode") == "output-persistence-notice":

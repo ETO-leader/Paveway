@@ -3,7 +3,7 @@ import {randomUUID} from "node:crypto";
 import {accessSync, constants, realpathSync, statSync, writeFileSync, unlinkSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, join, resolve} from "node:path";
-import {loadNativeTui, openSettings} from "./paveway-settings.mjs";
+import {openSettings} from "./paveway-settings.mjs";
 import {analyzeSkillSource, reviewSkillImport, selectLocalSkills} from "./paveway-skill-import.mjs";
 
 function workingDirectory(value, cwd) {
@@ -61,28 +61,13 @@ export function registerManagement(pi, config, requestSwitch) {
     const show = (ctx, value) => ctx.ui.notify(typeof value === "string" ? value : JSON.stringify(value, null, 2), "info");
     const settings = async () => (await cli(["workflow", "customize", "show", config.workflow_id])).settings;
     const changed = ctx => show(ctx, "Saved. Prompt/Skills apply on the next native launch; Persona requires a new conversation. Current turn is unchanged.");
-    const secretInput = async (ctx, title) => {
-        // Some installed OMP versions silently ignore ui.input({secret:true}).
-        // Use the host's actual masked Input, and verify it before accepting data.
-        const {Input} = await loadNativeTui();
-        const input = new Input();
-        if (!("mask" in input)) throw new Error("This OMP build has no verified masked input; use the protected legacy login UI");
-        input.mask = true;
-        input.setValue("PAVEWAY_MASK_PROBE_6372");
-        if (input.render(80).join("").includes("PAVEWAY_MASK_PROBE_6372"))
-            throw new Error("Masked input verification failed; no credential was requested");
-        input.setValue("");
-        return ctx.ui.custom((tui, theme, _keys, done) => {
-            input.onSubmit = value => { input.setValue(""); done(value); };
-            input.onEscape = () => { input.setValue(""); done(undefined); };
-            return {
-                get focused() { return input.focused; },
-                set focused(value) { input.focused = value; },
-                render(width) { return [theme.fg("accent", title), ...input.render(width), "Enter submit · Esc cancel"]; },
-                invalidate() { input.invalidate(); },
-                handleInput(data) { input.handleInput(data); tui.requestRender(); },
-            };
-        });
+    const secretInput = (ctx, title) => {
+        // These tagged local TUI implementations pass `secret` through to a masked field.
+        // Remote protocol UI and unverified hosts must never receive a credential prompt.
+        if (!ctx.hasUI || ctx.mode !== "tui" || ctx.agent?.kind !== "main" ||
+                !/^v?(?:19\.1\.1|19\.2\.[01])$/.test(config.omp_version))
+            throw new Error("This OMP build has no verified masked input; use the protected legacy login UI");
+        return ctx.ui.input(title, undefined, {secret: true});
     };
     const edit = async (ctx, key, title, original) => {
         const value = await ctx.ui.editor(title, drafts.get(key) ?? original);
@@ -90,7 +75,9 @@ export function registerManagement(pi, config, requestSwitch) {
         return value;
     };
     const cwdInput = async ctx => {
-        const {Input, Text} = await loadNativeTui();
+        if (ctx.ui.composer) return ctx.ui.input(`New directory:\nCurrent directory: ${ctx.cwd}\nWorkflow workspace: ${config.workspace}`);
+        // In 19.1 the built-in input flattens its multiline title on a plain terminal.
+        const {Input, Text} = await import("@oh-my-pi/pi-tui");
         return ctx.ui.custom((tui, theme, _keys, done) => {
             const header = new Text(`Current directory: ${ctx.cwd}\nWorkflow workspace: ${config.workspace}\nNew directory:`, 0, 0);
             const footer = new Text(theme.fg("muted", "Enter review · Esc cancel"), 0, 0);
@@ -204,7 +191,8 @@ export function registerManagement(pi, config, requestSwitch) {
             return;
         }
         if (picked === "Import from file · GPT analysis" || picked === "Review import draft") {
-            if (!ctx.isIdle() || ctx.agent?.kind !== "main") return show(ctx, "请等待当前 GPT 活动结束，再导入 Skill。");
+            if (!ctx.hasUI || ctx.mode !== "tui" || !ctx.isIdle() || ctx.agent?.kind !== "main")
+                return show(ctx, "请等待当前 GPT 活动结束，再在主终端导入 Skill。");
             if (picked !== "Review import draft") {
                 const path = await ctx.ui.input("Skill 文件路径 · 原文将发送给当前模型分析（UTF-8 或 .skill ZIP）");
                 if (!path) return;

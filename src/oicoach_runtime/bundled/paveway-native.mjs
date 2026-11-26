@@ -2,20 +2,88 @@
 import {createHash} from "node:crypto";
 import {lstatSync, readFileSync, readSync, realpathSync, writeFileSync, writeSync} from "node:fs";
 import {isAbsolute, relative, sep} from "node:path";
+import {fileURLToPath} from "node:url";
 import {runtimeRequest} from "./paveway-runtime.mjs";
 import {registerWakeups} from "./paveway-wakeup.mjs";
 import {registerManagement} from "./paveway-management.mjs";
 import {registerMemory} from "./paveway-memory.mjs";
 import {registerMemoryContext} from "./paveway-memory-context.mjs";
 import {registerNativePresentation} from "./paveway-native-ui.mjs";
+import {registerDisabledTools} from "./paveway-tool-policy.mjs";
 
 const admissionDescriptor = Number(process.env.PAVEWAY_NATIVE_FD);
 const admissionNonce = process.env.PAVEWAY_NATIVE_NONCE;
 
-function stop(stage) {
+const extensionDirectory = fileURLToPath(new URL(".", import.meta.url));
+const errorTypes = /^(?:Error|TypeError|SyntaxError|RangeError|ReferenceError|URIError|EvalError|AggregateError|DOMException)$/;
+const safeMessages = new Map([
+    ["Composer shape id must be a non-empty trimmed string", "composer_id"],
+    ["Runtime socket is not private", "runtime_socket"],
+    ["Runtime unavailable; no automatic retry", "runtime_unavailable"],
+    ["Launch data is not an owned private regular file", "launch_file"],
+    ["Launch channel or nonce is invalid", "launch_channel"],
+    ["Session context is missing required UI, branch, prompt or cwd", "context"],
+    ["Host does not support managed composer registration", "composer_api"],
+    ["Session keybinding interface is not supported", "resume_keys"],
+    ["Guardian did not acknowledge admission", "rejected_ack"],
+]);
+
+function startupDiagnostic(error) {
+    if (error === undefined) return undefined;
+    const exception_type = error instanceof Error && errorTypes.test(error.name) ? error.name : "ThrownValue";
+    const message_code = safeMessages.get(error?.message) ??
+        (["ENOENT", "EACCES", "EPERM"].includes(error?.code) ? error.code : "redacted");
+    const stack = [];
+    for (const line of (typeof error?.stack === "string" ? error.stack.slice(0, 12000).split("\n") : [])) {
+        const text = line.trim();
+        if (!text.startsWith("at ")) continue;
+        const frame = text.endsWith(")") ? text.slice(text.lastIndexOf(" (") + 2, -1) : text.slice(3);
+        const match = /^(.+?)(?:\?mtime=\d+)?:([0-9]{1,7}):([0-9]{1,6})$/.exec(frame);
+        if (!match) continue;
+        const [, source, row, column] = match;
+        const path = source.startsWith("file://") ? source.slice(7) : source;
+        const local = path.startsWith(extensionDirectory) ? path.slice(extensionDirectory.length) : "";
+        const file = /^paveway-[a-z-]{1,40}\.mjs$/.test(local) ? local :
+            source.startsWith("/$bunfs/root/") ? "omp-host" : undefined;
+        if (file) stack.push(`${file}:${row}:${column}`);
+        if (stack.length === 12) break;
+    }
+    return {exception_type, message_code, stack};
+}
+
+function stop(stage, error) {
     try {
-        writeSync(admissionDescriptor, JSON.stringify({failure: stage, nonce: admissionNonce}) + "\n");
+        if (Number.isInteger(admissionDescriptor) && admissionDescriptor >= 3)
+            writeSync(admissionDescriptor, JSON.stringify({failure: stage, nonce: admissionNonce,
+                diagnostic: startupDiagnostic(error)}) + "\n");
     } finally { process.kill(process.pid, "SIGKILL"); }
+}
+
+async function installResumeGuard(ui) {
+    let matches;
+    if (ui.composer) {
+        const [{getKeybindings}, {decodeInput}] = await Promise.all([
+            import("@oh-my-pi/pi-coding-agent"),
+            import("@oh-my-pi/pi-tui/driver/input/decoder"),
+        ]);
+        if (typeof getKeybindings !== "function" || typeof decodeInput !== "function")
+            throw new TypeError("Session keybinding interface is not supported");
+        const keys = getKeybindings();
+        matches = data => decodeInput(data).some(event => event.type === "key" && keys.matches(event.key, "app.session.resume"));
+    } else {
+        const {getKeybindings} = await import("@oh-my-pi/pi-tui");
+        if (typeof getKeybindings !== "function")
+            throw new TypeError("Session keybinding interface is not supported");
+        const keys = getKeybindings();
+        matches = data => keys.matches(data, "app.session.resume");
+    }
+    const remove = ui.onTerminalInput(data => {
+        if (!matches(data)) return;
+        ui.notify(resumeNotice, "warning");
+        return {consume: true};
+    });
+    if (typeof remove !== "function") throw new TypeError("Session keybinding interface is not supported");
+    return remove;
 }
 
 const workspaceNotice = "Use /paveway cwd to change projects without moving this Conversation.";
@@ -34,21 +102,24 @@ function managedInput(text) {
 
 
 export default async function paveway(pi) {
-    let stage = "invalid Paveway Extension launch data";
+    let stage = "launch_data";
     try {
         const file = process.env.PAVEWAY_NATIVE_DATA;
         const info = lstatSync(file);
-        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077)) stop(stage);
+        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077))
+            throw new Error("Launch data is not an owned private regular file");
         const config = JSON.parse(readFileSync(file, "utf8"));
         const descriptor = admissionDescriptor;
         const nonce = admissionNonce;
-        if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? "")) stop(stage);
-        stage = "cannot read the loaded Paveway Extension source";
+        if (!Number.isInteger(descriptor) || descriptor < 3 || !/^[a-f0-9]{64}$/.test(nonce ?? ""))
+            throw new Error("Launch channel or nonce is invalid");
+        stage = "source";
         const sha = createHash("sha256").update(readFileSync(new URL(import.meta.url))).digest("hex");
         let admitted = false;
         const statusState = {};
         let statusContext, removeResumeKeyGuard;
-        stage = "OMP Extension registration failed";
+        stage = "register";
+        if (typeof pi.registerComposerShape !== "function") throw new TypeError("Host does not support managed composer registration");
         const showPresentation = registerNativePresentation(pi, config);
         const refreshPresentation = () => {
             if (statusContext) showPresentation(statusContext, statusState);
@@ -59,7 +130,7 @@ export default async function paveway(pi) {
         };
         pi.on("input", (event, ctx) => {
             if (ctx.agent?.kind !== "main") return;
-            if (!admitted || ctx.cwd !== config.cwd) stop("main input outside admitted Conversation");
+            if (!admitted || ctx.cwd !== config.cwd) stop("input_scope");
             const notice = managedInput(event.text);
             if (notice) {
                 ctx.ui.notify(notice, "warning");
@@ -68,7 +139,7 @@ export default async function paveway(pi) {
         });
         pi.on("before_agent_start", (_event, ctx) => {
             if (ctx.agent?.kind === "main" && (!admitted || ctx.cwd !== config.cwd))
-                stop("OMP main context escaped the admitted Conversation");
+                stop("agent_scope");
         });
         const management = registerManagement(pi, config, (ctx, action) => {
             const jobs = ctx.getAsyncJobSnapshot?.();
@@ -97,48 +168,53 @@ export default async function paveway(pi) {
             allowBypass: true,
             recall: known => runtimeRequest(config.socket_path, "native_memory.context",
                 {...bound(), parameters: {known}}),
-            fail: (_error, diagnostic) => {
-                writeSync(2, JSON.stringify({component: "memory", ...diagnostic}) + "\n");
-                stop("Runtime Memory context failed");
-            },
+            fail: error => stop("memory_context", error),
         });
-        const sessionReady = async (_event, ctx) => {
+        stage = "managed_tools";
+        const applyDisabledTools = config.tools_enabled ? null :
+            await registerDisabledTools(pi, error => stop("managed_tools", error));
+        const handshake = frame => {
+            writeSync(descriptor, JSON.stringify({apiVersion: 1, nonce, pid: process.pid, ...frame}) + "\n");
+            const ack = Buffer.alloc(1);
+            if (readSync(descriptor, ack, 0, 1, null) !== 1 || ack[0] !== 65)
+                throw new Error("Guardian did not acknowledge admission");
+        };
+        const sessionReady = async (event, ctx) => {
+            // Spawned sessions bind extensions too. Never grant their context
+            // ownership of the main Conversation or its local control channel.
+            if (ctx.agent?.kind !== "main") return;
+            admitted = false;
+            let stage = "context";
             try {
-                // OMP emits spawned-session hooks in the same extension host.
-                // A child is neither a main-session switch nor a TUI failure.
-                if (ctx.agent?.kind !== "main") return;
-                stage = "OMP cannot provide the managed interactive context";
                 const prompt = ctx.getSystemPrompt();
-                if (!ctx.hasUI || ctx.cwd !== config.cwd || !Array.isArray(ctx.sessionManager.getBranch()) ||
-                    !(typeof prompt === "string" || (Array.isArray(prompt) && prompt.every(part => typeof part === "string")))) stop(stage);
-                if (!removeResumeKeyGuard) {
-                    stage = "OMP cannot install the managed resume key guard";
-                    const {getKeybindings} = await import("@oh-my-pi/pi-tui");
-                    const keys = getKeybindings();
-                    removeResumeKeyGuard = ctx.ui.onTerminalInput(data => {
-                        if (!keys.matches(data, "app.session.resume")) return;
-                        ctx.ui.notify(resumeNotice, "warning");
-                        return {consume: true};
-                    });
-                }
-                if (config.materialize && _event.type === "session_start") await ctx.sessionManager.ensureOnDisk();
-                stage = "Runtime Extension handshake failed";
+                if (!ctx.hasUI || ctx.mode !== "tui" || typeof ctx.ui.setWidget !== "function" ||
+                    ctx.cwd !== config.cwd || !Array.isArray(ctx.sessionManager.getBranch()) ||
+                    !(typeof prompt === "string" || (Array.isArray(prompt) && prompt.every(part => typeof part === "string"))))
+                    throw new TypeError("Session context is missing required UI, branch, prompt or cwd");
+                stage = "resume_keys";
+                if (!removeResumeKeyGuard) removeResumeKeyGuard = await installResumeGuard(ctx.ui);
+                stage = "managed_tools";
+                if (applyDisabledTools) await applyDisabledTools();
+                stage = "session_disk";
+                if (config.materialize && event.type === "session_start") await ctx.sessionManager.ensureOnDisk();
+                stage = "runtime_handshake";
                 await runtimeRequest(config.socket_path, "status");
-                const frame = Buffer.from(JSON.stringify({apiVersion: 1, nonce, pid: process.pid,
-                    extensionDigest: sha, sessionId: ctx.sessionManager.getSessionId(),
-                    sessionFile: ctx.sessionManager.getSessionFile(), contextPolicy: "omp-native"}) + "\n");
-                writeSync(descriptor, frame);
-                const ack = Buffer.alloc(1);
-                if (readSync(descriptor, ack, 0, 1, null) !== 1 || ack[0] !== 65) stop(stage);
+                handshake({extensionDigest: sha, sessionId: ctx.sessionManager.getSessionId(),
+                    sessionFile: ctx.sessionManager.getSessionFile(), contextPolicy: "omp-native",
+                    toolsDisabled: Boolean(applyDisabledTools)});
+                stage = "runtime_owner";
                 const owner = await runtimeRequest(config.socket_path, "frontend.show", {conversation_id: config.conversation_id});
                 config.generation = owner.generation;
-                admitted = true;
                 statusContext = ctx;
-                showPresentation(ctx, statusState, {banner: _event.type === "session_start" && !statusState.started});
+                stage = "presentation";
+                showPresentation(ctx, statusState, {banner: event.type === "session_start" && !statusState.started});
                 statusState.started = true;
-                stage = "Runtime Wakeup state unavailable";
+                stage = "wakeup";
                 await wakeups.refresh(ctx);
-            } catch { stop(stage); }
+                stage = "runtime_handshake";
+                handshake({ready: true});
+                admitted = true;
+            } catch (error) { stop(stage, error); }
         };
         pi.on("session_start", sessionReady);
         pi.on("session_switch", sessionReady);
@@ -174,7 +250,7 @@ export default async function paveway(pi) {
             statusContext = undefined;
         });
         pi.registerCommand("paveway", {description: "Paveway Runtime status and management", handler: async (args, ctx) => {
-            if (!admitted) stop("Paveway command before Runtime admission");
+            if (!admitted) stop("command_scope");
             try {
                 if (args.trim() === "cache") {
                     const usage = await runtimeRequest(config.socket_path, "cache.stats",
@@ -194,5 +270,5 @@ export default async function paveway(pi) {
         pi.registerCommand("coach", {description: "Show the bound GPT environment", handler: async (_args, ctx) => {
             ctx.ui.notify(`GPT · ${config.coach_id}/${config.task_id}\nCurrent directory: ${ctx.cwd}\nConversation: ${config.conversation_id}\nSession: ${ctx.sessionManager.getSessionId()}`, "info");
         }});
-    } catch { stop(stage); }
+    } catch (error) { stop(stage, error); }
 }

@@ -1,6 +1,129 @@
 """Safe failure summaries: never persist arbitrary provider response/request text."""
 
+import json
+import os
 import re
+import stat
+import tempfile
+from pathlib import Path
+
+from .errors import RuntimeContractError
+from .models import utc_text
+from .store import now_utc
+
+
+NATIVE_FAILURE_FILE = "native-startup-failure.json"
+_EXTENSION_STAGES = {
+    "launch_data": "invalid Paveway Extension launch data",
+    "source": "cannot read the loaded Paveway Extension source",
+    "register": "OMP Extension registration failed",
+    "context": "OMP cannot provide the managed interactive context",
+    "resume_keys": "OMP cannot install the managed resume key guard",
+    "managed_tools": "OMP cannot apply the managed tool policy",
+    "session_disk": "OMP cannot materialize the managed Session",
+    "runtime_handshake": "Runtime Extension handshake failed",
+    "runtime_owner": "Runtime could not confirm the admitted owner",
+    "presentation": "OMP cannot install the managed presentation",
+    "wakeup": "Runtime Wakeup state unavailable",
+    "memory_context": "Runtime Memory context failed",
+    "input_scope": "main input outside admitted Conversation",
+    "agent_scope": "OMP main context escaped the admitted Conversation",
+    "command_scope": "Paveway command before Runtime admission",
+}
+_NATIVE_MESSAGES = {
+    "composer_id": "Composer shape id must be a non-empty trimmed string",
+    "runtime_socket": "Runtime socket is not private",
+    "runtime_unavailable": "Runtime unavailable; no automatic retry",
+    "launch_file": "Launch data is not an owned private regular file",
+    "launch_channel": "Launch channel or nonce is invalid",
+    "context": "Session context is missing required UI, branch, prompt or cwd",
+    "composer_api": "Host does not support managed composer registration",
+    "resume_keys": "Session keybinding interface is not supported",
+    "rejected_ack": "Guardian did not acknowledge admission",
+    "ENOENT": "A required local file, module or socket is missing (ENOENT)",
+    "EACCES": "A required local resource is inaccessible (EACCES)",
+    "EPERM": "A required local operation was not permitted (EPERM)",
+}
+_ERROR_TYPES = {"Error", "TypeError", "SyntaxError", "RangeError", "ReferenceError",
+                "URIError", "EvalError", "AggregateError", "DOMException", "ThrownValue"}
+_TRANSPORT_STAGES = {"attestation", "channel", "guardian", "host_exit", "probe_native", "runtime_attest", "runtime_started", "timeout"}
+_TRANSPORT_TYPES = {"RuntimeContractError", "PreconditionError", "OSError", "BrokenPipeError",
+                    "FileNotFoundError", "PermissionError", "OmpInstallationUnavailable"}
+_STACK_LOCATION = re.compile(r"(?:omp-host|paveway-[a-z-]{1,40}\.mjs):[0-9]{1,7}:[0-9]{1,6}")
+_OMP_VERSION = re.compile(r"\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][\w.-]{1,40})?", re.ASCII)
+
+
+class NativeStartupFailure(RuntimeContractError):
+    """A refusal carries only fixed messages and bounded, source-only frames."""
+
+    def __init__(self, stage, message, *, exception_type="RuntimeContractError", detail=None, stack=()):
+        super().__init__(message)
+        self.stage = stage
+        self.exception_type = exception_type
+        self.detail = detail or message
+        self.stack = stack
+
+    @classmethod
+    def from_extension(cls, frame):
+        stage = frame.get("failure")
+        if not isinstance(stage, str) or stage not in _EXTENSION_STAGES:
+            return cls("attestation", "Invalid native failure attestation")
+        detail = frame.get("diagnostic")
+        detail = detail if isinstance(detail, dict) else {}
+        name, message, stack = (detail.get(key) for key in ("exception_type", "message_code", "stack"))
+        return cls(stage, f"Paveway Extension rejected the session: {_EXTENSION_STAGES[stage]}",
+                   exception_type=name if isinstance(name, str) and name in _ERROR_TYPES else
+                   ("ThrownValue" if detail else "PreconditionError"),
+                   detail=_NATIVE_MESSAGES.get(message, "Exception message redacted")
+                   if isinstance(message, str) else _EXTENSION_STAGES[stage],
+                   stack=[entry for entry in stack[:12] if isinstance(entry, str) and _STACK_LOCATION.fullmatch(entry)]
+                   if isinstance(stack, list) else ())
+
+    def persist(self, state_dir, omp_version):
+        record = {"schema_version": 1, "timestamp": utc_text(now_utc()), "stage": self.stage,
+                  "exception_type": self.exception_type, "message": self.detail, "stack": list(self.stack),
+                  "omp_version": omp_version if isinstance(omp_version, str) and _OMP_VERSION.fullmatch(omp_version) else None}
+        # A fixed latest-failure record bounds storage and never follows a
+        # pre-existing target symlink. Raw terminal output is not persisted.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=state_dir, delete=False) as stream:
+            try:
+                json.dump(record, stream, ensure_ascii=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(stream.name, state_dir / NATIVE_FAILURE_FILE)
+                directory = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                Path(stream.name).unlink(missing_ok=True)
+
+
+def read_native_startup_failure(path):
+    """Import only allowlisted diagnostics from a disposable candidate Runtime."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 4096:
+                return None
+            record = json.loads(stream.read(4097))
+        if not isinstance(record, dict) or record.get("schema_version") != 1:
+            return None
+        stage, name, message, stack = (record.get(key) for key in ("stage", "exception_type", "message", "stack"))
+        if not isinstance(stage, str) or (stage not in _EXTENSION_STAGES and stage not in _TRANSPORT_STAGES):
+            return None
+        if (not isinstance(message, str)
+                or message not in _NATIVE_MESSAGES.values() and message not in _EXTENSION_STAGES.values()):
+            message = "Exception message redacted"
+        return NativeStartupFailure(stage, message,
+                   exception_type=name if isinstance(name, str) and (name in _ERROR_TYPES or name in _TRANSPORT_TYPES) else "ThrownValue",
+                   stack=[entry for entry in stack[:12] if isinstance(entry, str) and _STACK_LOCATION.fullmatch(entry)]
+                   if isinstance(stack, list) else ())
+    except (OSError, ValueError, RecursionError):
+        return None
 
 
 def prompt_failure(status, detail):

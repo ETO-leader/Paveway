@@ -8,13 +8,13 @@ import secrets
 import stat
 import sys
 import uuid
-from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 
 from . import __version__
 from .config import ensure_private_directory
 from .customization import snapshot
+from .diagnostics import NativeStartupFailure
 from .errors import ConflictError, RuntimeContractError
 from .ipc import request
 from .models import validate_id
@@ -67,23 +67,27 @@ def run(config, config_path, workflow_id, task_id="training", conversation_id=No
     if not os.isatty(0) or not os.isatty(1):
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     from .proxy import synchronize
-    synchronize(config_path)
-    executable = resolve_omp(config.agent.executable)
-    config = replace(config, agent=replace(config.agent, executable=executable))
+    # Runtime owns the admitted snapshot. A source path (including --omp)
+    # can be replaced or rejected while the selected snapshot remains usable.
     cwd, inference = None, None
     while True:
+        omp = request(config.server.socket_path, "status").get("omp", {})
+        if omp.get("installation_status") in ("unavailable", "handoff_required"):
+            raise OmpInstallationUnavailable()
+        if not omp.get("source_path"):
+            executable = resolve_omp(config.agent.executable)
+            if omp.get("path") != executable:
+                raise RuntimeContractError(
+                    "Foreground OMP does not match the Runtime installation. "
+                    "Set agent.executable consistently and safely restart Runtime.")
+        if omp.get("installation_status") != "selected":
+            raise OmpInstallationUnavailable()
+        installation = OmpInstallation(omp["path"], tuple(omp["file_identity"]))
+        installation.check()
         conversation_id, new, cancelled = recovery_choice(config, workflow_id, task_id, conversation_id, new)
         if cancelled:
             return 0
-        omp = request(config.server.socket_path, "status").get("omp", {})
-        if omp.get("path") != executable:
-            raise RuntimeContractError(
-                f"Foreground OMP ({executable}) does not match the Runtime installation ({omp.get('path') or 'unavailable'}). "
-                "Set agent.executable consistently and safely restart Runtime.")
-        if omp.get("installation_status") != "selected":
-            raise OmpInstallationUnavailable()
-        installation = OmpInstallation(executable, tuple(omp["file_identity"]))
-        installation.check()
+        synchronize(config_path)
         code, action = _run_once(config, config_path, workflow_id, task_id, conversation_id, new, cwd, inference,
                                  installation=installation, omp_version=omp.get("version"))
         if code or not action:
@@ -234,7 +238,7 @@ def _run_owned(config, config_path, workflow, lease, lock, installation, inferen
             value = (inference or {}).get(option) or preference.get(option) or getattr(config.agent, option)
             if value:
                 argv += ["--" + option, value]
-    for option in ("tools", "skills", "rules"):
+    for option in ("skills", "rules"):
         if not getattr(config.agent, option + "_enabled"):
             argv += ["--no-" + option]
     directories = ()
@@ -244,59 +248,91 @@ def _run_owned(config, config_path, workflow, lease, lock, installation, inferen
     argv += snapshot(workflow.customization, root, launch_id, config.agent.skills_enabled,
                      base=workflow.base, builtin_skills=workflow.builtin_skills, skill_directories=directories,
                      package_root=config.state_dir / "skill-packages")
-    overlay = root / "native.yml"
-    overlay.write_text(json.dumps({
+    overlay = {
         "autoResume": False,
-        "startup": {"setupWizard": False, "showSplash": False},
+        "startup": {"setupWizard": False, "showSplash": False, "checkUpdate": False},
+        "update": {"auto": False},  # Only the installation gate may replace the selected binary.
         "worktree": {"onStart": "off"},
         "composer": {"shape": "paveway.chrome"},
-    }))
-    overlay.chmod(0o600)
-    argv += ["--config", str(overlay)]
+    }
+    if not config.agent.tools_enabled:
+        from .omp_config import disabled_tool_args
+        argv += disabled_tool_args(overlay, environment)
+    overlay_path = root / "native.yml"
+    overlay_path.write_text(json.dumps(overlay))
+    overlay_path.chmod(0o600)
+    argv += ["--config", str(overlay_path)]
 
     admitted = False
+    expected_tools_disabled = not config.agent.tools_enabled
+    pending_pid = None
 
     def ready(frame, guardian):
-        nonlocal admitted
-        failure = frame.get("failure")
-        if frame.get("nonce") == nonce and isinstance(failure, str) and 0 < len(failure) <= 120 and failure.isprintable():
-            raise RuntimeContractError(f"Paveway Extension rejected the session: {failure}")
+        nonlocal admitted, pending_pid
+        if frame.get("nonce") == nonce and "failure" in frame:
+            raise NativeStartupFailure.from_extension(frame)
         pid = frame.get("pid")
-        if (type(frame.get("apiVersion")) is not int or frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or frame.get("extensionDigest") != digest or
-                frame.get("contextPolicy") != "omp-native" or type(pid) is not int):
-            raise RuntimeContractError("Native OMP integration identity mismatch")
+        if (type(frame.get("apiVersion")) is not int or frame.get("apiVersion") != 1 or frame.get("nonce") != nonce or
+                type(pid) is not int or pid < 2):
+            raise NativeStartupFailure("attestation", "Native OMP integration identity mismatch")
+        if frame.get("ready") is True and pending_pid == pid:
+            admitted, pending_pid = True, None
+            return True
+        if (pending_pid is not None or "ready" in frame or frame.get("extensionDigest") != digest or
+                frame.get("contextPolicy") != "omp-native" or frame.get("toolsDisabled") is not expected_tools_disabled):
+            raise NativeStartupFailure("attestation", "Native OMP integration identity mismatch")
         try:
             stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            raise RuntimeContractError("Native OMP exited before admission") from None
-        if int(stat[1]) != guardian.pid:
-            raise RuntimeContractError("Native OMP is not the owned guardian child")
+        except (OSError, IndexError):
+            raise NativeStartupFailure("attestation", "Native OMP exited before admission") from None
+        if len(stat) < 2 or stat[1] != str(guardian.pid):
+            raise NativeStartupFailure("attestation", "Native OMP is not the owned guardian child")
         try:
             matches_cwd = Path(f"/proc/{pid}/cwd").samefile(cwd)
         except OSError:
             matches_cwd = False
         if not matches_cwd:
-            raise RuntimeContractError("Native OMP process cwd does not match its conversation")
-        session_file = Path(frame.get("sessionFile") or "")
-        if not session_file.is_absolute() or not session_file.resolve().is_relative_to(root.resolve()) or not frame.get("sessionId"):
-            raise RuntimeContractError("Native OMP session escaped its dedicated directory")
-        if not admitted and lease["session_file"] and (str(session_file), frame["sessionId"]) != (lease["session_file"], lease["session_id"]):
-            raise RuntimeContractError("Native OMP did not open the requested physical session")
-        observed = request(config.server.socket_path, "frontend.attest", {**owner(), "omp_pid": pid,
-            "session_id": frame["sessionId"], "session_file": str(session_file)})
+            raise NativeStartupFailure("attestation", "Native OMP process cwd does not match its conversation")
+        path, session_id = frame.get("sessionFile"), frame.get("sessionId")
+        try:
+            contained = isinstance(path, str) and Path(path).is_absolute() and Path(path).resolve().is_relative_to(root.resolve())
+        except (OSError, UnicodeError, ValueError, RuntimeError):
+            contained = False
+        if not contained or not isinstance(session_id, str) or not session_id:
+            raise NativeStartupFailure("attestation", "Native OMP session escaped its dedicated directory")
+        if not admitted and lease["session_file"] and (path, session_id) != (lease["session_file"], lease["session_id"]):
+            raise NativeStartupFailure("attestation", "Native OMP did not open the requested physical session")
+        try:
+            observed = request(config.server.socket_path, "frontend.attest", {**owner(), "omp_pid": pid,
+                "session_id": session_id, "session_file": path})
+        except RuntimeContractError:
+            raise NativeStartupFailure("runtime_attest", "Runtime refused Native Extension attestation") from None
         # Keep the final owner identity from our own authenticated attestation,
         # including OMP /new switches; finish needs no extra frontend.show round trip.
         lease["generation"] = settings["generation"] = observed["generation"]
-        admitted = True
+        pending_pid = pid
+        return False
 
     def owner():
         return {key: settings[key] for key in ("conversation_id", "generation", "owner_token")}
 
     def started(process):
-        request(config.server.socket_path, "frontend.started", {**owner(), "guardian_pid": process.pid})
+        try:
+            request(config.server.socket_path, "frontend.started", {**owner(), "guardian_pid": process.pid})
+        except RuntimeContractError:
+            raise NativeStartupFailure("runtime_started", "Runtime did not register the Native guardian") from None
 
-    code = run_terminal(installation.command(argv), environment, ready=ready, started=started,
-                        timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))
+    try:
+        code = run_terminal(installation.command(argv), environment, ready=ready, started=started,
+                            timeout=config.agent.startup_timeout_seconds, lock_fds=(lock.fd,))
+    except (NativeStartupFailure, OSError, OmpInstallationUnavailable) as error:
+        failure = error if isinstance(error, NativeStartupFailure) else NativeStartupFailure(
+            "guardian", "Cannot launch or communicate with the owned OMP process", exception_type=type(error).__name__)
+        try:
+            failure.persist(config.state_dir, omp_version)
+        except OSError:
+            print("Cannot persist the Native startup diagnostic; inspect state directory permissions and storage.", file=sys.stderr)
+        raise failure from None
     return code, switch_path, nonce
 
 

@@ -110,8 +110,8 @@ class AdmissionProbe:
             PAVEWAY_ADMISSION_ENTRY_SHA256=entry_digest, OICOACH_LOCK_FDS=str(inherited.fileno()))
         # The existing guardian retains/passes this control descriptor exactly
         # as it retains/passes runtime lock descriptors. No queue slot is used.
-        argv = [*self.base.argv("gate-" + case, []), "--trusted-extension", str(entry),
-                "--config", str(restrictions), "--no-lsp", "--no-prewalk", "--thinking", "off"]
+        argv = [*self.base.argv("gate-" + case, [entry], trusted=True),
+                "--config", str(restrictions), "--thinking", "off"]
         before = len(self.base.server.requests)
         guardian = None
         selector = selectors.DefaultSelector()

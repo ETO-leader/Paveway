@@ -47,3 +47,31 @@ test("the rail uses the host symbol preset", () => {
     });
     expect(row).toBe("|> draft ");
 });
+
+test("OMP 19.2 registers the flat shape and paints exactly the declared rail geometry", () => {
+    let shape;
+    registerComposer({registerComposerShape(definition) {
+        expect(definition.id).toBe(PAVEWAY_COMPOSER_SHAPE);
+        expect(typeof definition.row).toBe("function");
+        expect(typeof definition.sideWidth).toBe("function");
+        shape = definition;
+    }});
+    expect(shape.label).toBe("Paveway Chrome");
+    expect(shape.filled).toBe(false);
+    expect(shape.sideBorders).toBe(false);
+    expect(shape.bottomBar).toBe("full");
+    expect(shape.statusAttachment).toBeUndefined();
+    expect(shape.top).toBeUndefined();
+    expect(shape.bottom).toBeUndefined();
+    expect(shape.gutter).toBe("> ");
+    expect(shape.paddingX).toBe(1);
+    expect(shape.sideWidth(2)).toBe(3);
+    const expected = "|  > 中🙂e\u0301      ";
+    const [row] = shape.row({
+        width: Bun.stringWidth(expected), paddingX: 2, overflow: 1,
+        box: {vertical: "|"}, accent: value => `\x1b[36m${value}\x1b[39m`,
+        gutter: "> ", text: "中🙂e\u0301", pad: "    ",
+    });
+    expect(row.startsWith("\x1b[36m|\x1b[39m")).toBe(true);
+    expect(Bun.stripANSI(row)).toBe(expected);
+});

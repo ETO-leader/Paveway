@@ -44,7 +44,7 @@ async def inspect_session(config, binding):
         if (after_abort.get("isSettled") is not True or after_abort.get("sessionFile") != state["sessionFile"]
                 or after_abort.get("sessionId") != state["sessionId"]):
             raise AgentError("OMP abort did not preserve a settled session identity")
-        if state.get("dumpTools"):
+        if state.get("dumpTools") != [] or after_abort.get("dumpTools") != []:
             raise AgentError("Verification requires disabled agent tools")
         messages = (await adapter.command("get_messages")).get("messages", [])
         if not isinstance(messages, list):
@@ -75,7 +75,7 @@ async def verify_omp(config, *, with_model=False):
         binding = {"workspace": str(root), "session_dir": str(probe_dir), "session_file": None}
         try:
             state, _ = await inspect_session(isolated, binding)
-            checks.append({"check": "rpc_transport", "status": "PASS", "detail": "Ready v1, correlated get_state/get_messages/abort, settled and isolated session identity"})
+            checks.append({"check": "rpc_transport", "status": "PASS", "detail": "Ready v1, correlated get_state/get_messages/abort, disabled tools, settled and isolated session identity"})
             model = state.get("model") or {}
             checks.append({"check": "model_selected", "status": "PASS" if model else "WARN",
                            "detail": f"{model.get('provider')}/{model.get('id')}" if model else "No default model selected"})
@@ -87,6 +87,8 @@ async def verify_omp(config, *, with_model=False):
                 "agent_rpc_timeout": "Timed out waiting for OMP RPC ready",
                 "agent_process_exited": "OMP process exited before initialization completed",
                 "agent_rpc_eof_or_overflow": "OMP closed RPC stream or produced an oversized frame",
+                "agent_tools_policy_missing": "Managed OMP tool policy readiness was not received",
+                "agent_tools_policy_invalid": "OMP could not prove its managed tool-disabled state",
             }
             detail = f"[{code}] {detail_messages.get(code, 'OMP transport/session inspection failed')}"
             return {"api_version": 1, "milestone": "M2", "ok": False, "checks": [{"check": "rpc_transport", "status": "FAIL", "detail": detail}]}

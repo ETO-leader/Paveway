@@ -104,4 +104,14 @@ describe("Paveway Aurora × Pathline banner", () => {
         mode = "none";
         expect(render(80, "13.9.0").join("")).not.toContain("\x1b");
     });
+
+    test("reactive theme depth uses only the supported ANSI foreground palette", () => {
+        const theme = {depth: "256", symbols: {preset: "unicode"}};
+        const render = banner(theme);
+        expect(render(80, "19.2.1").join("")).toContain("\x1b[38;5;");
+        theme.depth = "16";
+        const basic = render(80, "19.2.1").join("");
+        expect(basic).toMatch(/\x1b\[(?:3[0-7]|9[0-7])m/);
+        expect(basic).not.toContain("\x1b[38;");
+    });
 });

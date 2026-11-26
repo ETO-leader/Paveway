@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from fake_admission import admit_fake, fixture_version, stale_fake_runtime
+
 from oicoach_runtime import service
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.compatibility import probe_daemon
@@ -27,6 +29,7 @@ from oicoach_runtime.launcher import (
     shutdown_owned_runtime,
 )
 from oicoach_runtime.models import utc_text
+from oicoach_runtime.omp_installation import OmpCandidateRejected, load_active_omp
 from oicoach_runtime.workflow_setup import create
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -52,6 +55,7 @@ class RuntimeLifecycleTests(unittest.TestCase):
         ensure_private_directory(self.workflow_dir)
         ensure_private_directory(self.workspace_dir)
         self.config_path.write_text(config_text(self.config), encoding="utf-8")
+        admit_fake(self.config)
         create(self.config, "test-wf", self.workspace_dir)
         self.stale = None
         self.addCleanup(self._cleanup)
@@ -88,11 +92,7 @@ class RuntimeLifecycleTests(unittest.TestCase):
         log = log_path.open("w")
         self.addCleanup(log.close)
         self.stale = subprocess.Popen(
-            [sys.executable, "-c",
-             "import oicoach_runtime.build_id as b; b._CURRENT_BUILD_ID='0'*64; "
-             "from oicoach_runtime.cli import main; raise SystemExit(main())",
-             "serve", "--config", str(self.config_path)],
-            stdout=log, stderr=log, start_new_session=True, close_fds=True)
+            stale_fake_runtime(self.config_path), stdout=log, stderr=log, start_new_session=True, close_fds=True)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             status = probe_daemon(self.config.server.socket_path)
@@ -132,13 +132,89 @@ class RuntimeLifecycleTests(unittest.TestCase):
             staging.chmod(0o700)
             staging.replace(executable)
 
-        install("19.0.0")
-        first = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
-        install("19.1.1")
-        second = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
+        with patch("oicoach_runtime.omp_probe.probe_omp", side_effect=fixture_version):
+            install("19.0.0")
+            first = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
+            install("19.1.1")
+            second = ensure_runtime(self.config, self.config_path, omp_path=str(executable))
         self.assertNotEqual(first.status["runtime_instance"], second.status["runtime_instance"])
         self.assertEqual(first.status["omp"]["version"], "19.0.0")
         self.assertEqual(second.status["omp"]["version"], "19.1.1")
+
+    def test_rejected_candidate_never_drains_or_switches_active_reference(self):
+        first = ensure_runtime(self.config, self.config_path)
+        active = load_active_omp(self.state_dir)
+        candidate = self.root / "candidate"
+        candidate.write_text("#!/bin/sh\nprintf 'omp/19.2.1\\n'\n")
+        candidate.chmod(0o700)
+        for managed in (False, True):
+            with self.subTest(managed=managed), \
+                    patch.object(service, "status", return_value={"managed": managed, "MainPID": str(first.status["runtime_pid"])}), \
+                    patch.object(service, "control") as control, \
+                    patch("oicoach_runtime.omp_probe.probe_omp", side_effect=OmpCandidateRejected("candidate rejected")):
+                with self.assertRaises(OmpCandidateRejected):
+                    ensure_runtime(self.config, self.config_path, omp_path=str(candidate), restart=True)
+                control.assert_not_called()
+                current = probe_daemon(self.config.server.socket_path)
+                self.assertEqual(current["runtime_instance"], first.status["runtime_instance"])
+                self.assertFalse(current["draining"])
+                self.assertFalse(current["stopping"])
+                self.assertEqual(load_active_omp(self.state_dir), active)
+        with patch.object(service, "status", return_value={"managed": True, "MainPID": "0"}), \
+                patch("oicoach_runtime.omp_probe.probe_omp") as probe:
+            with self.assertRaisesRegex(RuntimeContractError, "systemd 服务未拥有当前 Runtime"):
+                ensure_runtime(self.config, self.config_path, omp_path=str(candidate), restart=True)
+            probe.assert_not_called()
+        self.assertFalse(probe_daemon(self.config.server.socket_path)["draining"])
+
+    def test_failed_replacement_start_restores_prior_reference_when_no_runtime_started(self):
+        ensure_runtime(self.config, self.config_path)
+        active = load_active_omp(self.state_dir)
+        replacement = self.root / "replacement"
+        replacement.write_text("#!/bin/sh\nprintf 'omp/19.2.1\\n'\n")
+        replacement.chmod(0o700)
+        with patch("oicoach_runtime.omp_probe.probe_omp", side_effect=fixture_version), \
+                patch("oicoach_runtime.launcher._start_standalone", side_effect=RuntimeContractError("startup failed")):
+            with self.assertRaisesRegex(RuntimeContractError, "已恢复上次 OMP 活动引用"):
+                ensure_runtime(self.config, self.config_path, omp_path=str(replacement))
+        self.assertIsNone(probe_daemon(self.config.server.socket_path))
+        self.assertEqual(load_active_omp(self.state_dir), active)
+
+    def test_direct_serve_without_omp_still_completes_pure_reminders(self):
+        config = replace(self.config, state_dir=self.state_dir / "control-only",
+                         server=replace(self.config.server, socket_path=str(self.state_dir / "control.sock")),
+                         agent=replace(self.config.agent, executable=str(self.root / "missing-omp")))
+        path = self.root / "control.toml"
+        path.write_text(config_text(config))
+        with (self.root / "control.log").open("w") as log:
+            process = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)],
+                                       stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 6
+                while time.monotonic() < deadline:
+                    status = probe_daemon(config.server.socket_path, timeout=0.2)
+                    if status is not None:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("control-only Runtime did not start")
+                self.assertEqual(status["omp"]["installation_status"], "unavailable")
+                pure = request(config.server.socket_path, "schedule", {
+                    "workflow_id": "test-wf", "task_id": "training", "reason": "pure",
+                    "dedupe_key": "pure", "at": "now",
+                    "payload": {"native_wakeup": True, "intent": "reminder", "message": "pure reminder"}})
+                while time.monotonic() < deadline:
+                    done = request(config.server.socket_path, "events.show", {"event_id": pure["event_id"]})
+                    if done["status"] == "succeeded":
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("control-only Runtime did not complete the pure reminder")
+                self.assertIsNone(done["run_id"])
+                self.assertIsNone(load_active_omp(config.state_dir))
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
 
     def test_restart_preserves_future_reminder_without_duplicate_execution(self):
         old = self.start_stale_daemon()
@@ -228,7 +304,7 @@ class RuntimeLifecycleTests(unittest.TestCase):
 
     def test_systemd_managed_runtime_is_never_launcher_owned(self):
         handle = ensure_runtime(self.config, self.config_path)
-        with patch.object(service, "status", return_value={"managed": True}):
+        with patch.object(service, "status", return_value={"managed": True, "MainPID": str(handle.status["runtime_pid"])}):
             reused = ensure_runtime(self.config, self.config_path)
             self.assertTrue(reused.managed)
             self.assertFalse(reused.created)
@@ -251,7 +327,9 @@ class RuntimeLifecycleTests(unittest.TestCase):
 
     def test_explicit_restart_replaces_a_compatible_idle_runtime(self):
         first = ensure_runtime(self.config, self.config_path)
-        second = ensure_runtime(self.config, self.config_path, restart=True)
+        with patch("oicoach_runtime.omp_probe.probe_omp", side_effect=fixture_version) as probe:
+            second = ensure_runtime(self.config, self.config_path, restart=True)
+        probe.assert_called_once()
         self.assertFalse(second.reused)
         self.assertTrue(second.created)
         self.assertNotEqual(second.status["runtime_instance"], first.status["runtime_instance"])

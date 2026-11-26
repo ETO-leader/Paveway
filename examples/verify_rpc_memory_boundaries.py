@@ -43,7 +43,7 @@ class RpcConversation:
         self._sequence = 0
 
     async def __aenter__(self):
-        argv = [*self.fixture.probe.argv(self.name, [self.extension]), "--mode", "rpc", "--no-ui"]
+        argv = [*self.fixture.probe.argv(self.name, [self.extension], manages_tools=True), "--mode", "rpc", "--no-ui"]
         if self.session_file is not None:
             argv.extend(["--resume", str(self.session_file)])
         self.process = await asyncio.create_subprocess_exec(
@@ -53,6 +53,9 @@ class RpcConversation:
         self.stderr_task = asyncio.create_task(self.process.stderr.read())
         try:
             await self.until(lambda frame: frame.get("type") == "ready")
+            if not any(frame.get("type") == "paveway_tools_ready" for frame in self.frames):
+                await self.until(lambda frame: frame.get("type") == "paveway_tools_ready")
+            require((await self.state()).get("dumpTools") == [], f"{self.name}: managed tools were not disabled")
         except BaseException:
             await self.__aexit__(*sys.exc_info())
             raise
@@ -125,7 +128,7 @@ def memory_environment(fixture, *, name="rpc-memory-data.json"):
     path = fixture.root / name
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:
-        json.dump({"enabled": True,
+        json.dump({"enabled": True, "tools_enabled": False,
                    "scope": {"workflow_id": WORKFLOW, "task_id": "training"},
                    "run_id": "test", "socket_path": str(fixture.config.server.socket_path)}, stream)
     return {**fixture.env, "PAVEWAY_MEMORY_DATA": str(path)}

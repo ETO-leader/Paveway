@@ -62,14 +62,32 @@ test("draft validation rejects partial, malformed and oversized proposals withou
     assert.throws(() => parseSkillDraft("PRIVATE_BAD_PROVIDER_RESPONSE"), error => !error.message.includes("PRIVATE_BAD"));
 });
 
+function analysisDialog() {
+    let dismiss, signal;
+    return {
+        select(title, options, dialog) {
+            assert.match(title, /正在分析 Skill/);
+            assert.deepEqual(options, ["取消分析"]);
+            signal = dialog.signal;
+            return new Promise(resolve => {
+                dismiss = resolve;
+                signal.addEventListener("abort", () => resolve(undefined), {once: true});
+            });
+        },
+        cancel: () => dismiss(undefined),
+        closed: () => signal.aborted,
+    };
+}
+
 test("analysis sends selected file only, with current model and no tools or conversation history", async () => {
     const source = {documents: [{path: "SKILL.md", text: "UNTRUSTED_SOURCE_INSTRUCTIONS"}]};
     let call;
-    const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "private-fixture", headers: {fixture: "yes"}})},
-        ui: {custom: handler => new Promise(done => handler({}, {}, {}, done))}};
+    const ui = analysisDialog();
+    const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "private-fixture", headers: {fixture: "yes"}})}, ui};
     const draft = await analyzeSkillSource({getThinkingLevel: () => "off"}, ctx, source, async () => ({
-        Loader: class {}, complete: async (...args) => { call = args; return {stopReason: "stop", content: [{type: "text", text: JSON.stringify(proposal())}]}; },
+        complete: async (...args) => { call = args; return {stopReason: "stop", content: [{type: "text", text: JSON.stringify(proposal())}]}; },
     }));
+    assert.equal(ui.closed(), true);
     assert.equal(draft.name, "fixture-skill");
     assert.equal(call[0], ctx.model);
     assert.equal(call[1].messages.length, 1);
@@ -81,27 +99,46 @@ test("analysis sends selected file only, with current model and no tools or conv
 });
 
 test("cancelling analysis ignores a late provider result", async () => {
-    let loader, finishProvider, signal;
-    const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "fixture"})},
-        ui: {custom: handler => new Promise(done => handler({}, {}, {}, done))}};
+    let finishProvider, signal;
+    const ui = analysisDialog();
+    const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "fixture"})}, ui};
     const pending = analyzeSkillSource({getThinkingLevel: () => "off"}, ctx, {}, async () => ({
-        Loader: class { constructor() { loader = this; } },
         complete: (_model, _context, options) => { signal = options.signal; return new Promise(resolve => finishProvider = resolve); },
     }));
     while (!finishProvider) await new Promise(resolve => setTimeout(resolve, 0));
-    loader.onAbort();
+    ui.cancel();
     assert.equal(await pending, undefined);
     assert.equal(signal.aborted, true);
+    assert.equal(ui.closed(), true);
     finishProvider({stopReason: "stop", content: [{type: "text", text: JSON.stringify(proposal())}]});
+});
+
+test("cancel while model authentication is pending does not send the selected source", async () => {
+    let authenticated;
+    const ui = analysisDialog();
+    const ctx = {model: {id: "fixture"}, ui, modelRegistry: {
+        getApiKeyAndHeaders: () => new Promise(resolve => authenticated = resolve),
+    }};
+    let requests = 0;
+    const pending = analyzeSkillSource({getThinkingLevel: () => "off"}, ctx, {}, async () => ({
+        complete: async () => { requests++; },
+    }));
+    while (!authenticated) await new Promise(resolve => setTimeout(resolve, 0));
+    ui.cancel();
+    assert.equal(await pending, undefined);
+    authenticated({ok: true, apiKey: "fixture"});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests, 0);
 });
 
 test("model errors and output truncation cannot produce a saved or partial draft", async () => {
     for (const stopReason of ["error", "length", "toolUse"]) {
-        const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "fixture"})},
-            ui: {custom: handler => new Promise(done => handler({}, {}, {}, done))}};
+        const ui = analysisDialog();
+        const ctx = {model: {id: "fixture"}, modelRegistry: {getApiKeyAndHeaders: async () => ({ok: true, apiKey: "fixture"})}, ui};
         await assert.rejects(analyzeSkillSource({getThinkingLevel: () => "off"}, ctx, {}, async () => ({
-            Loader: class {}, complete: async () => ({stopReason, errorMessage: "PRIVATE_ERROR_WITH_TOKEN", content: []}),
+            complete: async () => ({stopReason, errorMessage: "PRIVATE_ERROR_WITH_TOKEN", content: []}),
         })), error => !error.message.includes("PRIVATE_ERROR"));
+        assert.equal(ui.closed(), true);
     }
 });
 

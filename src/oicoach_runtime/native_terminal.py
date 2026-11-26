@@ -16,12 +16,13 @@ import time
 import tty
 
 from .child import cleanup_group
+from .diagnostics import NativeStartupFailure
 from .errors import RuntimeContractError
 from .processes import enable_subreaper
 
 
 def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process: None, lock_fds=()):
-    """Input is forwarded only after this owned child's validated attestation."""
+    """Input is forwarded only after attestation and Extension initialization."""
     if not os.isatty(0) or not os.isatty(1):
         raise RuntimeContractError("OMP native UI requires an interactive terminal")
     enable_subreaper()
@@ -37,6 +38,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
     admitted = False
     frames = bytearray()
     pending = bytearray()
+    terminal_open = True
 
     def resize(*_):
         fcntl.ioctl(master, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
@@ -59,7 +61,7 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
             except OSError as error:
                 if error.errno != errno.EIO:
                     raise
-            raise RuntimeContractError(
+            raise NativeStartupFailure("host_exit",
                 f"OMP exited before Paveway Extension admission (exit {code}); "
                 "check the OMP startup output and required Extension capabilities")
         return code
@@ -85,8 +87,10 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
         deadline = time.monotonic() + timeout
         while True:
             if not admitted and time.monotonic() >= deadline:
-                raise RuntimeContractError("Native OMP admission timed out; no user prompt was sent")
-            for key, events in selector.select(0.05):
+                raise NativeStartupFailure("timeout", "Native OMP admission timed out; no user prompt was sent")
+            events_ready = selector.select(0.05)
+            # Receive a queued rejection before a concurrent PTY hangup.
+            for key, events in sorted(events_ready, key=lambda pair: pair[0].data != "control"):
                 if key.data == "control":
                     chunk = channel.recv(4097)
                     if not chunk:
@@ -96,25 +100,27 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                         try:
                             code = process.wait(timeout=2)
                         except subprocess.TimeoutExpired:
+                            if not admitted:
+                                raise NativeStartupFailure("channel", "Native Extension closed before admission") from None
                             raise RuntimeContractError("Native integration closed unexpectedly; inspect history before retrying") from None
                         return check_exit(code)
                     frames.extend(chunk)
                     if len(frames) > 4096:
-                        raise RuntimeContractError("Native attestation exceeds its size limit")
+                        raise NativeStartupFailure("attestation", "Native attestation exceeds its size limit")
                     if b"\n" in frames:
                         line, _, remainder = frames.partition(b"\n")
                         if remainder:
-                            raise RuntimeContractError("Unexpected native attestation data")
+                            raise NativeStartupFailure("attestation", "Unexpected native attestation data")
                         try:
                             frame = json.loads(line)
                         except (ValueError, UnicodeError):
-                            raise RuntimeContractError("Invalid native attestation; no automatic retry") from None
+                            raise NativeStartupFailure("attestation", "Invalid native attestation; no automatic retry") from None
                         if not isinstance(frame, dict):
-                            raise RuntimeContractError("Invalid native attestation object")
-                        ready(frame, process)
+                            raise NativeStartupFailure("attestation", "Invalid native attestation object")
+                        initialized = ready(frame, process)
                         channel.sendall(b"A")
                         frames.clear()
-                        if not admitted:
+                        if initialized and not admitted:
                             admitted = True
                             selector.register(0, selectors.EVENT_READ, "input")
                 elif key.data == "input":
@@ -135,8 +141,12 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                                 raise
                             data = b""
                         if data == b"":
-                            process.wait(timeout=5)
-                            return check_exit(process.returncode)
+                            if admitted:
+                                process.wait(timeout=5)
+                                return check_exit(process.returncode)
+                            selector.unregister(master)
+                            terminal_open = False
+                            continue
                         if data:
                             emit_terminal(data)
                     if events & selectors.EVENT_WRITE and pending:
@@ -145,8 +155,9 @@ def run_terminal(argv, environment, *, ready, timeout=30, started=lambda process
                             del pending[:written]
                         except BlockingIOError:
                             pass
-            selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0), "terminal")
-            if process.poll() is not None:
+            if terminal_open:
+                selector.modify(master, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending else 0), "terminal")
+            if process.poll() is not None and not selector.select(0):
                 return check_exit(process.returncode)
     except KeyboardInterrupt:
         return 130

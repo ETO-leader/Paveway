@@ -10,7 +10,7 @@ const shortId = (value, width) => value.length > width ? value.slice(0, width - 
 function windline({profile, task, workflow}, {busy, inbox, wake}, width, theme) {
     if (width <= 0) return [];
     const paint = (role, text) => theme.fg(role, text);
-    const divider = theme.getSymbolPreset() === "ascii" ? " | " : " · ";
+    const divider = (theme.symbols?.preset ?? theme.getSymbolPreset?.()) === "ascii" ? " | " : " · ";
     const flags = [
         ...(busy ? [["accent", "Busy"]] : []),
         ...(wake === "none" ? [] : [[wake === "unavailable" || wake === "?" ? "warning" : "text", `Wake ${wake}`]]),
@@ -48,10 +48,10 @@ function wakeStatus(wakeup) {
 
 /** Register chrome at extension load; call the returned presenter only after admission. */
 export function registerNativePresentation(pi, config) {
-    registerComposer(pi);
     const {workflow_source: workflow, coach_id: profile, task_id: task, paveway_version: version, omp_version: ompVersion} = config;
+    registerComposer(pi);
     const identity = {profile, task, workflow};
-    let statusUI, display, requestRender;
+    let status;
     let welcomeUI;
     const dismissWelcome = (_event, ctx) => {
         if (!welcomeUI || !isInteractiveMain(ctx)) return;
@@ -68,31 +68,36 @@ export function registerNativePresentation(pi, config) {
         const busy = state.busy ?? !ctx.isIdle();
         const inbox = Number.isSafeInteger(state.inbox) && state.inbox >= 0 ? state.inbox : "?";
         const wake = wakeStatus(state.wakeup);
-        if (ui !== statusUI || !display || busy !== display.busy || inbox !== display.inbox || wake !== display.wake) {
-            display = {busy, inbox, wake};
-            if (ui !== statusUI) requestRender = undefined;
-            if (ui !== statusUI && ui.setWidget) {
-                ui.setWidget(STATUS, (tui, theme) => {
-                    requestRender = () => tui.requestRender();
+        if (ui !== status?.ui || busy !== status.busy || inbox !== status.inbox || wake !== status.wake) {
+            if (ui !== status?.ui) {
+                const binding = {ui, busy, inbox, wake};
+                status = binding;
+                ui.setWidget?.(STATUS, (host, theme) => {
+                    binding.requestRender = () => host.requestRender();
                     return {
-                        render: width => windline(identity, display, width, ui.theme ?? theme),
-                        dispose() { statusUI = requestRender = undefined; },
+                        render: width => windline(identity, binding, width, ui.theme ?? theme),
+                        invalidate() {},
+                        dispose() {
+                            if (status === binding) status = undefined;
+                        },
                     };
                 }, {placement: "belowEditor"});
-            } else if (requestRender) {
-                requestRender();
-            } else if (ui.setStatus) {
-                ui.setStatus(STATUS, `PAVEWAY ${profile}/${task}${busy ? " · Busy" : ""}` +
-                    `${wake !== "none" ? ` · Wake ${wake}` : ""}${inbox !== 0 ? ` · Inbox ${inbox}` : ""}`);
+            } else {
+                Object.assign(status, {busy, inbox, wake});
+                status.requestRender?.();
             }
-            statusUI = ui;
+            if (!ui.setWidget) ui.setStatus?.(STATUS, `PAVEWAY ${profile}/${task}${busy ? " · Busy" : ""}` +
+                `${wake !== "none" ? ` · Wake ${wake}` : ""}${inbox !== 0 ? ` · Inbox ${inbox}` : ""}`);
         }
         if (banner && !welcomeUI && ui.setWidget) {
-            ui.setWidget(WELCOME, (tui, theme) => {
-                const render = createBanner({version, workflow}, theme);
-                return {render: width => tui.terminal.rows < 18
-                    ? width > 0 ? ["PAVEWAY".slice(0, width)] : []
-                    : render(width, ompVersion)};
+            ui.setWidget(WELCOME, (host, theme) => {
+                const render = createBanner({version, workflow}, () => ui.theme ?? theme);
+                return {
+                    render: width => (host.size?.() ?? host.terminal).rows < 18
+                        ? width > 0 ? ["PAVEWAY".slice(0, width)] : []
+                        : render(width, ompVersion),
+                    invalidate() {},
+                };
             }, {placement: "aboveEditor"});
             welcomeUI = ui;
         }

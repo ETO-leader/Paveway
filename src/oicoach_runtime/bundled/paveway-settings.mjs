@@ -1,7 +1,4 @@
 // User-command-only settings. Business I/O runs in the controller, never in render().
-export function loadNativeTui() {
-    return import("@oh-my-pi/pi-tui");
-}
 
 const permissions = [
     {value: "none", label: "None", description: "Read only: query, search, statements and history."},
@@ -12,62 +9,36 @@ const permissionLabel = value => permissions.find(item => item.value === value)?
 const restartNotice = "Saved. Restart the Paveway native OMP session to apply Tijian MCP changes.";
 
 export async function openSettings(ctx, {cli, workflowId, preferences, model, thinking}, initialPage = "settings") {
-    // RPC can have hasUI=true for protocol dialogs, but cannot mount custom components.
-    if (!ctx.hasUI || !process.stdin.isTTY || !process.stdout.isTTY || ctx.agent?.kind !== "main") {
+    if (!ctx.hasUI || ctx.mode !== "tui" || ctx.agent?.kind !== "main") {
         ctx.ui.notify("Paveway settings require the interactive main OMP terminal.", "warning");
         return;
     }
-    const ui = await loadNativeTui();
-    const themes = ui;
     const notifyError = error => ctx.ui.notify(error.message || "Cannot update settings. Review the configuration and retry.", "error");
     const busy = async (message, action) => {
         const result = await ctx.ui.custom((_tui, theme, _keys, done) => {
             // Keep focus away from chat while CLI I/O is pending. An in-flight save is not cancellable.
             Promise.resolve().then(action).then(value => done({value}), error => done({error}));
-            return new ui.Text(theme.fg("muted", message));
+            return {render: width => [theme.fg("muted", message.slice(0, width))], invalidate() {}};
         });
         if (result.error) throw result.error;
         return result.value;
     };
-    const panel = (tui, theme, keybindings, done, title, list) => {
-        let disposed = false;
-        return {
-            render(width) {
-                return [theme.fg("accent", title), "", ...list.render(width)]
-                    .map(line => ui.truncateToWidth(ui.replaceTabs(line), width));
-            },
-            handleInput(data) {
-                if (disposed) return;
-                if (keybindings.matches(data, "app.interrupt")) done(undefined);
-                else list.handleInput(data);
-                tui.requestRender();
-            },
-            invalidate() { list.invalidate?.(); },
-            dispose() {
-                if (disposed) return;
-                disposed = true;
-                list.onSelect = undefined;
-                list.onCancel = undefined;
-                list.dispose?.();
-            },
-        };
+    const settingsPage = async (title, rows, selected) => {
+        const options = rows.map(row => ({
+            label: `${row.label}: ${row.currentValue}`,
+            description: row.description,
+        }));
+        const label = await ctx.ui.select(title, options, {
+            initialIndex: Math.max(0, rows.findIndex(row => row.id === selected)),
+        });
+        return rows[options.findIndex(option => option.label === label)]?.id;
     };
-    const settingsPage = (title, rows, selected) => ctx.ui.custom((tui, theme, keys, done) => {
-        // A single-value row activates the controller without speculatively changing its saved value.
-        const items = rows.map(row => row.editable === false ? row : {...row, values: [row.currentValue]});
-        const list = new ui.SettingsList(items, items.length, themes.getSettingsListTheme(),
-            id => done(id), () => done(undefined));
-        if (selected) list.selectItem(selected);
-        return panel(tui, theme, keys, done, title, list);
-    });
-    const permissionPicker = current => ctx.ui.custom((tui, theme, keys, done) => {
-        const list = new ui.SelectList(permissions, permissions.length, themes.getSelectListTheme(),
-            {wrapDescription: true});
-        list.setSelectedIndex(Math.max(0, permissions.findIndex(item => item.value === current)));
-        list.onSelect = item => done(item.value);
-        list.onCancel = () => done(undefined);
-        return panel(tui, theme, keys, done, "Tijian service permission", list);
-    });
+    const permissionPicker = async current => {
+        const label = await ctx.ui.select("Tijian service permission", permissions, {
+            initialIndex: Math.max(0, permissions.findIndex(item => item.value === current)),
+        });
+        return permissions.find(item => item.label === label)?.value;
+    };
     const tijianPage = async () => {
         let selected = "executable";
         let draftPermission = "managed";
@@ -81,13 +52,14 @@ export async function openSettings(ctx, {cli, workflowId, preferences, model, th
                     description: "Enter a replacement absolute tijian-mcp path; empty keeps the saved path. Permission is preserved."},
                 {id: "permission", label: "Permission", currentValue: readError ? "Unknown" : permissionLabel(currentPermission),
                     description: readError ? readError.message : permissions.find(item => item.value === currentPermission)?.description},
-                {id: "configuration", label: "Configuration", editable: false,
+                {id: "configuration", label: "Configuration",
                     currentValue: readError ? "Error — not modified" : raw.configured ? "Saved (restart required)" : "Not configured",
                     description: readError ? readError.message : raw.configured ?
                         "Saved configuration only. Running MCP permissions are unknown; restart the Paveway native OMP session to apply changes." :
                         "Choose an MCP executable to save. Managed is recommended for first setup; an unsaved permission choice is discarded on Back."},
             ], selected);
             if (!row) return;
+            if (row === "configuration") continue;
             selected = row;
             try {
                 if (readError) throw readError;

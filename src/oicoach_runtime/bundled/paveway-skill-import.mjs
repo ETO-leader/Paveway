@@ -56,55 +56,53 @@ Each analysis value must be nonempty text (use 'None identified' when appropriat
 Name max 64 characters. Description and content each max 65536 UTF-8 bytes. The user will review before saving.`;
 
 async function loadHost() {
-    const [{completeSimple}, {BorderedLoader}] = await Promise.all([
-        import("@oh-my-pi/pi-ai"), import("@oh-my-pi/pi-tui/overlays/bordered-loader"),
-    ]);
-    return {complete: completeSimple, Loader: BorderedLoader};
+    const {completeSimple} = await import("@oh-my-pi/pi-ai");
+    return {complete: completeSimple};
 }
 
 export async function analyzeSkillSource(pi, ctx, source, hostLoader = loadHost) {
-    if (!ctx.model) throw new Error("请先选择可用模型，再分析 Skill；尚未保存。");
-    const {complete, Loader} = await hostLoader();
-    const result = await ctx.ui.custom((tui, theme, _keys, done) => {
-        const controller = new AbortController();
-        const loader = new Loader(tui, theme, `GPT 正在分析 Skill · ${ctx.model.id} · Esc 取消`);
-        let finished = false;
-        const finish = value => {
-            if (finished) return;
-            finished = true;
-            clearTimeout(timer);
-            done(value);
-        };
-        const timer = setTimeout(() => {
+    const model = ctx.model;
+    if (!model) throw new Error("请先选择可用模型，再分析 Skill；尚未保存。");
+    const {complete} = await hostLoader();
+    const controller = new AbortController();
+    const dialog = new AbortController();
+    // Both terminal UIs support a native cancel selector and dismiss it on signal abort.
+    const cancelled = ctx.ui.select(`GPT 正在分析 Skill · ${model.id}`, ["取消分析"], {signal: dialog.signal})
+        .then(() => {
             controller.abort();
-            finish({error: "Skill 分析超时，尚未保存。可检查模型连接后重新分析。"});
-        }, 180000);
-        loader.onAbort = () => { controller.abort(); finish({cancelled: true}); };
-        const run = async () => {
-            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-            if (!auth.ok) throw new Error("auth unavailable");
-            if (controller.signal.aborted) return;
-            const thinking = pi.getThinkingLevel();
-            const response = await complete(ctx.model, {
-                systemPrompt: [SKILL_IMPORT_PROMPT],
-                messages: [{role: "user", content: [{type: "text", text: JSON.stringify({skill_source: source})}], timestamp: Date.now()}],
-            }, {apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, maxTokens: 16384,
-                disableReasoning: thinking === "off", reasoning: thinking && thinking !== "off" ? thinking : undefined});
-            if (finished) return;
-            if (response.stopReason === "length") {
-                finish({error: "GPT 分析输出达到长度上限，尚未保存。请拆分源文件后重试。"});
-                return;
-            }
-            if (response.stopReason !== "stop") throw new Error("analysis incomplete");
-            const output = response.content.filter(item => item.type === "text").map(item => item.text).join("\n");
-            let draft;
-            try { draft = parseSkillDraft(output); }
-            catch (error) { finish({error: error.message}); return; }
-            finish({draft});
-        };
-        run().catch(() => finish({error: "Skill 分析失败，尚未保存。请检查当前模型、认证或网络后重试。"}));
-        return loader;
+            return {cancelled: true};
+        });
+    let timer;
+    const timeout = new Promise(resolve => {
+        timer = setTimeout(() => resolve({error: "Skill 分析超时，尚未保存。可检查模型连接后重新分析。"}), 180000);
     });
+    const run = async () => {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) throw new Error("auth unavailable");
+        if (controller.signal.aborted) return {cancelled: true};
+        const thinking = pi.getThinkingLevel();
+        const response = await complete(model, {
+            systemPrompt: [SKILL_IMPORT_PROMPT],
+            messages: [{role: "user", content: [{type: "text", text: JSON.stringify({skill_source: source})}], timestamp: Date.now()}],
+        }, {apiKey: auth.apiKey, headers: auth.headers, signal: controller.signal, maxTokens: 16384,
+            disableReasoning: thinking === "off", reasoning: thinking && thinking !== "off" ? thinking : undefined});
+        if (controller.signal.aborted) return {cancelled: true};
+        if (response.stopReason === "length")
+            return {error: "GPT 分析输出达到长度上限，尚未保存。请拆分源文件后重试。"};
+        if (response.stopReason !== "stop") throw new Error("analysis incomplete");
+        const output = response.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+        try { return {draft: parseSkillDraft(output)}; }
+        catch (error) { return {error: error.message}; }
+    };
+    let result;
+    try {
+        result = await Promise.race([cancelled, timeout, run().catch(() =>
+            ({error: "Skill 分析失败，尚未保存。请检查当前模型、认证或网络后重试。"}))]);
+    } finally {
+        clearTimeout(timer);
+        controller.abort();
+        dialog.abort();
+    }
     if (result.error) throw new Error(result.error);
     return result.cancelled ? undefined : result.draft;
 }

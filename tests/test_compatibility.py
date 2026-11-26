@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fake_admission import admit_fake, stale_fake_runtime
+
 from oicoach_runtime import __version__
 from oicoach_runtime.build_id import compute_build_id, runtime_build_id
 from oicoach_runtime.compatibility import (
@@ -297,6 +299,7 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         ensure_private_directory(self.workflow_dir)
         ensure_private_directory(self.workspace_dir)
         self.config_path.write_text(config_text(self.config), encoding="utf-8")
+        admit_fake(self.config)
 
         # Create one existing workflow so startup does not prompt interactively
         from oicoach_runtime.workflow_setup import create
@@ -398,11 +401,7 @@ class PavewayStartupCompatibilityTests(unittest.TestCase):
         log_path = self.root / "stale-daemon.log"
         with log_path.open("w") as log:
             stale = subprocess.Popen(
-                [sys.executable, "-c",
-                 "import oicoach_runtime.build_id as b; b._CURRENT_BUILD_ID='0'*64; "
-                 "from oicoach_runtime.cli import main; raise SystemExit(main())",
-                 "serve", "--config", str(self.config_path)],
-                stdout=log, stderr=log, start_new_session=True, close_fds=True)
+                stale_fake_runtime(self.config_path), stdout=log, stderr=log, start_new_session=True, close_fds=True)
         deadline = time.monotonic() + 20
         old = None
         self.addCleanup(lambda: stale.poll() is None and (stale.kill(), stale.wait()))

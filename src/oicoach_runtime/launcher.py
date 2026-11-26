@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from .compatibility import (
 from .config import ensure_private_directory
 from .errors import ConflictError, RuntimeContractError
 from .ipc import request
-from .omp_installation import OMP_PATH_ENV, omp_file_identity
+from .omp_installation import OMP_IDENTITY_ENV, OMP_PATH_ENV, OmpInstallation, load_active_omp, prepare_omp
 from .processes import InstanceLock, process_identity
 
 STARTUP_TIMEOUT = 20
@@ -49,6 +50,7 @@ class RuntimeHandle:
     created: bool
     launch_token: str | None
     status: dict
+    service_proxy: dict | None = None
 
 
 def reap_detached_runtimes(timeout=0):
@@ -229,8 +231,24 @@ def _wait_released(config, expected, timeout=SHUTDOWN_TIMEOUT):
                 "请检查 startup.log 或 systemd 日志后重试。")
         time.sleep(min(0.1, remaining))
 
+def _restore_failed_activation(config, activation):
+    """Restore the prior pointer only while excluding every Runtime startup."""
+    if not activation.changed:
+        return ""
+    try:
+        ensure_private_directory(Path(config.server.socket_path).parent)
+        with ExitStack() as locks:
+            for path in (config.state_dir / "runtime.lock", config.server.socket_path + ".lock"):
+                locks.callback(InstanceLock(path).close)
+            if probe_daemon(config.server.socket_path, timeout=1) is None:
+                activation.rollback()
+                return "已恢复上次 OMP 活动引用。"
+    except (OSError, RuntimeContractError):
+        pass
+    return "无法确认 Runtime 已释放；保留已验证的候选引用，请先检查状态，未自动启动第二个实例。"
 
-def _start_standalone(config, config_path, omp_path=None):
+
+def _start_standalone(config, config_path):
     ensure_private_directory(config.state_dir)
     log_path = config.state_dir / "startup.log"
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
@@ -241,9 +259,7 @@ def _start_standalone(config, config_path, omp_path=None):
             raise RuntimeContractError("后台启动日志必须是当前用户拥有的私密普通文件。")
         argv = [sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(config_path)]
         environment = {**os.environ, **service.read_environment(config_path)}
-        if omp_path is not None:
-            environment[OMP_PATH_ENV] = omp_path
-        for key in ("PAVEWAY_SHUTDOWN_ON_EXIT", "PAVEWAY_LAUNCH_TOKEN", "PAVEWAY_RESTART_RUNTIME"):
+        for key in ("PAVEWAY_SHUTDOWN_ON_EXIT", "PAVEWAY_LAUNCH_TOKEN", "PAVEWAY_RESTART_RUNTIME", OMP_IDENTITY_ENV):
             environment.pop(key, None)
         # Popen with close_fds keeps Python 3.11 working (POSIX_SPAWN_CLOSEFROM
         # only exists from 3.12) and closes every inherited descriptor except the
@@ -263,15 +279,16 @@ def _start_standalone(config, config_path, omp_path=None):
     return _wait_ready(config, pid=pid, identity=process_identity(pid))
 
 
-def _start_managed(config, config_path):
+def _start_managed(config, config_path, name):
     print("正在启动已有的 systemd 用户服务…", flush=True)
-    service.control(config_path, "start")
-    return _wait_ready(config)
+    result = service.control(config_path, "start", name=name)
+    return _wait_ready(config), result["proxy"]
 
 
-def _new_handle(status, *, reused, managed, created):
+def _new_handle(status, *, reused, managed, created, service_proxy=None):
     token = secrets.token_hex(32) if created else None
-    return RuntimeHandle(reused=reused, managed=managed, created=created, launch_token=token, status=status)
+    return RuntimeHandle(reused=reused, managed=managed, created=created, launch_token=token, status=status,
+                         service_proxy=service_proxy)
 
 
 def _problem_text(problem):
@@ -284,131 +301,128 @@ def _problem_text(problem):
     }.get(problem, "兼容性检查未通过")
 
 
-def ensure_runtime(config, config_path, *, restart=False, omp_path=None):
-    """Start or reuse a compatible Runtime, safely handing off an incompatible one.
-
-    The launcher lock serializes concurrent launchers. The Runtime's own
-    runtime.lock/socket.lock remain authoritative for the daemon instance.
-    """
-    selected_omp = (omp_path, omp_file_identity(omp_path)) if omp_path is not None else None
-
-    def check(status, *, managed=False):
-        problem = compatibility_problem(status)
-        runtime_omp = status.get("omp", {})
-        if not problem and selected_omp is not None and (
-            (runtime_omp.get("path"), runtime_omp.get("file_identity")) != selected_omp
-            or runtime_omp.get("installation_status") in ("unavailable", "handoff_required")
-        ):
-            if managed:
-                raise RuntimeContractError(
-                    "systemd Runtime 的 OMP 安装与所选安装不一致；请将 agent.executable 配置为绝对路径，"
-                    "再使用受管服务的安全重启流程。")
-            return "omp_executable"
-        return problem
-
+def ensure_runtime(config, config_path, *, restart=False, omp_path=None, service_name=service.DEFAULT_NAME,
+                   managed_only=False):
+    """Reuse Runtime or attest the next installation before attempting handoff."""
     ensure_private_directory(config.state_dir)
     try:
         launcher_lock = InstanceLock(config.state_dir / "launcher.lock", timeout=LAUNCHER_LOCK_TIMEOUT)
     except ConflictError:
         raise RuntimeContractError(
             "另一个 Paveway 启动器正在检查或重启 Runtime；请等待其完成后重试，不会启动第二个实例。") from None
-    try:
-        managed = service.status(config_path).get("managed", False)
+
+    with ExitStack() as stack:
+        stack.callback(launcher_lock.close)
+        manager = service.status(config_path, name=service_name)
+        managed = manager.get("managed", False)
+        if managed_only and not managed:
+            raise RuntimeContractError("未安装该配置的 systemd 用户服务；不会启动独立 Runtime。")
+        saved_environment = service.read_environment(config_path)
+        environment = {**os.environ, **saved_environment}
+        explicit = omp_path
+        if explicit is None and OMP_IDENTITY_ENV not in os.environ:
+            explicit = os.environ.get(OMP_PATH_ENV)
+        if explicit is not None:
+            environment[OMP_PATH_ENV] = explicit
+        elif OMP_IDENTITY_ENV in os.environ and OMP_PATH_ENV not in saved_environment:
+            environment.pop(OMP_PATH_ENV, None)
+        source = OmpInstallation.select(config.agent.executable, environment=environment)
+        active = load_active_omp(config.state_dir)
         status = probe_daemon(config.server.socket_path)
-        if status is None:
-            if managed:
-                status = _start_managed(config, config_path)
-                handle = _new_handle(status, reused=False, managed=True, created=False)
-            else:
-                status = _start_standalone(config, config_path, omp_path)
-                handle = _new_handle(status, reused=False, managed=False, created=True)
-                write_ownership(config, config_path, status, handle.launch_token)
-            problem = check(status, managed=managed)
+        def require_managed_owner(current, unit):
+            if str(current.get("runtime_pid")) != unit.get("MainPID"):
+                raise RuntimeContractError("systemd 服务未拥有当前 Runtime；未执行交接，也不会启动第二个实例。")
+
+        if managed and status is not None:
+            require_managed_owner(status, manager)
+
+        def check(current, admission):
+            problem = compatibility_problem(current)
             if problem:
-                raise RuntimeContractError(
-                    f"Runtime 已启动，但{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
-            return handle
+                return problem
+            if admission is None or admission.source != source:
+                return "omp_executable"
+            observed = current.get("omp", {})
+            expected = admission.status()
+            if any(observed.get(field) != expected[field] for field in (
+                    "path", "file_identity", "source_path", "source_file_identity", "installation_status", "version")):
+                return "omp_executable"
+            return None
 
-        if status.get("stopping"):
-            if managed:
-                raise RuntimeContractError(
-                    "systemd 托管的 Runtime 正在安全退出；请等待其完成并用 service status 检查后重试，"
-                    "不会启动第二个实例。")
-            if not _supports_handoff(status):
-                raise RuntimeContractError(
-                    "运行中的 Runtime 正在退出，但旧实例不支持安全交接协议；请等待其退出后重试。\n\n"
-                    + restart_guidance(config_path))
-            print("检测到旧 Runtime 正在安全退出；等待其释放后启动…", flush=True)
-            _wait_released(config, status)
-            status = _start_standalone(config, config_path, omp_path)
-            handle = _new_handle(status, reused=False, managed=False, created=True)
-            write_ownership(config, config_path, status, handle.launch_token)
-            problem = check(status)
-            if problem:
-                raise RuntimeContractError(
-                    f"Runtime 已重新启动，但{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
-            return handle
-
-        problem = check(status, managed=managed and not restart)
-        if problem is None and status.get("draining") and not restart:
-            try:
-                _request_resume(status, config.server.socket_path)
-            except RuntimeContractError:
-                raise RuntimeContractError(
-                    "Runtime 处于 draining 且无法恢复；请检查 daemon 日志并等待其退出后重试，"
-                    "不会启动第二个实例。") from None
-            status = probe_daemon(config.server.socket_path)
-            if status is None or status.get("draining"):
-                raise RuntimeContractError(
-                    "Runtime 仍处于 draining；请等待其安全收尾完成后重试，不会启动第二个实例。")
-            problem = check(status, managed=managed)
-
-        if problem is None and not restart:
+        problem = check(status, active) if status is not None else None
+        if status and not status.get("stopping") and problem is None and not restart:
+            if status.get("draining"):
+                try:
+                    _request_resume(status, config.server.socket_path)
+                except RuntimeContractError:
+                    raise RuntimeContractError(
+                        "Runtime 处于 draining 且无法恢复；请检查 daemon 日志并等待其退出后重试，"
+                        "不会启动第二个实例。") from None
+                status = probe_daemon(config.server.socket_path)
+                if status is None or status.get("draining") or check(status, active) is not None:
+                    raise RuntimeContractError(
+                        "Runtime 未能恢复；请等待其安全收尾完成后重试，不会启动第二个实例。")
             return _new_handle(status, reused=True, managed=managed, created=False)
 
-        if not _supports_handoff(status):
+        if status and not _supports_handoff(status):
             raise RuntimeContractError(
                 "运行中的 Runtime 是升级前的旧实例，不支持空闲检查与安全交接协议，无法证明可以安全停止。\n"
                 "未发送终止信号，也未启动第二个实例。\n\n" + restart_guidance(config_path))
+        if managed and status and status.get("stopping"):
+            raise RuntimeContractError(
+                "systemd 托管的 Runtime 正在安全退出；请等待其完成并用 service status 检查后重试，不会启动第二个实例。")
 
-        print(f"检测到{_problem_text(problem)}；正在检查活动状态并安全重启…" if problem
-              else "正在安全重启 Runtime…", flush=True)
-        if managed:
-            drained = _request_handoff(status, config.server.socket_path, stop=False, reason="launcher restart")
-            if not drained.get("accepted"):
-                raise RuntimeContractError(_blocker_report(drained))
-            try:
-                service.control(config_path, "restart")
+        # No production lifecycle request, environment synchronization, or
+        # active-reference change is allowed before this isolated probe passes.
+        activation = stack.enter_context(prepare_omp(config.state_dir, source, recheck_wrapper=restart))
+        if status is not None:
+            if status.get("stopping"):
+                print("检测到旧 Runtime 正在安全退出；等待其释放后启动…", flush=True)
+                _wait_released(config, status)
+            else:
+                print(f"检测到{_problem_text(problem)}；正在检查活动状态并安全重启…" if problem
+                      else "正在安全重启 Runtime…", flush=True)
+                handoff = _request_handoff(status, config.server.socket_path, stop=not managed, reason="launcher restart")
+                if not handoff.get("accepted"):
+                    raise RuntimeContractError(_blocker_report(handoff))
+                if not managed:
+                    _wait_released(config, status)
+
+        service_proxy = None
+        try:
+            activation.commit()
+            if managed and status is not None:
+                result = service.control(config_path, "restart", name=service_name)
+                service_proxy = result["proxy"]
                 new_status = _wait_ready(config, old_instance=status.get("runtime_instance"))
-            except RuntimeContractError:
+            elif managed:
+                new_status, service_proxy = _start_managed(config, config_path, service_name)
+            else:
+                new_status = _start_standalone(config, config_path)
+            if managed:
+                require_managed_owner(new_status, service.status(config_path, name=service_name))
+            problem = check(new_status, activation.admission)
+            if problem:
+                raise RuntimeContractError(
+                    f"Runtime 已启动，但{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
+        except (OSError, RuntimeContractError) as error:
+            if managed and status is not None:
                 try:
                     _request_resume(status, config.server.socket_path)
                 except RuntimeContractError:
                     pass
-                raise
-            problem = check(new_status, managed=True)
-            if problem:
-                raise RuntimeContractError(
-                    f"Runtime 已通过 systemd 重启，但{_problem_text(problem)}；未进入界面。\n\n"
-                    + restart_guidance(config_path))
+            recovery = _restore_failed_activation(config, activation)
+            if recovery:
+                message = str(error) if isinstance(error, RuntimeContractError) else "Runtime 启动失败；请检查文件权限。"
+                raise RuntimeContractError(f"{message}\n{recovery}") from None
+            raise
+        activation.retire_previous_snapshot()
+        handle = _new_handle(new_status, reused=False, managed=managed, created=not managed, service_proxy=service_proxy)
+        if handle.created:
+            write_ownership(config, config_path, new_status, handle.launch_token)
+        if status is not None:
             print("Runtime 已使用当前代码重启。", flush=True)
-            return _new_handle(new_status, reused=False, managed=True, created=False)
-
-        stopped = _request_handoff(status, config.server.socket_path, stop=True, reason="launcher restart")
-        if not stopped.get("accepted"):
-            raise RuntimeContractError(_blocker_report(stopped))
-        _wait_released(config, status)
-        new_status = _start_standalone(config, config_path, omp_path)
-        handle = _new_handle(new_status, reused=False, managed=False, created=True)
-        write_ownership(config, config_path, new_status, handle.launch_token)
-        problem = check(new_status)
-        if problem:
-            raise RuntimeContractError(
-                f"Runtime 已重启，但新实例仍{_problem_text(problem)}；未进入界面。\n\n{restart_guidance(config_path)}")
-        print("Runtime 已使用当前代码重启。", flush=True)
         return handle
-    finally:
-        launcher_lock.close()
 
 
 def shutdown_owned_runtime(config, config_path):

@@ -111,6 +111,7 @@ if [[ "$config_path" != /* ]]; then config_path="$PWD/$config_path"; fi
 if [[ -n "$requested_omp" ]]; then
     if [[ "$requested_omp" != /* ]]; then requested_omp="$PWD/$requested_omp"; fi
     export PAVEWAY_OMP_PATH="$requested_omp"
+    unset PAVEWAY_OMP_FILE_IDENTITY
 fi
 cd -- "$project_dir"
 if [[ -z "${PAVEWAY_PYTHON:-}" ]]; then
@@ -142,7 +143,6 @@ from oicoach_runtime.config import ensure_private_directory, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.launcher import ensure_runtime
 from oicoach_runtime.models import validate_id
-from oicoach_runtime.omp_installation import resolve_omp
 from oicoach_runtime.workflow_setup import create
 
 path = Path(sys.argv[1]).absolute()
@@ -162,17 +162,13 @@ try:
         requested_workflow = resolve(config, requested_coach)["runtime_workflow_id"]
         if workflow_file:
             workflow_file.write_text(requested_workflow, encoding="utf-8")
-    omp_path = resolve_omp(config.agent.executable)
 
     existing_workflows = sorted(p.parent.name for p in config.workflow_root.glob("*/workflow.toml"))
+    create_workflow = None
     if not existing_workflows:
-        workspace = path.parent / "workspace"
-        ensure_private_directory(workspace)
         if requested_workflow:
             validate_id(requested_workflow)
-            create(config, requested_workflow, workspace)
-            if workflow_file:
-                workflow_file.write_text(requested_workflow, encoding="utf-8")
+            create_workflow = requested_workflow
         else:
             print("当前尚未创建任何 Workflow。\n", flush=True)
             print("请输入第一个 Workflow 的名称（ID）：", flush=True)
@@ -188,9 +184,7 @@ try:
                     continue
                 try:
                     validate_id(name)
-                    create(config, name, workspace)
-                    if workflow_file:
-                        workflow_file.write_text(name, encoding="utf-8")
+                    create_workflow = name
                     break
                 except RuntimeContractError as error:
                     print(f"名称无效：{error}，请重新输入。\n", file=sys.stderr, flush=True)
@@ -201,7 +195,13 @@ try:
                 f"指定的 Workflow 不存在：{requested_workflow}。已有 Workflow：{', '.join(existing_workflows)}。"
             )
 
-    handle = ensure_runtime(config, path, omp_path=omp_path, restart=os.environ.get("PAVEWAY_RESTART_RUNTIME") == "1")
+    handle = ensure_runtime(config, path, restart=os.environ.get("PAVEWAY_RESTART_RUNTIME") == "1")
+    if create_workflow:
+        workspace = path.parent / "workspace"
+        ensure_private_directory(workspace)
+        create(config, create_workflow, workspace)
+        if workflow_file:
+            workflow_file.write_text(create_workflow, encoding="utf-8")
     if launch_file:
         launch_file.write_text(handle.launch_token or "", encoding="utf-8")
 except RuntimeContractError as error:

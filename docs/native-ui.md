@@ -1,6 +1,6 @@
 # OMP 原生界面
 
-Paveway 直接启动用户安装的官方 OMP。OMP 负责聊天、模型／认证、工具、MCP、滚动和原生 Session；Paveway Extension 负责 Runtime 握手、管理命令和 Paveway 状态呈现。后台使用同一个绝对 OMP 路径启动 `--mode rpc`；前后台的物理 Session 独立，不同时写同一个文件。
+Paveway 使用用户提供的官方 OMP。OMP 负责聊天、模型／认证、工具、MCP、滚动和原生 Session；Paveway Extension 负责 Runtime 握手、管理命令和状态呈现。前台与后台 `--mode rpc` 使用 Runtime 准入的同一可执行文件，物理 Session 独立。
 
 ## 品牌、输入与状态
 
@@ -12,7 +12,7 @@ Paveway 直接启动用户安装的官方 OMP。OMP 负责聊天、模型／认�
 
 ## OMP 选择、诊断与升级
 
-启动优先级为 `./paveway.sh --omp PATH`（或显式环境变量 `PAVEWAY_OMP_PATH`）→ TOML `agent.executable` → `PATH` 中的 `omp`。无效的显式路径不会回退。独立 Runtime 使用已解析的绝对路径；路径变更或可执行文件被原地替换时先走安全交接，有活动任务时不替换。systemd 不继承终端的临时选择，请设 `agent.executable` 的绝对路径，并在空闲时使用 `--restart-runtime` 重新加载服务。
+候选来源优先级：`./paveway.sh --omp PATH`（或 `PAVEWAY_OMP_PATH`）→ `agent.executable` → `PATH`。无效的显式路径不会改选其他候选。新文件先在私有临时 HOME、工作区和 Runtime 中验证 Extension 注册、真实 PTY 中的 `/paveway` 命令、所有权释放及 RPC ready／`get_state`，不读取真实认证，也不发模型请求。准入后仍须通过现有空闲检查；不兼容候选不会停止现有 Runtime。systemd 建议使用绝对 `agent.executable`，空闲时通过 `--restart-runtime` 发起安全切换。
 
 ```bash
 omp update
@@ -22,13 +22,15 @@ oicoach-runtime status --config /absolute/config.toml --json
 oicoach-runtime verify-omp --config /absolute/config.toml --json
 ```
 
-升级也可使用 [官方发行页](https://github.com/can1357/oh-my-pi/releases)。不用构建或应用补丁，不会改动 OMP 安装、会话或用户凭据。`doctor` 报告解析路径、版本和 CLI 检查；Runtime `status.omp` 区分已观察到的 Extension attestation、RPC 兼容性以及正在运行的 RPC 数量。无模型时 `verify-omp` 可能不能启动 RPC；具备凭据后，`--with-model` 才发真实请求。
+也可以通过[官方发行页](https://github.com/can1357/oh-my-pi/releases)准备独立二进制，再用 `--omp /absolute/path/to/omp` 选中。`status.omp` 的 `source_path` 是候选来源，`path` 是当前实际执行文件；`pinning=snapshot` 表示官方独立 ELF 有私有快照，`pinning=executable_only` 表示只验证包装器文件本身。`doctor` 检查来源；`verify-omp` 不会改选 Runtime，只有 `--with-model` 才请求模型。
 
-`status.omp.installation_status` 为 `selected`、`unavailable` 或 `handoff_required`。若安装文件在 Runtime 运行时被删除、替换、失去执行权限或改变身份，已启动的前台与后台会话可以自然结束；新前台、Worker、Agent restart 和该会话发起的 OMP 查询不得自动切到新文件。待执行 Wakeup 保持排队，纯 Reminder、Inbox 和控制面不依赖 OMP，照常运行。独立 `doctor` 和直接从终端运行的 `workflow models` 仍可检查用户当前选择的安装。
+独立 ELF 在私有 `state_dir/omp/` 下复制、验证；`active.json` 原子发布本次选择。`omp update` 替换甚至删除原文件时，已选快照仍可供前后台使用。若 `paveway.sh` 拒绝新候选，旧 Runtime 仍可用时可用 `oicoach-runtime native --config /absolute/config.toml --workflow ID` 进入。不要修改或删除活跃快照、所有权锁或 Session。
 
-Linux／WSL 在 `exec` 前验证打开的文件描述符并从该描述符运行，原子替换不能重定向这次启动。常见 shebang 包装器也执行同一个已验证文件，但解释器看到的是 fd 路径；依赖 `$0` 所在目录或可变下游链接的 shim，请改为指向官方 ELF 的绝对路径。只固定已选文件，不审计包装器依赖或把可变文件变成不可变快照，不承诺抵御任意原地并发改写。软链接只在选择安装时解析；已运行的 Runtime 不跟随原始别名改指。
+受管 TUI 不对选中的副本执行 OMP 后台自更新。更新外部候选后运行启动器；systemd 也可执行 `oicoach-runtime service restart --config /absolute/config.toml`。直接运行 `systemctl --user restart` 只重启服务，沿用已提交的选择，不会提升候选。确认新 Runtime 就绪后才清理上一份副本。
 
-如果新版不再满足能力契约，保留文件和原会话，改选一份已验证的官方 OMP（`--omp` 或 `agent.executable`），空闲时安全重启 Runtime。能回退可执行文件不代表旧 OMP 能读取新版写过的全部 Session 格式；先保留备份，不编辑或重放 uncertain 对话。
+Linux／WSL 在 exec 前验证打开的文件描述符，并从该描述符运行，避免名称被原子替换后启动另一份文件。shebang、npm 包装器、仅可执行文件和外部依赖不具备完整的快照回退保证；请优先选官方独立 ELF。若已选文件本身失效，Runtime 不会改用未准入候选；纯 Reminder、Inbox 和控制面仍可运行，待执行的模型工作保持排队。
+
+Native Extension 失败时，`state_dir/native-startup-failure.json` 保存最近一次拒绝：阶段、异常类型、脱敏消息、去除私密路径的栈帧、OMP 版本和时间。未知错误内容默认隐藏；记录不含 prompt、凭据、nonce、owner token 或原始终端输出。无论诊断能否写入均拒绝启动，不自动重放。二进制回退也不保证能读取新版写过的 Session 格式。
 
 ## 启动与恢复
 

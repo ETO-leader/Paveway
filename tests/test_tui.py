@@ -28,6 +28,8 @@ try:
 except ImportError:
     pyte = None
 
+from fake_admission import admit_fake
+
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
@@ -610,6 +612,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 startup_timeout_seconds=3, ack_timeout_seconds=1, turn_timeout_seconds=10,
                 settle_timeout_seconds=2, graceful_stop_seconds=1))
         self.path.write_text(config_text(self.config))
+        admit_fake(self.config)
         create(self.config, "echo", self.root, "example")
         self.log = (self.root / "daemon.log").open("w")
         self.addCleanup(self.log.close)

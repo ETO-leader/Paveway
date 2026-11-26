@@ -20,6 +20,8 @@ from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.ipc import request
 from oicoach_runtime.models import parse_timestamp, utc_text
 
+from fake_admission import admit_fake
+
 FAKE_OMP = Path(__file__).with_name("fake_omp.py").resolve()
 
 
@@ -49,6 +51,7 @@ class ConcurrentRuntimeTests(unittest.TestCase):
                                          jitter_ratio=0))
         self.config_path.write_text(config_text(config))
         self.config = load_config(self.config_path)
+        admit_fake(self.config)
         self.socket_path = self.config.server.socket_path
         directory = self.config.workflow_root / "echo"
         if not directory.exists():

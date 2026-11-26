@@ -92,4 +92,40 @@ test("presentation never accesses child or headless UI and tolerates missing vis
     expect(widgets.size).toBe(0);
     expect(statuses.size).toBe(0);
     expect(() => show({...ctx, ui: {}}, {}, {banner: true})).not.toThrow();
+    show({...ctx, ui: {setStatus: (key, text) => statuses.set(key, text)}}, {inbox: 1, wakeup: {timing: "none"}});
+    expect(statuses.get("paveway.windline")).toBe("PAVEWAY olympiad/practice · Inbox 1");
+});
+
+test("OMP 19.2 widgets use the lazy size-based host and the current theme", () => {
+    const {pi, ctx, shapes, statuses, emit} = host();
+    const factories = new Map();
+    let rows = 24;
+    let redraws = 0;
+    let placement;
+    const widgetHost = {size: () => ({rows, columns: 80}), requestRender: () => redraws++};
+    ctx.ui.theme = {fg: (_role, text) => text, depth: "truecolor", symbols: {preset: "unicode"}};
+    ctx.ui.setWidget = (key, factory, opts) => {
+        if (factory) factories.set(key, factory);
+        else factories.delete(key);
+        if (key === "paveway.windline") placement = opts.placement;
+    };
+    const show = registerNativePresentation(pi, {...config, omp_version: "19.2.1"});
+    expect(shapes[0].id).toBe("paveway.chrome");
+    show(ctx, {inbox: 2}, {banner: true});
+    show(ctx, {inbox: 3});
+    expect(placement).toBe("belowEditor");
+    expect(statuses.size).toBe(0);
+    const status = factories.get("paveway.windline")(widgetHost, ctx.ui.theme);
+    const welcome = factories.get("paveway.welcome")(widgetHost, ctx.ui.theme);
+    expect(status.render(80)[0]).toContain(" · Inbox 3");
+    expect(Bun.stripANSI(welcome.render(80).join("\n"))).toContain("OMP 19.2.1");
+    show(ctx, {inbox: 4});
+    expect(redraws).toBe(1);
+    ctx.ui.theme = {...ctx.ui.theme, symbols: {preset: "ascii"}};
+    expect(status.render(80)[0]).toContain(" | Inbox 4");
+    expect(Bun.stripANSI(welcome.render(80).join("\n"))).not.toMatch(/[█▀▄─●…]/);
+    rows = 10;
+    expect(welcome.render(80)).toEqual(["PAVEWAY"]);
+    emit("agent_start");
+    expect(factories.has("paveway.welcome")).toBe(false);
 });

@@ -7,12 +7,15 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from fake_admission import admit_fake
+
 from oicoach_runtime import customization
 from oicoach_runtime.adapters.omp_rpc import OmpRpc
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import ConfigError, ConflictError, RuntimeContractError, WorkflowError
 from oicoach_runtime.model_selection import catalog
+from oicoach_runtime.omp_installation import OmpInstallation
 from oicoach_runtime.workflow_setup import create
 
 
@@ -87,6 +90,19 @@ class ModelSelectionTests(unittest.TestCase):
             self.assertEqual(catalog(config, "coach")["models"], [
                 {"selector": "override/new-model", "name": "override/new-model", "thinking": ["future"]},
             ])
+
+    def test_catalog_uses_live_runtime_ahead_of_committed_reference_or_candidate(self):
+        admit_fake(self.config)
+        live = self.root / "live-omp"
+        live.write_text('#!/bin/sh\nprintf \'{"models":[{"selector":"live/model"}]}\\n\'\n')
+        live.chmod(0o700)
+        installation = OmpInstallation.select(str(live), environment={})
+        status = {"omp": {"installation_status": "selected", "path": installation.path,
+                          "file_identity": list(installation.identity)}}
+        with patch.dict(os.environ, {"PAVEWAY_OMP_PATH": str(self.root / "missing-candidate")}), \
+                patch("oicoach_runtime.model_selection.probe_daemon", return_value=status):
+            self.assertEqual([model["selector"] for model in catalog(self.config, "coach")["models"]],
+                             ["live/model"])
 
     def test_catalog_ignores_unsafe_thinking_tokens_and_preserves_omp_order(self):
         rows = [{"selector": "any-provider/any-model",

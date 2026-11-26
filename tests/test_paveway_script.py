@@ -14,6 +14,8 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from fake_admission import admit_fake
+
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.workflow_setup import create
@@ -33,6 +35,7 @@ class PavewayScriptTests(unittest.TestCase):
         fake_omp.chmod(0o755)
         self.config = replace(config, agent=replace(config.agent, executable=str(fake_omp)))
         self.config_path.write_text(config_text(self.config))
+        admit_fake(self.config)
 
     def tearDown(self):
         pid_file = self.root / "state/daemon.pid"
@@ -333,6 +336,16 @@ else:
         self.assertEqual(created, ["custom"])
         manifest = (self.root / "workflows/custom/workflow.toml").read_text()
         self.assertIn('id = "custom"', manifest)
+
+    def test_refused_omp_does_not_create_first_workflow_or_change_config(self):
+        before = self.config_path.read_bytes()
+        code, output = self._run_script(args=[
+            "--workflow", "not-created", "--omp", str(self.root / "missing-omp")])
+        self.assertNotEqual(code, 0)
+        self.assertIn("启动失败", output)
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(list((self.root / "workflows").glob("*")), [])
+        self.assertFalse((self.root / "state" / "daemon.pid").exists())
 
     def test_empty_input_reprompts_and_does_not_create_empty(self):
         """3. 空输入不能创建 Workflow。"""

@@ -1,8 +1,10 @@
 """OMP protocol v1 over bounded NDJSON, with explicit completion and settlement."""
 
 import asyncio
+from importlib.resources import files
 import json
 import os
+from pathlib import Path
 import signal
 import sys
 import uuid
@@ -12,6 +14,7 @@ from ..diagnostics import prompt_failure
 from ..processes import process_identity
 from ..child import cleanup_group
 from ..omp_installation import OmpInstallation, OmpInstallationUnavailable, REFUSED_FRAME
+from ..omp_config import disabled_tool_args, skill_directories as query_skill_directories
 
 MAX_FRAME = 1048576
 
@@ -30,6 +33,7 @@ class OmpRpc:
         self.process_fd = None
         self.stop_task = None
         self.memory_run_id = None
+        self.tools_run_id = None
 
     async def start(self, binding, run_id):
         if self.process is not None and self.process.returncode is None:
@@ -37,6 +41,7 @@ class OmpRpc:
         self.exit_event.clear()
         self.stop_task = None
         self.memory_run_id = None
+        self.tools_run_id = None
         agent = self.config.agent
         from ..proxy import child_environment
         environment = dict(child_environment(self.config_path), OICOACH_RUN_ID=run_id,
@@ -64,24 +69,36 @@ class OmpRpc:
         builtin_skills = binding.get("builtin_skills", ())
         skill_directories = ()
         if agent.skills_enabled and (builtin_skills or any(skill.get("enabled") for skill in settings["skills"])):
-            from ..omp_config import skill_directories as query_skill_directories
             skill_directories = await query_skill_directories(self.config, installation, binding["workspace"], environment)
         argv.extend(snapshot(settings, binding["session_dir"], run_id, agent.skills_enabled,
             base=binding.get("base"), builtin_skills=builtin_skills, skill_directories=skill_directories,
             package_root=self.config.state_dir / "skill-packages"))
-        if "memory_enabled" in binding or binding.get("memory_context") is not None:
-            self.memory_run_id = run_id
-            from importlib.resources import files
-            from pathlib import Path
-            data = Path(binding["session_dir"]) / "customizations" / run_id / "memory-context.json"
-            scope = binding.get("memory_scope") or {"workflow_id": binding["workflow_id"], "task_id": binding["task_id"]}
+        memory = "memory_enabled" in binding or binding.get("memory_context") is not None
+        destination = Path(binding["session_dir"]) / "customizations" / run_id
+        if not agent.tools_enabled:
+            self.tools_run_id = run_id
+            overlay = {}
+            argv.extend(disabled_tool_args(overlay, environment))
+            tool_config = destination / "tool-policy.yml"
+            tool_config.write_text(json.dumps(overlay), encoding="utf-8")
+            tool_config.chmod(0o600)
+            argv.extend(["--config", str(tool_config)])
+        if memory or not agent.tools_enabled:
+            self.memory_run_id = run_id if memory else None
+            scope = None
+            if memory:
+                scope = binding.get("memory_scope") or {"workflow_id": binding["workflow_id"], "task_id": binding["task_id"]}
+            data = destination / "memory-context.json"
             data.write_text(json.dumps({"scope": scope, "snapshot": binding.get("memory_context"), "run_id": run_id,
                 "enabled": binding.get("memory_enabled", binding.get("memory_context") is not None),
-                "socket_path": self.config.server.socket_path if binding.get("memory_enabled") and self.config_path else None}))
+                "tools_enabled": agent.tools_enabled,
+                "socket_path": self.config.server.socket_path if binding.get("memory_enabled") and self.config_path else None}),
+                encoding="utf-8")
             data.chmod(0o600)
             environment["PAVEWAY_MEMORY_DATA"] = str(data)
-            argv.extend(["--extension", str(files("oicoach_runtime").joinpath("bundled/paveway-rpc-memory.mjs"))])
-        for option in ("tools", "extensions", "skills", "rules"):
+            extension = str(files("oicoach_runtime").joinpath("bundled/paveway-rpc-memory.mjs"))
+            argv.extend(["--extension" if agent.extensions_enabled else "--trusted-extension", extension])
+        for option in ("extensions", "skills", "rules"):
             if not getattr(agent, option + "_enabled"):
                 argv.append("--no-" + option)
         self.process = await asyncio.create_subprocess_exec(
@@ -124,6 +141,8 @@ class OmpRpc:
                 raise AgentError("Invalid agent RPC frame")
             if value["type"] == "rpc_frame_error":
                 raise AgentError("Agent reported a transport overflow")
+            if value["type"] == "paveway_tools_error":
+                raise AgentError("Cannot enforce disabled OMP tools", code="agent_tools_policy_invalid")
             if value["type"] == "paveway_memory_error":
                 code = value.get("code")
                 if value.get("contractVersion") != 1 or code not in ("memory_recall_failed", "memory_projection_failed"):
@@ -159,15 +178,22 @@ class OmpRpc:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.config.agent.startup_timeout_seconds
         rpc_ready, memory_ready = False, self.memory_run_id is None
+        tools_ready = self.tools_run_id is None
+
+        def missing_ready():
+            if rpc_ready and not tools_ready:
+                return AgentError("Managed OMP tool policy readiness missing", code="agent_tools_policy_missing")
+            return AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing")
+
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing")
+                raise missing_ready()
             try:
                 frame = await self.frame(remaining)
             except AgentError as error:
                 if error.code == "agent_rpc_timeout":
-                    raise AgentError("OMP RPC ready signal missing", code="agent_rpc_ready_missing") from None
+                    raise missing_ready() from None
                 raise
             # This private launcher frame is recognized only before RPC admission.
             if frame.get("type") == REFUSED_FRAME:
@@ -180,7 +206,14 @@ class OmpRpc:
                 if type(frame.get("contractVersion")) is not int or frame["contractVersion"] != 1 or frame.get("runId") != self.memory_run_id:
                     raise AgentError("Runtime Memory extension identity mismatch", code="agent_memory_ready_invalid")
                 memory_ready = True
-            if rpc_ready and memory_ready:
+            elif frame.get("type") == "paveway_tools_ready":
+                if (type(frame.get("contractVersion")) is not int or frame["contractVersion"] != 1
+                        or self.tools_run_id is None or frame.get("runId") != self.tools_run_id):
+                    raise AgentError("Managed OMP tool policy identity mismatch", code="agent_tools_policy_invalid")
+                tools_ready = True
+            if rpc_ready and memory_ready and tools_ready:
+                if self.tools_run_id is not None and (await self.state()).get("dumpTools") != []:
+                    raise AgentError("OMP exposed tools in a managed tool-disabled run", code="agent_tools_policy_invalid")
                 return
             # Legacy context-window guard frames remain optional. Memory
             # integration admission is separate from OMP's context sizing.

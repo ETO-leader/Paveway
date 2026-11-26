@@ -9,9 +9,12 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
+
+from fake_admission import FAKE_OMP, admit_fake
 
 from oicoach_runtime.cli import initialize
-from oicoach_runtime.config import load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.frontend import Frontend
 from oicoach_runtime.ipc import request
 from oicoach_runtime.processes import InstanceLock
@@ -27,7 +30,10 @@ class ReleaseConcurrencyTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.path = self.root / "config.toml"
         initialize(self.path, str(self.root / "state"), str(self.root / "workflows"))
-        self.config = load_config(self.path)
+        config = load_config(self.path)
+        self.config = replace(config, agent=replace(config.agent, executable=str(FAKE_OMP)))
+        self.path.write_text(config_text(self.config))
+        admit_fake(self.config)
         create(self.config, "example", self.root, "example")
         self.store = Store(self.config)
         self.addCleanup(self.store.close)

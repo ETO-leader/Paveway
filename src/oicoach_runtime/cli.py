@@ -675,9 +675,6 @@ def main(argv: list[str] | None = None) -> int:
             from .proxy import status, synchronize
             report = synchronize(path) if args.operation == "sync" else status(path)
         elif args.command == "serve":
-            from .proxy import synchronize
-            proxy = synchronize(path)
-            print(json.dumps({"component": "proxy", "transition": "startup_check", **proxy}), flush=True)
             from .scheduler import Runtime
             asyncio.run(Runtime(load_config(path), path).serve())
             return 0
@@ -685,8 +682,6 @@ def main(argv: list[str] | None = None) -> int:
             from .smoke import verify_omp
             from .proxy import child_environment
             os.environ.update(child_environment(path))
-            # Official OMP's diagnostics tool can be enabled even with --no-tools.
-            os.environ["PI_AUTO_QA"] = "0"
             report = asyncio.run(verify_omp(load_config(path), with_model=args.with_model))
         elif args.command == "notifications":
             from . import notifications, service
@@ -723,6 +718,14 @@ def main(argv: list[str] | None = None) -> int:
                 report = service.status(path, name=args.name)
             elif args.operation == "logs":
                 report = service.logs(path, name=args.name, lines=args.lines)
+            elif args.operation == "restart":
+                from contextlib import redirect_stdout
+                from .launcher import ensure_runtime
+                unit_path = service.require_owned(path, args.name)
+                with redirect_stdout(sys.stderr):
+                    launch = ensure_runtime(load_config(path), path, restart=True, service_name=args.name, managed_only=True)
+                report = {"api_version": 1, "unit": args.name, "action": "restart", "completed": True,
+                          "proxy": launch.service_proxy, "runtime_state_preserved": True, "unit_path": str(unit_path)}
             else:
                 report = service.control(path, args.operation, name=args.name, now=getattr(args, "now", False))
         elif args.command == "sync":

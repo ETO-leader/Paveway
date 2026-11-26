@@ -23,6 +23,29 @@
 
 参考：[官方 19.1.1 release](https://github.com/can1357/oh-my-pi/releases/tag/v19.1.1)、[Extension API](https://github.com/can1357/oh-my-pi/blob/v19.1.1/docs/extensions.md)、[Extension 加载](https://github.com/can1357/oh-my-pi/blob/v19.1.1/docs/extension-loading.md)、[RPC 协议](https://github.com/can1357/oh-my-pi/blob/v19.1.1/docs/rpc.md)、[原生 MCP 配置](https://github.com/can1357/oh-my-pi/blob/v19.1.1/docs/mcp-config.md)。
 
+## OMP 19.2.1：迁移证据
+
+按版本对照 [19.1.1 → 19.2.0](https://github.com/can1357/oh-my-pi/compare/v19.1.1...v19.2.0)、[19.2.0 → 19.2.1](https://github.com/can1357/oh-my-pi/compare/v19.2.0...v19.2.1)、[19.2.0 发行说明](https://github.com/can1357/oh-my-pi/releases/tag/v19.2.0)、[19.2.1 发行说明](https://github.com/can1357/oh-my-pi/releases/tag/v19.2.1)、[Extension 类型定义](https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/extensions/types.ts)、[UI 迁移](https://github.com/can1357/oh-my-pi/blob/v19.2.1/docs/extensions.md#migrating-from-pi-tui)与 [CLI](https://github.com/can1357/oh-my-pi/blob/v19.2.1/docs/cli-reference.md)。
+
+- 用官方 Linux x64 19.2.1、隔离 Runtime 和未修复的 Extension 复现。底层为 `TypeError: Composer shape id must be a non-empty trimmed string`，调用链 `registerComposerShape → registerComposer → registerNativePresentation → paveway`。上游 [19.1.1 loader](https://github.com/can1357/oh-my-pi/blob/v19.1.1/packages/coding-agent/src/extensibility/extensions/loader.ts#L358-L370) 从 `definition.style.id` 读 ID；[19.2.1 loader](https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/extensions/loader.ts#L358-L375) 读顶层 ID 并要求 `row`／`sideWidth`。原 `catch` 只保留了注册阶段。
+- Composer 同时表达两代形状契约，不按版本字符串放行。Widget 使用宿主尺寸和实时 Theme；管理对话框不再依赖已移除的 TUI 组件，密钥输入仅走已支持的掩码路径。快捷键仍采用当前宿主配置，19.2 的匹配器接收解码后的 KeyEvent；文件路径和 Session 归属检查仍独立生效。Wakeup／Memory 工具沿用默认渲染，不依赖已删除的 `describeCall`／`describeResult`。
+- 19.2 起 `--no-tools` 蕴含隔离且与显式 Extension 互斥。Paveway 无工具会话改用独立的发现约束、空工具列表和执行拒绝，保留必需 Extension 与其握手。不能只删掉 `--no-tools` 让工具或 MCP 恢复加载。OMP 的 `ready`、相关 ID 与状态验证继续走现有 RPC adapter。
+- 真实验收使用官方 `SHA256SUMS.txt` 校验的 Linux x64 发行件：19.1.1 为 `04e9490f9394da6d6804474cc2e41eb3d18f8e26215df4b34bdd4ad4c0d8a401`；19.2.1 为 `e8b937f9bf023baa147bdd300ad5421af0a6ef8b1f350c47a9a93d5fca94feca`。本节与下方历史 19.1.1 验证分开计数；升级策略见 [原生界面](../native-ui.md#omp-选择诊断与升级)。
+
+### 实测结果
+
+| 验收 | OMP 19.1.1 | OMP 19.2.1 |
+| --- | --- | --- |
+| 真实 PTY：新建／恢复、Composer／Banner／Windline、管理与掩码输入、Wakeup／Inbox、Memory、Subagent、MCP、Workflow 隔离、拒绝路径 | 20 通过 | 20 通过 |
+| 真实 RPC：允许的扩展仍可运行；禁用工具时保留 Memory，并阻止 MCP spawn、自定义工具加载和向模型暴露工具 | 通过 | 通过 |
+| `qoj-editorial-completion` | 未要求复验 | 原 manifest／模板、独立工作区和 HOME：已 attested，`/paveway help` 有响应，0 次 Run，正常退出 |
+
+独立 Runtime 和 systemd 各通过一次 **19.1.1 → 19.2.1**：活动期间不切换，原安装被替换时旧快照仍可执行；切换后恢复同一个 Conversation 和物理 Session，模型看到原历史，没有重放，删除新安装来源后 Worker 仍可执行。systemd 验证实际 `MainPID`。用真实 OMP 包装出启动拒绝时，两版都留住原 Runtime；破坏 nonce、cwd、直接子进程身份或启动 JSON 时都没有转发测试输入，且留下私有诊断。
+
+本次另通过 85 项定向 Python 测试（包括 `test_native_entry`、`test_omp_installation`、`test_runtime_lifecycle`、`test_paveway_script`、`test_compatibility`）及 50 项定向 Bun 测试。RPC 正例把合成工具声明为 `loadMode: "essential"`，让它确实进入该版本的 `dumpTools`，原断言不变。升级计数用例仅在隔离 fixture 禁用 `<composer-prediction>` 辅助请求，仍精确检查五次业务请求、三次 Worker Run 和每个 Native turn 只提交一次。
+
+独立评审覆盖 API、启动／诊断和版本交接；修正了禁用工具时的子代理策略、活跃引用目录的持久化、systemd PID 与重启代理状态，以及拒绝和脱敏用例的假阳性。真实二进制通过本机 PTY／NDJSON 和 loopback 模型验证；未使用生产认证，也未测试 Tern 或降级读取新版所写 Session。
+
 ## `a8c56ad` 迁移时的运行证据
 
 | 验收 | 状态 | 证据 |

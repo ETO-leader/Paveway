@@ -38,13 +38,19 @@ function indexedColor(rgb) {
     return grayError < cubeError ? 232 + gray : 16 + cube[0] * 36 + cube[1] * 6 + cube[2];
 }
 function color(rgb, mode) {
+    if (mode === "16") {
+        const [red, green, blue] = rgb;
+        const slot = Number(red >= 128) + 2 * Number(green >= 128) + 4 * Number(blue >= 128);
+        return `\x1b[${(slot === 0 || Math.max(red, green, blue) >= 192 ? 90 : 30) + slot}m`;
+    }
     return mode === "none" ? "" : mode === "truecolor"
         ? `\x1b[38;2;${rgb.join(";")}m` : `\x1b[38;5;${indexedColor(rgb)}m`;
 }
 function colorMode(theme) {
     if (process.env.NO_COLOR !== undefined || process.env.FORCE_COLOR === "0" || process.env.TERM === "dumb") return "none";
-    const mode = theme.getColorMode();
-    return mode === "none" || mode === false ? "none" : mode === "truecolor" ? "truecolor" : "ansi256";
+    const mode = theme.depth ?? theme.getColorMode?.();
+    if (mode === "truecolor" || mode === "16") return mode;
+    return mode === "256" || mode === "256color" || mode === "ansi256" ? "ansi256" : "none";
 }
 function singleLine(value) {
     return String(value ?? "").replace(/[\r\n\t]/g, " ").replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
@@ -103,8 +109,10 @@ export function createBanner({version, workflow}, theme) {
     return function render(width, ompVersion) {
         width = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
         if (width === 0) return [];
-        const mode = colorMode(theme);
-        const ascii = process.env.TERM === "dumb" || theme.getSymbolPreset() === "ascii";
+        const currentTheme = typeof theme === "function" ? theme() : theme;
+        const mode = colorMode(currentTheme);
+        const ascii = process.env.TERM === "dumb" ||
+            (currentTheme.symbols?.preset ?? currentTheme.getSymbolPreset?.()) === "ascii";
         const key = `${mode}:${ascii}`;
         const hostVersion = singleLine(ompVersion).replace(/^v/, "");
         if (resting?.key === key && resting.width === width && resting.hostVersion === hostVersion) return resting.lines;

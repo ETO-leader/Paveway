@@ -14,7 +14,10 @@ from .ipc import request
 from .omp_installation import omp_version, resolve_omp
 from .workflows import WorkflowProvider
 
-REQUIRED_FLAGS = ("--cwd", "--session-dir", "--resume", "--mode", "--no-ui", "--system-prompt-template")
+# --trusted-extension is supported but hidden from launch help; verify-omp
+# exercises the bundled exact-module launch instead of requiring a help token.
+REQUIRED_FLAGS = ("--cwd", "--session-dir", "--resume", "--mode", "--no-ui", "--system-prompt-template",
+                  "--config", "--tools", "--no-lsp", "--no-prewalk", "--extension", "--no-extensions")
 
 
 def probe_omp(executable: str) -> list[dict]:
@@ -32,7 +35,7 @@ def probe_omp(executable: str) -> list[dict]:
         return [{"check": "omp", "status": "FAIL" if missing else "PASS",
                  "path": resolved, "version": version,
                  "detail": f"{resolved}: OMP {version}; missing flags: {', '.join(missing) if missing else 'none'}"},
-                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags only; use verify-omp with an OMP model configured for actual RPC admission"}]
+                {"check": "omp_rpc", "status": "WARN", "detail": "CLI flags only; verify-omp checks running RPC and the managed tool policy"}]
     except RuntimeContractError as error:
         return [{"check": "omp", "status": "FAIL", "path": resolved, "detail": str(error)}]
     except (OSError, subprocess.TimeoutExpired, UnicodeError):

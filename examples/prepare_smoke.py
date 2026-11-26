@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,6 +31,9 @@ def main():
     manifest.write_text(manifest.read_text().replace('"REPLACE_WITH_ABSOLUTE_WORKSPACE"', json.dumps(str(path.parent), ensure_ascii=False)))
     config = replace(config, agent=replace(config.agent, executable=str(fake)))
     path.write_text(config_text(config))
+    sys.path.insert(0, str(repo / "tests"))
+    from fake_admission import admit_fake
+    admit_fake(config)
     print(json.dumps({"demo_only": True, "config": str(path), "agent": "fake OMP", "workflow": "example"}))
 
 

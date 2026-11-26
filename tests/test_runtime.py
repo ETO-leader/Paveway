@@ -12,6 +12,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from fake_admission import admit_fake
+
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import ConflictError, RuntimeContractError
@@ -212,6 +214,7 @@ class RuntimeTests(unittest.TestCase):
                                          cooldown_seconds=0.3, jitter_ratio=0))
         self.config_path.write_text(config_text(config))
         self.config = load_config(self.config_path)
+        admit_fake(self.config)
         self.socket_path = self.config.server.socket_path
         directory = self.config.workflow_root / "echo"
         directory.mkdir()
@@ -700,6 +703,7 @@ class RuntimeTests(unittest.TestCase):
         base = load_config(path)
         base = replace(base, agent=self.config.agent, server=replace(base.server, poll_interval_seconds=0.02))
         path.write_text(config_text(base))
+        admit_fake(base)
         create(base, "echo", other, "example")
         log = (other / "daemon.log").open("w")
         daemon = subprocess.Popen([sys.executable, "-m", "oicoach_runtime", "serve", "--config", str(path)], stdout=log, stderr=log)

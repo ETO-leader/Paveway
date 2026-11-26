@@ -8,11 +8,14 @@ import time
 from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, patch
+
+from fake_admission import FAKE_OMP, admit_fake
 
 from oicoach_runtime import notifications, service
 from oicoach_runtime.cli import initialize
-from oicoach_runtime.config import load_config
+from oicoach_runtime.config import config_text, load_config
 from oicoach_runtime.errors import RuntimeContractError
 from oicoach_runtime.inbox import Inbox
 from oicoach_runtime.models import utc_text
@@ -261,6 +264,9 @@ class WatcherProcessTests(unittest.TestCase):
             path = root / "config.toml"
             initialize(path, str(root / "state"), str(root / "workflows"))
             config = load_config(path)
+            config = replace(config, agent=replace(config.agent, executable=str(FAKE_OMP)))
+            path.write_text(config_text(config))
+            admit_fake(config)
             notifications.configure(config, True, backend="linux")
             capture = root / "notification-calls.jsonl"
             binary = root / "bin/notify-send"

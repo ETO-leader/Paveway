@@ -144,7 +144,7 @@ async def verify_memory_checkpoint(fixture):
                     note.get("content") == content for note in snapshot.get("notes", [])),
                 "actual memory.recall did not return the current CAS note")
         _private_json(data_path, {"run_id": "checkpoint-probe", "scope": SCOPE,
-                                  "enabled": True, "socket_path": None, "snapshot": snapshot})
+                                  "enabled": True, "tools_enabled": False, "socket_path": None, "snapshot": snapshot})
         return snapshot
 
     update_snapshot(1)

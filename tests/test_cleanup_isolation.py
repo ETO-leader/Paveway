@@ -17,6 +17,8 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from fake_admission import admit_fake
+
 from oicoach_runtime.adapters.omp_rpc import OmpRpc
 from oicoach_runtime.cli import initialize
 from oicoach_runtime.config import AgentConfig, Config, ServerConfig, config_text, load_config
@@ -87,6 +89,7 @@ class CleanupFaultRuntimeTests(unittest.TestCase):
                                          jitter_ratio=0))
         self.config_path.write_text(config_text(config))
         self.config = load_config(self.config_path)
+        admit_fake(self.config)
         self.socket_path = self.config.server.socket_path
         directory = self.config.workflow_root / "echo"
         if not directory.exists():
